@@ -25,13 +25,13 @@ def normalize(msg: Message) -> dict[str, JsonValue] | None:  # noqa: PLR0911 —
             return {
                 "type": "assistant",
                 "parent_tool_use_id": msg.parent_tool_use_id,
-                "message": {"model": msg.model, "content": _to_json(_asdict(msg)["content"])},
+                "message": {"model": msg.model, "content": to_json(_asdict(msg)["content"])},
             }
         case UserMessage():
             return {
                 "type": "user",
                 "parent_tool_use_id": msg.parent_tool_use_id,
-                "message": {"content": _to_json(_asdict(msg)["content"])},
+                "message": {"content": to_json(_asdict(msg)["content"])},
             }
         case SystemMessage():
             # Системные события SDK уже в формате CLI.
@@ -67,14 +67,14 @@ def _asdict(msg: Message) -> dict[str, object]:
     return dataclasses.asdict(msg)
 
 
-def _to_json(value: object) -> JsonValue:
+def to_json(value: object) -> JsonValue:
     # Единственная граница: всё непредставимое в JSON (datetime, Path…) становится строкой.
     parsed: JsonValue = json.loads(json.dumps(value, default=str))
     return parsed
 
 
 def _to_json_object(value: object) -> dict[str, JsonValue]:
-    parsed = _to_json(value)
+    parsed = to_json(value)
     if not isinstance(parsed, dict):
         raise TypeError(f"expected a JSON object, got {type(parsed).__name__}")
     return parsed
