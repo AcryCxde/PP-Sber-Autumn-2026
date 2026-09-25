@@ -55,3 +55,12 @@ def test_answers_for_maps_labels_to_questions_from_log(tmp_path: Path) -> None:
         answers_for(log, "f1", ["A"])
     with pytest.raises(ValueError, match="unknown fork"):
         answers_for(log, "nope", ["A"])
+
+
+def test_skipped_commands_are_reported(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    put(tmp_path, {"id": "c1", "kind": "message", "text": "a"})
+    put(tmp_path, {"id": "c1", "kind": "message", "text": "a"})
+    put(tmp_path, {"id": "c2", "kind": "bogus"})
+    Inbox(tmp_path).take()
+    events = [json.loads(line)["event"] for line in capsys.readouterr().err.splitlines()]
+    assert events == ["command_duplicate", "command_rejected"]

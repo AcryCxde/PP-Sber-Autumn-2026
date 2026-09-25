@@ -7,7 +7,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Final, Protocol, assert_never
 
@@ -27,6 +27,9 @@ from ctrunner.session import Session
 EX_CONFIG: Final = 78  # sysexits: ошибка конфигурации, рестарт не поможет
 EX_UNAVAILABLE: Final = 1  # сеть или SDK: Docker перезапустит
 PROBE_TIMEOUT_S: Final = 30.0
+# Docker перезапускает on-failure с задержкой от 100 мс: 5 рестартов проходят за секунды,
+# поэтому кратковременную недоступность cliproxy переживаем внутри процесса.
+PROBE_RETRY_DELAYS_S: Final = (5.0, 10.0, 20.0, 40.0, 60.0)
 GIT_TIMEOUT_S: Final = 600.0  # git add большого проекта при первом старте
 SECRETS_DIR: Final = Path("/run/secrets")
 SEED_DIR: Final = Path("/seed")
@@ -64,6 +67,25 @@ def preflight(
             return EX_UNAVAILABLE
         case _:
             assert_never(verdict)
+
+
+def preflight_with_retry(
+    env: Mapping[str, str],
+    *,
+    secrets_dir: Path,
+    probe_fn: ProbeFn,
+    delays: Sequence[float] = PROBE_RETRY_DELAYS_S,
+    sleep: Callable[[float], None] = time.sleep,
+) -> RunnerConfig | int:
+    """Повторяется только недоступность сети; ошибка конфигурации и отказ ключа — сразу."""
+    outcome = preflight(env, secrets_dir=secrets_dir, probe_fn=probe_fn)
+    for attempt, delay in enumerate(delays, start=1):
+        if outcome != EX_UNAVAILABLE:
+            break
+        diag("proxy_retry", attempt=attempt, delay_s=delay)
+        sleep(delay)
+        outcome = preflight(env, secrets_dir=secrets_dir, probe_fn=probe_fn)
+    return outcome
 
 
 def seed_project(project: Path, *, seed: Path, ctf: Path) -> None:
@@ -138,7 +160,7 @@ async def run(cfg: RunnerConfig) -> int:
 
 
 def cli() -> None:
-    cfg = preflight(os.environ, secrets_dir=SECRETS_DIR, probe_fn=probe)
+    cfg = preflight_with_retry(os.environ, secrets_dir=SECRETS_DIR, probe_fn=probe)
     if isinstance(cfg, int):
         sys.exit(cfg)
     sys.exit(asyncio.run(run(cfg)))

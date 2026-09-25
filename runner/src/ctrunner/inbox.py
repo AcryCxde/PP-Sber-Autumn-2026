@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Final, final
 
+from ctrunner.diag import diag
 from ctrunner.protocol import Command, EventKind, JsonValue, ProtocolError, parse_command
 
 PROCESSED: Final = "processed"
@@ -46,11 +47,13 @@ class Inbox:
         for path in sorted(self._dir.glob("[!.]*.json")):
             try:
                 command = parse_command(json.loads(path.read_text(encoding="utf-8")))
-            except (ProtocolError, ValueError):
+            except (ProtocolError, ValueError) as error:
                 os.replace(path, self._rejected / path.name)
+                diag("command_rejected", file=path.name, reason=str(error))
                 continue
             os.replace(path, self._processed / path.name)
             if command.id in self._seen:
+                diag("command_duplicate", command_id=command.id)
                 continue
             self._seen.add(command.id)
             commands.append(command)
