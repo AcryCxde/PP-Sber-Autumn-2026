@@ -81,14 +81,15 @@ WebSocket, одно JSON-сообщение на кадр, конверт `{v: 1
 ```
 docker run -d --name ct-<id> --restart on-failure:5 \
   --user agent --read-only --cap-drop ALL --security-opt no-new-privileges \
-  --memory 1g --cpus 1 --pids-limit 256 --tmpfs /tmp \
+  --memory 1g --cpus 1 --pids-limit 256 \
+  --tmpfs /tmp --tmpfs /home/agent:uid=1000 --tmpfs /run/ctrunner:uid=1000 \
   -v proj-<id>:/workspace -v <secrets>/<id>:/run/secrets:ro \
   -e PROJECT_ID -e GATEWAY_URL -e ANTHROPIC_BASE_URL -e STALL_AFTER_S=720 \
   coreteams-runner:<ver>
 ```
 
 Политика `on-failure:5`: ошибку конфигурации (exit 78) бесконечные рестарты не лечат.
-`HEALTHCHECK` читает `/tmp/health.json`, поэтому `docker ps` показывает зависание и без гейтвея.
+`HEALTHCHECK` читает `/run/ctrunner/health.json`, поэтому `docker ps` показывает зависание и без гейтвея. Файл лежит на отдельном tmpfs вне разрешённых сторожем корней: в `/tmp` агент мог бы подделать собственный статус.
 
 ## Жизненный цикл runner
 

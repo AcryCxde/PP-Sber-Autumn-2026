@@ -4,7 +4,7 @@
 
 **Цель:** контейнер проекта с Claude Code + CTF стартует с данными проекта, пишет журнал событий, отличает «работает / зависла / упала» и отклоняет с записью в журнал доступ за пределы проекта.
 
-**Архитектура:** пакет `ctrunner` в `runner/`. Чистое ядро (`redact`, `liveness`, `guard`, `turn`, `sdkevents`, `protocol`) и императивная оболочка (`main`, `inbox`, `healthcheck`, `sessions`). Runner держит один долгоживущий `ClaudeSDKClient` и одного читателя `receive_messages()`; каждое сообщение проходит через чистую машину состояний хода `turn.step`. Команды без гейтвея приходят через файловый inbox на томе (`sessions send`); на этапе 2 тот же тип `Command` приходит по WebSocket.
+**Архитектура:** пакет `ctrunner` в `runner/`. Чистое ядро (`redact`, `liveness`, `guard`, `turn`, `sdkevents`, `protocol`) и императивная оболочка (`main`, `inbox`, `healthcheck`, `sessions`). Runner держит один долгоживущий `ClaudeSDKClient` и одного читателя `receive_messages()`; каждое сообщение и каждая команда проходят через чистую машину состояний хода (`turn.on_message` / `turn.on_command`), которая возвращает новое состояние и эффекты. Команды без гейтвея приходят через файловый inbox на томе (`sessions send`); на этапе 2 тот же тип `Command` приходит по WebSocket.
 
 **Стек:** Python 3.12, uv 0.9, `claude-agent-sdk==0.2.158` (зафиксировано в песочнице), pytest + pytest-asyncio, ruff, mypy `--strict`, Docker 28.
 
@@ -21,6 +21,9 @@
 - Пока нет гейтвея, команды передаются через `/workspace/.runner/inbox/` (`sessions send` → `docker exec`).
 - Данные проекта монтируются только на чтение в `/seed`; при первом старте runner копирует их в `/workspace/project`.
 - `HOME` находится на tmpfs (`--read-only` rootfs), git-идентичность задаётся через `GIT_*` env.
+- Файл живости лежит в `/run/ctrunner/health.json` — на отдельном tmpfs вне корней сторожа (`HEALTH_FILE` в `config.py`). В `/tmp` агент мог бы подделать свой статус.
+
+**Ревизия 2026-09-25 (после выполнения Task 0–2):** перенос файла живости из `/tmp` (затронуты Task 6, 10–13, 15 и дизайн); исправлены фикстуры Task 4 (symlink, кавычки), Task 5 (type-ignore), Task 10 (preflight), Task 12 (ожидаемая ошибка), Task 13 (формат `STALL_AFTER_S`), Task 14 (команда запуска); в Task 6 добавлена проверка минимальной длины токена, иначе `Redactor.of` падает уже после старта.
 
 ---
 
@@ -319,7 +322,9 @@ def ident(p: Path) -> Path:
 
 
 def symlink_escape(p: Path) -> Path:
-    return Path("/workspace/other") if p == PROJECT / "link" else p
+    # имитация realpath: project/link → /workspace/other, остальные пути без изменений
+    link = PROJECT / "link"
+    return Path("/workspace/other") / p.relative_to(link) if p.is_relative_to(link) else p
 
 
 @pytest.mark.parametrize(("tool", "tool_input"), [
@@ -349,8 +354,7 @@ def test_allows(tool: str, tool_input: dict[str, object]) -> None:
     ("Bash", {"command": "cp x --target=/workspace/claude"}, "/workspace/claude"),
 ])
 def test_denies(tool: str, tool_input: dict[str, object], path: str) -> None:
-    resolve = symlink_escape if "link" in str(tool_input) else ident
-    verdict = check(tool, tool_input, PROJECT, POLICY, resolve)
+    verdict = check(tool, tool_input, PROJECT, POLICY, symlink_escape)
     assert isinstance(verdict, Deny)
     assert verdict.path == path
 
@@ -389,7 +393,7 @@ def check(tool: str, tool_input: Mapping[str, object], cwd: Path,
 - `normalize(raw, cwd)` = `Path(os.path.normpath(cwd / Path(raw).expanduser()))`, затем `resolve(...)`. В проде `resolve = lambda p: Path(os.path.realpath(p))` — symlink-и раскрываются.
 - Путь внутри корня: `p == root or p.is_relative_to(root)`.
 - Файловый инструмент: проверяется поле из `PATH_FIELDS`, если это `str`. Для `Glob` дополнительно `pattern`, если он абсолютный: берутся компоненты до первого, содержащего `GLOB_CHARS`.
-- `Bash`: `shlex.split(command)`, при `ValueError` — `command.split()`. У каждого токена отрезаются ведущие `<>|&;()`, берётся часть после последнего `=`. Кандидат — токен, начинающийся с `/` или `~` либо содержащий `..`. Разрешён, если внутри `roots + bash_system`.
+- `Bash`: `shlex.split(command)`, при `ValueError` — `command.split()`. У каждого токена отрезаются ведущие `<>|&;()'"` (кавычки остаются в токенах после `command.split()`), берётся часть после последнего `=`. Кандидат — токен, начинающийся с `/` или `~` либо содержащий `..`. Разрешён, если внутри `roots + bash_system`.
 - Остальные инструменты → `Allow()`.
 - `Deny.reason` = `"доступ за пределами проекта запрещён: <path>"`.
 
@@ -454,8 +458,9 @@ def test_torn_last_line_is_truncated(tmp_path: Path) -> None:
 def test_atomic_write_keeps_old_file_on_failure(tmp_path: Path) -> None:
     p = tmp_path / "h.json"
     write_json_atomic(p, {"v": 1})
+    bad: dict[str, object] = {"v": object()}
     with pytest.raises(TypeError):
-        write_json_atomic(p, {"v": object()})  # type: ignore[dict-item]
+        write_json_atomic(p, bad)  # type: ignore[arg-type]
     assert json.loads(p.read_text()) == {"v": 1}
     assert list(tmp_path.iterdir()) == [p]
 ```
@@ -547,6 +552,12 @@ def test_invalid_env(secrets: Path, key: str, value: str) -> None:
         load_config({**ENV, key: value}, secrets)
 
 
+def test_short_token_is_config_error(tmp_path: Path) -> None:
+    (tmp_path / "anthropic_token").write_text("short\n")
+    with pytest.raises(ConfigError, match="anthropic_token"):
+        load_config(ENV, tmp_path)
+
+
 def test_missing_model_env(secrets: Path) -> None:
     env = {k: v for k, v in ENV.items() if k != "ANTHROPIC_DEFAULT_HAIKU_MODEL"}
     with pytest.raises(ConfigError, match="ANTHROPIC_DEFAULT_HAIKU_MODEL"):
@@ -561,6 +572,7 @@ def test_missing_model_env(secrets: Path) -> None:
 PROJECT_ID_RE: Final = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 MODEL_ENV: Final = ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
                     "ANTHROPIC_DEFAULT_HAIKU_MODEL")
+HEALTH_FILE: Final = Path("/run/ctrunner/health.json")  # вне корней сторожа, см. дизайн
 
 class ConfigError(Exception): ...
 
@@ -585,7 +597,7 @@ class RunnerConfig:
 def load_config(env: Mapping[str, str], secrets_dir: Path) -> RunnerConfig
 ```
 
-`PROJECT_ID` проверяется через `fullmatch`. URL — схема `http` или `https`. `STALL_AFTER_S` — `float > 0`, по умолчанию 720. `WORKSPACE`, по умолчанию `/workspace`. Токен: `(secrets_dir / "anthropic_token").read_text().strip()`; если его нет или он пустой — `ConfigError("secret anthropic_token missing")`. Текст ошибки называет ключ и никогда не содержит значения.
+`PROJECT_ID` проверяется через `fullmatch`. URL — схема `http` или `https`. `STALL_AFTER_S` — `float > 0`, по умолчанию 720. `WORKSPACE`, по умолчанию `/workspace`. Токен: `(secrets_dir / "anthropic_token").read_text().strip()`; если его нет или он пустой — `ConfigError("secret anthropic_token missing")`; если он короче `redact.MIN_SECRET_LEN` — `ConfigError("secret anthropic_token too short")` (иначе `Redactor.of` упадёт уже после старта). Текст ошибки называет ключ и никогда не содержит значения.
 
 **Step 4: GREEN** — PASS
 **Step 5: Gates** — ruff + mypy без ошибок
@@ -878,12 +890,41 @@ def test_duplicate_id_ignored(tmp_path: Path) -> None:
 from pathlib import Path
 
 from ctrunner.main import EX_CONFIG, preflight
+from ctrunner.probe import ProbeResult
+
+ENV = {
+    "PROJECT_ID": "demo-a",
+    "ANTHROPIC_BASE_URL": "http://proxy:8317",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-5.6-sol",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-5.6-terra",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-5.6-luna",
+}
 
 
-def test_missing_secret_exits_78_before_anything(tmp_path: Path) -> None:
-    code = preflight({"PROJECT_ID": "demo-a"}, secrets_dir=tmp_path, probe_fn=lambda *a, **k: None)
-    assert code == EX_CONFIG
-    assert not (tmp_path / "events.jsonl").exists()
+def probe_must_not_run(base_url: str, token: str, model: str, *, timeout_s: float) -> ProbeResult:
+    raise AssertionError("без секрета до сети дело не доходит")
+
+
+def rejected(base_url: str, token: str, model: str, *, timeout_s: float) -> ProbeResult:
+    return ProbeResult.REJECTED
+
+
+def unreachable(base_url: str, token: str, model: str, *, timeout_s: float) -> ProbeResult:
+    return ProbeResult.UNREACHABLE
+
+
+def test_missing_secret_exits_78_before_probe(tmp_path: Path) -> None:
+    assert preflight(ENV, secrets_dir=tmp_path, probe_fn=probe_must_not_run) == EX_CONFIG
+
+
+def test_rejected_key_exits_78(tmp_path: Path) -> None:
+    (tmp_path / "anthropic_token").write_text("sk-test-0123456789")
+    assert preflight(ENV, secrets_dir=tmp_path, probe_fn=rejected) == EX_CONFIG
+
+
+def test_unreachable_proxy_exits_1(tmp_path: Path) -> None:
+    (tmp_path / "anthropic_token").write_text("sk-test-0123456789")
+    assert preflight(ENV, secrets_dir=tmp_path, probe_fn=unreachable) == 1
 ```
 
 **Step 2: RED** — FAIL (нет модулей)
@@ -902,7 +943,10 @@ def test_missing_secret_exits_78_before_anything(tmp_path: Path) -> None:
 ```python
 EX_CONFIG: Final = 78
 
-def preflight(env, *, secrets_dir, probe_fn) -> RunnerConfig | int
+class ProbeFn(Protocol):
+    def __call__(self, base_url: str, token: str, model: str, *, timeout_s: float) -> ProbeResult: ...
+
+def preflight(env: Mapping[str, str], *, secrets_dir: Path, probe_fn: ProbeFn) -> RunnerConfig | int
     # ConfigError → stderr: только имя ключа → EX_CONFIG
     # probe REJECTED → EX_CONFIG; UNREACHABLE → 1 (Docker перезапустит)
 
@@ -917,8 +961,8 @@ def cli() -> None:  # sys.exit(...)
 4. Три задачи в `asyncio.TaskGroup`:
    - **reader**: `async for msg in client.receive_messages()` → `progress = time.monotonic()`; если `normalize(msg)` не `None` — `log.append(SDK, turn_id, ...)`; `state, fx = on_message(state, msg)`; применить эффекты.
    - **commands**: раз в 1 с `inbox.take()`. `MessageCmd` → `on_command` → `SendPrompt` → `turn_started` + `await client.query(text)`. `ForkAnswerCmd` → разрешить `asyncio.Future` из `forks[fork_id]`. `StopCmd` → отменить группу, выход 0.
-   - **heartbeat**: раз в 10 с `write_health(/tmp/health.json, state.phase, assess(...), ...)`.
-5. `pre_tool_use`: `guard.check(...)` с `Policy(roots=(project_dir, Path("/tmp")), bash_system=(/usr, /bin, /lib, /dev/null))` и `resolve=realpath`. На `Deny` — `log.append(ACCESS_DENIED, turn_id, {tool, path, agent_id})` и возврат `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}`.
+   - **heartbeat**: раз в 10 с `write_health(HEALTH_FILE, state.phase, assess(...), ...)` (`HEALTH_FILE` из `config.py`, то есть `/run/ctrunner/health.json`).
+5. `pre_tool_use`: `guard.check(...)` с `Policy(roots=(project_dir, Path("/tmp")), bash_system=(/usr, /bin, /lib, /dev/null))`. `/run/ctrunner` в корни не входит: агент не должен переписать свой статус живости. и `resolve=realpath`. На `Deny` — `log.append(ACCESS_DENIED, turn_id, {tool, path, agent_id})` и возврат `{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}`.
 6. `can_use_tool`: не `AskUserQuestion` → `PermissionResultAllow()`. Иначе `fork_id = uuid4().hex`, `on_fork_open`, `fork_question{fork_id, questions}`, `await future`, `fork_answered`, `on_fork_closed`, `PermissionResultAllow(updated_input={**input, "answers": answers})` (как в `fork.py:63-76`).
 7. `TurnDone` → `turn_completed`, затем `next_queued`. `TurnFailedFx` → `turn_failed{reason}`.
 8. Исключение SDK или reader завершился → `write_health(phase=FAILED, CRASHED)`, `log.append(TURN_FAILED, …, {"reason": "sdk_crashed"})` (best-effort), выход 1 (Docker перезапустит). `OSError(ENOSPC)` при записи журнала → stderr `disk_full`, `health=crashed`, выход 1.
@@ -969,7 +1013,7 @@ def test_missing_or_broken_file(tmp_path: Path) -> None:
 ```
 
 **Step 2: RED** — FAIL
-**Step 3: Реализация** — `verdict(path, *, now) -> int`: 0, только если JSON разобран, `health == "ok"` и `now - written_at <= 30`. `cli()` — `sys.exit(verdict(Path("/tmp/health.json"), now=time.time()))` и печать `health` в stdout (видно в `docker inspect`).
+**Step 3: Реализация** — `verdict(path, *, now) -> int`: 0, только если JSON разобран, `health == "ok"` и `now - written_at <= 30`. `cli()` — `sys.exit(verdict(HEALTH_FILE, now=time.time()))` (`HEALTH_FILE` из `config.py`) и печать `health` в stdout (видно в `docker inspect`).
 **Step 4: GREEN** — PASS
 **Step 5: Gates** — ruff + mypy без ошибок
 
@@ -999,7 +1043,7 @@ RUN git clone -q "$CTF_REPO" /tmp/ctf && git -C /tmp/ctf checkout -q "$CTF_COMMI
 COPY pyproject.toml README.md* /src/
 COPY src /src/src
 RUN pip install --no-cache-dir /src && rm -rf /src
-RUN useradd -m -u 1000 agent && mkdir -p /workspace && chown agent /workspace
+RUN useradd -m -u 1000 agent && mkdir -p /workspace /run/ctrunner && chown agent /workspace /run/ctrunner
 USER agent
 ENV HOME=/home/agent WORKSPACE=/workspace \
     GIT_AUTHOR_NAME=agent GIT_AUTHOR_EMAIL=agent@local \
@@ -1015,8 +1059,17 @@ ENTRYPOINT ["ctrunner"]
 Run: `docker build -t coreteams-runner:dev runner/ && docker run --rm --entrypoint ctrunner-healthcheck coreteams-runner:dev; echo "exit=$?"`
 Expected: сборка проходит; `exit=1` (health.json ещё нет)
 
-Run: `docker run --rm --read-only --tmpfs /tmp --tmpfs /home/agent:uid=1000 coreteams-runner:dev; echo "exit=$?"`
-Expected: `exit=78`, в stderr `secret anthropic_token missing`
+Run:
+```bash
+docker run --rm --read-only --tmpfs /tmp --tmpfs /home/agent:uid=1000 --tmpfs /run/ctrunner:uid=1000 \
+  -e PROJECT_ID=demo-a -e ANTHROPIC_BASE_URL=http://proxy:8317 \
+  -e ANTHROPIC_DEFAULT_OPUS_MODEL=a -e ANTHROPIC_DEFAULT_SONNET_MODEL=b -e ANTHROPIC_DEFAULT_HAIKU_MODEL=c \
+  coreteams-runner:dev; echo "exit=$?"
+```
+Expected: `exit=78`, в stderr `secret anthropic_token missing` (env полный, поэтому ошибка именно про секрет)
+
+Run: `docker run --rm coreteams-runner:dev; echo "exit=$?"`
+Expected: `exit=78`, в stderr имя первого отсутствующего ключа env, значений нет
 
 **Step 4: Размер**
 
@@ -1051,6 +1104,8 @@ def test_run_args_hardening() -> None:
     assert "/s/demo-a:/run/secrets:ro" in args
     assert "/d/demo-a:/seed:ro" in args
     assert "STALL_AFTER_S=60" in args
+    for tmpfs in ["/tmp", "/home/agent:uid=1000", "/run/ctrunner:uid=1000"]:
+        assert tmpfs in args
     assert not any("TOKEN" in a for a in args)  # секреты только файлом
 ```
 
@@ -1064,6 +1119,8 @@ class RunSpec:
     env: Mapping[str, str]; stall_after_s: float
 
 def run_args(spec: RunSpec) -> list[str]   # полный argv для docker run -d …
+# env кладётся как "-e", f"{k}={v}"; STALL_AFTER_S — f"STALL_AFTER_S={spec.stall_after_s:g}"
+# tmpfs: "--tmpfs", "/tmp", "--tmpfs", "/home/agent:uid=1000", "--tmpfs", "/run/ctrunner:uid=1000"
 def cli() -> None
 ```
 
@@ -1072,7 +1129,7 @@ def cli() -> None
 - `start <id> [--data DIR] [--stall-after S]` — `docker volume create proj-<id>` + `docker run` (`run_args`). Env берётся из текущего окружения: `ANTHROPIC_BASE_URL` (адрес `localhost` заменяется на `host.docker.internal`) и `ANTHROPIC_DEFAULT_*_MODEL`.
 - `send <id> <text>` — `docker exec ct-<id> ctrunner-inbox message <text>`.
 - `answer <id> <fork_id> <label>` — то же с `fork-answer`.
-- `status <id>` — `docker inspect` (State.Status, Health.Status, RestartCount) + `docker exec cat /tmp/health.json`.
+- `status <id>` — `docker inspect` (State.Status, Health.Status, RestartCount) + `docker exec ct-<id> cat /run/ctrunner/health.json`.
 - `logs <id> [-f]` — `docker exec ct-<id> tail [-f] -n +1 /workspace/.runner/events.jsonl`.
 - `restart <id>`, `stop <id>`, `rm <id> [--volume]`.
 
@@ -1096,7 +1153,7 @@ def cli() -> None
 
 **Verify:**
 
-Run: `uv run pytest evals -m e2e -q -p no:cacheprovider --rootdir . -o testpaths=evals`
+Run: `uv run pytest evals -m e2e -q`
 Expected: `3 passed` (стоимость — несколько десятков тысяч токенов)
 
 Run: `uv run pytest -q` (без e2e)
@@ -1111,7 +1168,7 @@ Expected: e2e не собираются, unit-тесты PASS
 
 Раздел 3 `spec.md` — без пометок `заполнить`:
 - **Образ:** база, версии SDK и CTF, фактический размер (из Task 12), ресурсы из замеров песочницы (RAM 181–279 MiB, CPU ~3–4 %), лимиты `--memory 1g --cpus 1 --pids-limit 256`.
-- **Монтирование:** таблица `/workspace` (rw, том `proj-<id>`), `/seed` (ro), `/run/secrets` (ro), `/tmp` и `/home/agent` (tmpfs), rootfs read-only.
+- **Монтирование:** таблица `/workspace` (rw, том `proj-<id>`), `/seed` (ro), `/run/secrets` (ro), `/tmp`, `/home/agent` и `/run/ctrunner` (tmpfs; последний вне корней сторожа — там файл живости), rootfs read-only.
 - **Секреты:** файлы, fail-fast с exit 78, redact, отзыв ротацией в cliproxy + `sessions restart`.
 - **Регистрация в гейтвее:** ссылка на `protocol.md`; на этапе 1 — локальный журнал и inbox.
 - **Правило живости:** таблица `phase × условие → health`, T = 720 с и обоснование (Bash max 10 мин + запас), 30 с без heartbeat → crashed, HEALTHCHECK.
