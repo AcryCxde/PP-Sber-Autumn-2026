@@ -27,6 +27,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import SyncHookJSONOutput
 
+from ctrunner.diag import diag
 from ctrunner.eventlog import Event
 from ctrunner.guard import Allow, Deny, Policy, Verdict, check
 from ctrunner.health import write_health
@@ -141,17 +142,16 @@ class Session:
         reason = "sdk_crashed"
         if isinstance(error, OSError) and error.errno == errno.ENOSPC:
             reason = "disk_full"
-        if error is not None:
-            detail = "".join(traceback.format_exception(error))
-            print(self._redactor.text(f"ctrunner: {reason}\n{detail}"), file=sys.stderr)
+        detail = "".join(traceback.format_exception(error)) if error is not None else None
+        diag("runner_crashed", reason=reason, traceback=self._redactor.apply(detail))
         try:
             write_health(self._health_file, Phase.FAILED, Health.CRASHED, self._progress_wall)
         except OSError as health_error:
-            print(f"ctrunner: health not written: {health_error.strerror}", file=sys.stderr)
+            diag("health_write_failed", error=health_error.strerror)
         try:
             self._log.append(EventKind.TURN_FAILED, self._turn_id(), {"reason": reason})
         except OSError as log_error:
-            print(f"ctrunner: turn_failed not logged: {log_error.strerror}", file=sys.stderr)
+            diag("event_write_failed", kind=EventKind.TURN_FAILED.value, error=log_error.strerror)
         return Exit.CRASHED
 
     def sdk_stderr(self, line: str) -> None:
@@ -225,7 +225,7 @@ class Session:
     def _answer(self, cmd: ForkAnswerCmd) -> None:
         fork = self._forks.get(cmd.fork_id)
         if fork is None or fork.done():
-            print(f"ctrunner: no open fork {cmd.fork_id}, answer {cmd.id} dropped", file=sys.stderr)
+            diag("fork_answer_dropped", fork_id=cmd.fork_id, command_id=cmd.id)
             return
         fork.set_result(cmd.answers)
 

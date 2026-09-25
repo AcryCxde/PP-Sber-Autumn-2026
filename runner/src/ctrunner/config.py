@@ -38,6 +38,21 @@ class RunnerConfig:
     stall_after_s: float
     workspace: Path
 
+    def __post_init__(self) -> None:
+        if not PROJECT_ID_RE.fullmatch(self.project_id):
+            raise ConfigError("env PROJECT_ID must match [a-z0-9][a-z0-9-]{0,39}")
+        url = urlsplit(self.anthropic_base_url)
+        if url.scheme not in ("http", "https") or not url.hostname:
+            raise ConfigError("env ANTHROPIC_BASE_URL must be an http(s) URL")
+        if len(self.anthropic_token) < MIN_SECRET_LEN:
+            raise ConfigError(f"secret {TOKEN_FILE} too short")
+        if any(c.isspace() for c in self.anthropic_token):
+            raise ConfigError(f"secret {TOKEN_FILE} must be a single token without whitespace")
+        if not math.isfinite(self.stall_after_s) or self.stall_after_s <= 0:
+            raise ConfigError("env STALL_AFTER_S must be a positive finite number")
+        if not self.workspace.is_absolute():
+            raise ConfigError("env WORKSPACE must be an absolute path")
+
     @property
     def project_dir(self) -> Path:
         return self.workspace / "project"
@@ -64,13 +79,14 @@ class RunnerConfig:
 
 
 def load_config(env: Mapping[str, str], secrets_dir: Path) -> RunnerConfig:
+    """Граница: достать и привести значения; инварианты проверяет сам RunnerConfig."""
     return RunnerConfig(
-        project_id=_project_id(env),
-        anthropic_base_url=_base_url(env),
+        project_id=_required(env, "PROJECT_ID"),
+        anthropic_base_url=_required(env, "ANTHROPIC_BASE_URL").rstrip("/"),
         anthropic_token=_token(secrets_dir),
         models=_models(env),
         stall_after_s=_stall_after_s(env),
-        workspace=_workspace(env),
+        workspace=Path(env.get("WORKSPACE") or DEFAULT_WORKSPACE),
     )
 
 
@@ -79,21 +95,6 @@ def _required(env: Mapping[str, str], key: str) -> str:
     if not value:
         raise ConfigError(f"env {key} missing")
     return value
-
-
-def _project_id(env: Mapping[str, str]) -> str:
-    value = _required(env, "PROJECT_ID")
-    if not PROJECT_ID_RE.fullmatch(value):
-        raise ConfigError("env PROJECT_ID must match [a-z0-9][a-z0-9-]{0,39}")
-    return value
-
-
-def _base_url(env: Mapping[str, str]) -> str:
-    value = _required(env, "ANTHROPIC_BASE_URL")
-    parts = urlsplit(value)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
-        raise ConfigError("env ANTHROPIC_BASE_URL must be an http(s) URL")
-    return value.rstrip("/")
 
 
 def _models(env: Mapping[str, str]) -> dict[str, str]:
@@ -107,19 +108,9 @@ def _stall_after_s(env: Mapping[str, str]) -> float:
     if not raw:
         return DEFAULT_STALL_AFTER_S
     try:
-        value = float(raw)
+        return float(raw)
     except ValueError as error:
         raise ConfigError("env STALL_AFTER_S must be a number") from error
-    if not math.isfinite(value) or value <= 0:
-        raise ConfigError("env STALL_AFTER_S must be a positive finite number")
-    return value
-
-
-def _workspace(env: Mapping[str, str]) -> Path:
-    value = Path(env.get("WORKSPACE") or DEFAULT_WORKSPACE)
-    if not value.is_absolute():
-        raise ConfigError("env WORKSPACE must be an absolute path")
-    return value
 
 
 def _token(secrets_dir: Path) -> str:
@@ -131,8 +122,4 @@ def _token(secrets_dir: Path) -> str:
         raise ConfigError(f"secret {TOKEN_FILE} unreadable") from error
     if not value:
         raise ConfigError(f"secret {TOKEN_FILE} missing")
-    if len(value) < MIN_SECRET_LEN:
-        raise ConfigError(f"secret {TOKEN_FILE} too short")
-    if any(c.isspace() for c in value):
-        raise ConfigError(f"secret {TOKEN_FILE} must be a single token without whitespace")
     return value

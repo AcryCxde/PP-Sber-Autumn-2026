@@ -14,7 +14,8 @@ from typing import Final, Protocol, assert_never
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
 from ctrunner import __version__
-from ctrunner.config import HEALTH_FILE, ConfigError, RunnerConfig, load_config
+from ctrunner.config import HEALTH_FILE, TOKEN_FILE, ConfigError, RunnerConfig, load_config
+from ctrunner.diag import diag
 from ctrunner.eventlog import EventLog
 from ctrunner.guard import Policy
 from ctrunner.inbox import Inbox
@@ -26,6 +27,7 @@ from ctrunner.session import Session
 EX_CONFIG: Final = 78  # sysexits: ошибка конфигурации, рестарт не поможет
 EX_UNAVAILABLE: Final = 1  # сеть или SDK: Docker перезапустит
 PROBE_TIMEOUT_S: Final = 30.0
+GIT_TIMEOUT_S: Final = 600.0  # git add большого проекта при первом старте
 SECRETS_DIR: Final = Path("/run/secrets")
 SEED_DIR: Final = Path("/seed")
 CTF_DIR: Final = Path("/opt/ctf/.claude")
@@ -46,7 +48,7 @@ def preflight(
     try:
         cfg = load_config(env, secrets_dir)
     except ConfigError as error:
-        print(f"ctrunner: {error}", file=sys.stderr)
+        diag("config_error", detail=str(error))
         return EX_CONFIG
     verdict = probe_fn(
         cfg.anthropic_base_url, cfg.anthropic_token, cfg.probe_model, timeout_s=PROBE_TIMEOUT_S
@@ -55,10 +57,10 @@ def preflight(
         case ProbeResult.OK:
             return cfg
         case ProbeResult.REJECTED:
-            print("ctrunner: secret anthropic_token rejected by proxy", file=sys.stderr)
+            diag("secret_rejected", file=TOKEN_FILE)
             return EX_CONFIG
         case ProbeResult.UNREACHABLE:
-            print("ctrunner: proxy unreachable", file=sys.stderr)
+            diag("proxy_unreachable", base_url=cfg.anthropic_base_url)
             return EX_UNAVAILABLE
         case _:
             assert_never(verdict)
@@ -94,6 +96,7 @@ def _git(project: Path, *args: str, check: bool = True) -> subprocess.CompletedP
         ["git", "-C", str(project), *args],  # noqa: S607 — git из PATH образа
         check=check,
         capture_output=True,
+        timeout=GIT_TIMEOUT_S,
     )
 
 

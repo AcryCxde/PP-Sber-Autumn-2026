@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -78,3 +79,19 @@ def test_error_never_contains_value(secrets: Path) -> None:
     with pytest.raises(ConfigError) as info:
         load_config({**ENV, "ANTHROPIC_BASE_URL": "ftp://user:hunter2@x"}, secrets)
     assert "hunter2" not in str(info.value)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("project_id", "../x"),
+        ("anthropic_base_url", "ftp://x"),
+        ("anthropic_token", "short"),
+        ("stall_after_s", float("inf")),
+        ("workspace", Path("rel")),
+    ],
+)
+def test_direct_construction_keeps_invariants(secrets: Path, field: str, value: object) -> None:
+    good = load_config(ENV, secrets)
+    with pytest.raises(ConfigError):
+        replace(good, **{field: value})  # type: ignore[arg-type]
