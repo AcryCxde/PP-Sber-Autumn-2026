@@ -8,6 +8,7 @@
 """
 
 import os
+import re
 import shlex
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ PATH_FIELDS: Final[Mapping[str, str]] = {
     "LS": "path",
 }
 GLOB_CHARS: Final = frozenset("*?[{")
+BRACE_SEPARATORS: Final = re.compile(r"[{},]")
 SHELL_PUNCT: Final = "<>|&;()'\""
 
 
@@ -90,13 +92,23 @@ def _tool_paths(tool: str, tool_input: Mapping[str, object]) -> Iterator[str]:
     if isinstance(value, str):
         yield value
     pattern = tool_input.get("pattern")
-    if tool == "Glob" and isinstance(pattern, str) and pattern.startswith("/"):
-        yield _glob_base(pattern)
+    if tool == "Glob" and isinstance(pattern, str):
+        base = value if isinstance(value, str) else ""
+        yield str(Path(base) / _glob_base(pattern))
 
 
 def _glob_base(pattern: str) -> str:
-    static = takewhile(lambda part: not GLOB_CHARS.intersection(part), Path(pattern).parts)
-    return str(Path(*static))
+    """Статический префикс шаблона, поднятый на каждый `..` из динамического хвоста.
+
+    Куда `..` после `**` или внутри `{a,b}` приведёт, заранее не вычислить, поэтому каждый
+    считается подъёмом на уровень вверх: оценка грубее, но выхода за префикс не пропустит.
+    """
+    parts = Path(pattern).parts
+    static = tuple(takewhile(lambda part: not GLOB_CHARS.intersection(part), parts))
+    ups = sum(
+        piece == ".." for part in parts[len(static) :] for piece in BRACE_SEPARATORS.split(part)
+    )
+    return str(Path(*static, *[".."] * ups))
 
 
 def _bash_paths(command: str) -> Iterator[str]:
