@@ -16,6 +16,7 @@
       <button class="nav-link" data-page="home">Главная</button>
       <button class="nav-link" data-page="catalog">Каталог решений</button>
       <button class="nav-link" data-page="about">Как это работает</button>
+      <button class="nav-link" data-page="profile">Мои проекты</button>
     </nav>
     <div class="header-actions">
       <button class="ghost" id="materials-toggle">Материалы <span id="material-count">0</span></button>
@@ -160,8 +161,12 @@
         <div class="avatar">F</div>
         <div><span>ФАСИЛИТАТОР</span><h2 id="question-title">У вас уже есть идея?</h2><p id="question-help">Ответ поможет выбрать первый формат результата.</p></div>
       </div>
+      <p class="multi-hint">Можно выбрать несколько вариантов или написать свой ответ.</p>
       <div class="choice-list" id="answer-options"></div>
-      <button class="ghost hidden" id="question-next">Следующий вопрос</button>
+      <label class="custom-answer">Свой вариант
+        <input id="answer-custom" placeholder="Напишите то, что важно учесть">
+      </label>
+      <button class="primary" id="question-next" disabled>Следующий вопрос</button>
     </section>
 
     <section class="page flow hidden" id="summary">
@@ -221,7 +226,8 @@
     <section class="page flow hidden" id="result">
       <p class="eyebrow">Общий результат готов</p><h2>Команда собрала и проверила артефакт</h2>
       <div class="artifact result-artifact"><span>АРТЕФАКТ 02 · ВЕРСИЯ 1</span><h3 id="result-title"></h3><p id="result-copy"></p></div>
-      <div class="action-row"><button class="ghost" id="request-revision">Попросить доработку</button><button class="primary" id="accept-result">Принять результат</button></div>
+      <div class="action-row"><button class="ghost" id="download-artifact">Скачать артефакт</button><button class="ghost" id="request-revision">Попросить доработку</button><button class="primary" id="finish-project">Завершить разработку и сохранить в профиле</button></div>
+      <p class="context-state" id="save-result-state">Результат ещё не сохранён в профиле.</p>
     </section>
 
     <section class="page flow hidden" id="revision">
@@ -238,7 +244,18 @@
         <button id="scale"><span>РАЗВИТИЕ</span><b>Масштабировать проект</b><p>Команда уточнит цели, ресурсы и границы роста.</p></button>
         <button id="invest"><span>ПУБЛИКАЦИЯ</span><b>Привлечь инвестора</b><p>Подготовим публичный профиль только после вашего согласия.</p></button>
       </div>
+      <button class="ghost" id="open-profile">Открыть сохранённый проект</button>
       <p class="note" id="next-note">Эти действия пока показывают будущий сценарий и ничего не публикуют.</p>
+    </section>
+
+    <section class="page hidden" id="profile">
+      <div class="profile-head">
+        <div><p class="eyebrow">Личное пространство</p><h2>Мои проекты</h2><p class="lead">Продолжайте работу с сохранённого места или создайте новый проект.</p></div>
+        <div class="project-limit"><span>Лимит проектов</span><strong id="project-limit-count">0 из 3</strong><i><b id="project-limit-bar"></b></i><small id="project-limit-note">Можно создать ещё 3 проекта</small></div>
+      </div>
+      <div class="profile-actions"><button class="primary" id="new-project">Создать проект</button><p class="form-error" id="project-limit-error"></p></div>
+      <div class="profile-projects" id="profile-projects"></div>
+      <p class="note">В демо профиль и проекты сохраняются только в этом браузере.</p>
     </section>
   </main>
   <script src="/app.js?v=20260928-7"></script>

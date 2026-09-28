@@ -10,14 +10,18 @@ const state = {
   level: "",
   question: 0,
   answers: [],
+  customAnswers: [],
   materials: JSON.parse(localStorage.getItem("ct-materials") || "[]"),
   context: localStorage.getItem("ct-context") || "",
   projectType: localStorage.getItem("ct-project-type") || "curriculum",
   projectName: localStorage.getItem("ct-project-name") || "Пересмотр учебной программы",
   projectGoal: localStorage.getItem("ct-project-goal") || "Найти проблемы в программе курса и подготовить обновлённую версию с понятными рекомендациями.",
+  projects: JSON.parse(localStorage.getItem("ct-projects") || "[]"),
+  currentProjectId: localStorage.getItem("ct-current-project") || "",
   revision: false,
   credits: Number(localStorage.getItem("ct-credits") || 0)
 };
+const PROJECT_LIMIT = 3;
 
 const genericQuestions = [
   {
@@ -101,12 +105,82 @@ const teams = {
   ]
 };
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]);
+}
+
+function answerValues(index) {
+  const selected = Array.isArray(state.answers[index]) ? state.answers[index] : state.answers[index] ? [state.answers[index]] : [];
+  const custom = (state.customAnswers[index] || "").trim();
+  return custom ? [...selected, custom] : selected;
+}
+
+function answerText(index, fallback = "Не указано") {
+  const values = answerValues(index);
+  return values.length ? values.join("; ") : fallback;
+}
+
+function persistProjects() {
+  localStorage.setItem("ct-projects", JSON.stringify(state.projects));
+  localStorage.setItem("ct-current-project", state.currentProjectId);
+}
+
+function upsertProject(status) {
+  if (!state.currentProjectId) state.currentProjectId = `project-${Date.now()}`;
+  const record = {
+    id: state.currentProjectId,
+    name: state.projectName,
+    goal: state.projectGoal,
+    type: state.projectType,
+    status,
+    updatedAt: new Date().toISOString()
+  };
+  const index = state.projects.findIndex((project) => project.id === record.id);
+  if (index >= 0) state.projects[index] = record;
+  else state.projects.unshift(record);
+  persistProjects();
+  renderProfile();
+}
+
+function renderProfile() {
+  const used = state.projects.length;
+  const remaining = Math.max(0, PROJECT_LIMIT - used);
+  $("#project-limit-count").textContent = `${used} из ${PROJECT_LIMIT}`;
+  $("#project-limit-bar").style.width = `${Math.min(100, (used / PROJECT_LIMIT) * 100)}%`;
+  $("#project-limit-note").textContent = remaining ? `Можно создать ещё ${remaining}` : "Лимит достигнут";
+  $("#new-project").disabled = remaining === 0;
+  $("#project-limit-error").textContent = remaining ? "" : "Чтобы создать новый проект, завершите или удалите один из существующих.";
+  $("#profile-projects").innerHTML = used
+    ? state.projects.map((project) => `<article class="profile-project"><div><span class="eyebrow">${escapeHtml(project.type === "curriculum" ? "Учебная программа" : project.type === "book" ? "Книга" : "Проект")}</span><h3>${escapeHtml(project.name)}</h3><p>${escapeHtml(project.goal)}</p></div><div><span class="profile-status">${escapeHtml(project.status)}</span><button class="ghost" data-open-project="${escapeHtml(project.id)}">Открыть</button></div></article>`).join("")
+    : '<div class="profile-empty">Проектов пока нет. Создайте первый — его прогресс и результат появятся здесь.</div>';
+  document.querySelectorAll("[data-open-project]").forEach((button) => button.addEventListener("click", () => {
+    const project = state.projects.find((item) => item.id === button.dataset.openProject);
+    if (!project) return;
+    state.currentProjectId = project.id;
+    state.projectName = project.name;
+    state.projectGoal = project.goal;
+    state.projectType = project.type;
+    persistProjects();
+    $("#project-name").value = state.projectName;
+    $("#project-goal").value = state.projectGoal;
+    showPage(["Завершён", "Результат готов"].includes(project.status) ? "result" : "project-setup");
+  }));
+}
+
 function showPage(id, remember = true) {
   pages.forEach((page) => page.classList.add("hidden"));
   const page = document.getElementById(id);
   if (!page) return;
   page.classList.remove("hidden");
   state.page = id;
+  if (id === "profile") renderProfile();
+  if (id === "result") {
+    $("#result-title").textContent = state.projectName;
+    $("#result-copy").textContent = "Команда объединила анализ, согласованные решения и независимую проверку в один общий артефакт.";
+    $("#save-result-state").textContent = state.projects.find((project) => project.id === state.currentProjectId)?.status === "Завершён"
+      ? "Результат сохранён в профиле."
+      : "Результат ещё не сохранён в профиле.";
+  }
   if (remember && !["signup", "development"].includes(id)) localStorage.setItem("ct-page", id);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -132,28 +206,37 @@ function openDrawer(id) {
 
 function renderQuestion() {
   const current = activeQuestions()[state.question];
+  const selected = Array.isArray(state.answers[state.question]) ? state.answers[state.question] : [];
   $("#question-title").textContent = current.title;
   $("#question-help").textContent = current.help;
-  $("#answer-options").innerHTML = current.options.map((option) => `<button data-answer="${option}">${option}</button>`).join("");
-  $("#question-next").classList.add("hidden");
+  $("#answer-options").innerHTML = current.options.map((option) => `<button class="${selected.includes(option) ? "selected" : ""}" aria-pressed="${selected.includes(option)}" data-answer="${escapeHtml(option)}">${escapeHtml(option)}</button>`).join("");
+  $("#answer-custom").value = state.customAnswers[state.question] || "";
+  const updateNext = () => { $("#question-next").disabled = answerValues(state.question).length === 0; };
+  updateNext();
   document.querySelectorAll("[data-answer]").forEach((button) => {
     button.addEventListener("click", () => {
-      document.querySelectorAll("[data-answer]").forEach((item) => item.classList.remove("selected"));
-      button.classList.add("selected");
-      state.answers[state.question] = button.dataset.answer;
-      $("#question-next").classList.remove("hidden");
+      const values = Array.isArray(state.answers[state.question]) ? [...state.answers[state.question]] : [];
+      const index = values.indexOf(button.dataset.answer);
+      if (index >= 0) values.splice(index, 1); else values.push(button.dataset.answer);
+      state.answers[state.question] = values;
+      button.classList.toggle("selected", index < 0);
+      button.setAttribute("aria-pressed", String(index < 0));
+      updateNext();
     });
   });
+  $("#answer-custom").oninput = (event) => {
+    state.customAnswers[state.question] = event.target.value;
+    updateNext();
+  };
 }
 
 function fillSummary() {
-  const [first, second] = state.answers;
   $("#summary-result").textContent = state.projectGoal;
-  $("#summary-audience").textContent = first || "Команда предложит аудиторию";
+  $("#summary-audience").textContent = answerText(0, "Команда предложит аудиторию");
   $("#summary-outcome").textContent = state.projectType === "curriculum"
-    ? `${second || "Формат пересмотра уточняется"}; проверка: ${state.answers.at(-1) || "критерий уточняется"}`
-    : second || "Критерий уточнит фасилитатор";
-  const unknown = state.answers.filter((answer) => /не знаю|предполож/i.test(answer || "")).length;
+    ? `${answerText(1, "Формат пересмотра уточняется")}; проверка: ${answerText(activeQuestions().length - 1, "критерий уточняется")}`
+    : answerText(1, "Критерий уточнит фасилитатор");
+  const unknown = state.answers.flatMap((answer) => Array.isArray(answer) ? answer : [answer]).filter((answer) => /не знаю|предполож/i.test(answer || "")).length;
   $("#summary-assumption").textContent = unknown
     ? unknown === 1
       ? "Команда предложит 1 безопасное предположение для подтверждения"
@@ -163,15 +246,16 @@ function fillSummary() {
 }
 
 function fillLanding() {
-  const [audience, outcome] = state.answers;
+  const audience = answerText(0, "Аудитория уточняется");
+  const outcome = answerText(1, "Проверить ценность решения");
   const proposedTitle = state.projectType === "curriculum"
     ? "Курс, в котором цели ведут к результату"
     : state.projectType === "book"
       ? "Книга, готовая к редактуре и выпуску"
       : state.projectName;
   $("#landing-title").textContent = proposedTitle;
-  $("#landing-copy").textContent = `${state.projectGoal} Аудитория: ${audience || "уточняется"}. Первый фокус: ${(outcome || "проверить ценность решения").toLowerCase()}.`;
-  $("#landing-audience").textContent = audience || "Аудитория уточняется";
+  $("#landing-copy").textContent = `${state.projectGoal} Аудитория: ${audience}. Первый фокус: ${outcome.toLowerCase()}.`;
+  $("#landing-audience").textContent = audience;
 }
 
 function updateCredits(value) {
@@ -226,6 +310,7 @@ function runDevelopment(isRevision = false) {
     $("#facilitator-live-text").textContent = "Команда завершила работу. Общий результат сохранён.";
     updateCredits(isRevision ? Math.min(1000, state.credits) : 240);
     localStorage.setItem("ct-run", JSON.stringify({ status: "completed", revision: isRevision }));
+    upsertProject("Результат готов");
     setTimeout(() => {
       $("#result-title").textContent = isRevision ? "Обновлённая версия результата" : "Первая версия результата";
       $("#result-copy").textContent = isRevision
@@ -258,7 +343,7 @@ $("#save-context").addEventListener("click", () => {
 });
 $("#play-demo").addEventListener("click", () => showPage("about"));
 $("#begin").addEventListener("click", () => {
-  showPage("signup", false);
+  showPage(state.projects.length ? "profile" : "signup", false);
 });
 
 $("#signup-form").addEventListener("submit", (event) => {
@@ -290,6 +375,11 @@ document.querySelectorAll("#project-type button").forEach((button) => button.add
 }));
 $("#project-form").addEventListener("submit", (event) => {
   event.preventDefault();
+  if (!state.currentProjectId && state.projects.length >= PROJECT_LIMIT) {
+    showPage("profile");
+    $("#project-limit-error").textContent = "Достигнут лимит: одновременно можно хранить не больше 3 проектов.";
+    return;
+  }
   state.projectName = $("#project-name").value.trim();
   state.projectGoal = $("#project-goal").value.trim();
   state.context = $("#project-context").value.trim();
@@ -297,6 +387,7 @@ $("#project-form").addEventListener("submit", (event) => {
   localStorage.setItem("ct-project-name", state.projectName);
   localStorage.setItem("ct-project-goal", state.projectGoal);
   localStorage.setItem("ct-context", state.context);
+  upsertProject("Черновик");
   renderMaterials();
   showPage("level");
 });
@@ -350,7 +441,44 @@ document.querySelectorAll("#revision-type button").forEach((button) => button.ad
 }));
 $("#revision-text").addEventListener("input", updateRevisionButton);
 $("#revision-start").addEventListener("click", () => runDevelopment(true));
-$("#accept-result").addEventListener("click", () => showPage("next"));
+$("#download-artifact").addEventListener("click", () => {
+  const answers = activeQuestions().map((question, index) => `### ${question.title}\n\n${answerText(index)}`).join("\n\n");
+  const content = `# ${state.projectName}\n\n## Цель\n\n${state.projectGoal}\n\n## Контекст\n\n${state.context || "Контекст не добавлен."}\n\n## Ответы фасилитатору\n\n${answers}\n\n## Итог\n\nКоманда объединила анализ, согласованные решения и независимую проверку в один общий артефакт.\n`;
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([content], { type: "text/markdown;charset=utf-8" }));
+  link.download = `${state.projectName.replace(/[\\/:*?"<>|]/g, "-") || "артефакт"}.md`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+});
+$("#finish-project").addEventListener("click", () => {
+  upsertProject("Завершён");
+  $("#save-result-state").textContent = "Результат сохранён в профиле. Его можно открыть позже без повторной загрузки материалов.";
+  showPage("next");
+});
+$("#open-profile").addEventListener("click", () => showPage("profile"));
+$("#new-project").addEventListener("click", () => {
+  if (state.projects.length >= PROJECT_LIMIT) {
+    $("#project-limit-error").textContent = "Достигнут лимит: одновременно можно хранить не больше 3 проектов.";
+    return;
+  }
+  state.currentProjectId = "";
+  state.projectType = "curriculum";
+  state.projectName = "Пересмотр учебной программы";
+  state.projectGoal = "Найти проблемы в программе курса и подготовить обновлённую версию с понятными рекомендациями.";
+  state.context = "";
+  state.materials = [];
+  state.answers = [];
+  state.customAnswers = [];
+  localStorage.setItem("ct-context", "");
+  localStorage.setItem("ct-materials", "[]");
+  localStorage.setItem("ct-current-project", "");
+  $("#project-name").value = state.projectName;
+  $("#project-goal").value = state.projectGoal;
+  $("#project-context").value = "";
+  document.querySelectorAll("#project-type button").forEach((item) => item.classList.toggle("selected", item.dataset.type === "curriculum"));
+  renderMaterials();
+  showPage("project-setup");
+});
 $("#scale").addEventListener("click", () => {
   $("#next-note").textContent = "Фасилитатор подготовит отдельный диалог о целях, ресурсах и границах роста. В демо процесс не запускается.";
 });
@@ -378,6 +506,7 @@ $("#project-name").value = state.projectName;
 $("#project-goal").value = state.projectGoal;
 $("#project-context").value = state.context;
 renderMaterials();
+renderProfile();
 const savedPage = localStorage.getItem("ct-page");
 if (savedPage && document.getElementById(savedPage) && !["result", "next"].includes(savedPage)) showPage(savedPage, false);
 

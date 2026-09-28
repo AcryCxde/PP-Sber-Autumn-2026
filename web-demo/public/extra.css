@@ -42,4 +42,28 @@
 .artifact-row>span{color:var(--violet)}
 .artifact-row p{margin:4px 0 0;color:var(--muted)}
 .artifact-row i{font-style:normal;color:var(--green);font-size:12px}
+.multi-hint{margin:28px 0 4px;color:var(--green);font-size:14px}
+#answer-options{margin:8px 0 22px}
+#answer-options button{position:relative;padding-left:34px}
+#answer-options button::before{content:"";position:absolute;left:2px;top:50%;width:17px;height:17px;border:1px solid #ffffff55;border-radius:5px;transform:translateY(-50%)}
+#answer-options button.selected::before{background:var(--violet);border-color:var(--violet);box-shadow:inset 0 0 0 4px #0b0b0d}
+.custom-answer{max-width:720px;margin:0 0 24px}
+.custom-answer input{width:100%;display:block;margin-top:8px;padding:14px 0;border:0;border-bottom:1px solid #ffffff48;background:transparent;color:#fff;font:inherit;outline:none}
+.custom-answer input:focus{border-color:var(--violet)}
+.profile-head{display:grid;grid-template-columns:1fr 280px;gap:50px;align-items:end}
+.project-limit{padding:22px;border:1px solid var(--line);border-radius:20px;background:#0c0c0e;display:grid;gap:9px}
+.project-limit span,.project-limit small{color:var(--muted);font-size:13px}
+.project-limit strong{font-size:26px;font-weight:400}
+.project-limit i{display:block;height:6px;border-radius:99px;background:#27272c;overflow:hidden}
+.project-limit i b{display:block;height:100%;width:0;background:var(--violet);transition:width .3s}
+.profile-actions{display:flex;align-items:center;gap:18px;margin:38px 0 18px}
+.profile-actions p{margin:0}
+.profile-projects{display:grid;gap:12px;margin:22px 0 30px}
+.profile-project{display:grid;grid-template-columns:1fr auto;gap:24px;padding:24px;border:1px solid var(--line);border-radius:20px;background:#09090b}
+.profile-project h3{margin:6px 0 10px}
+.profile-project p{margin:0;color:var(--muted);line-height:1.5}
+.profile-project>div:last-child{display:grid;align-content:center;justify-items:end;gap:12px}
+.profile-status{color:var(--green);font-size:13px}
+.profile-empty{padding:34px 0;border-top:1px solid var(--line);color:var(--muted)}
 @media(max-width:900px){.workspace{grid-template-columns:1fr}.workspace-sidebar,.workspace-main{border-right:0;border-bottom:1px solid var(--line)}.workspace-sidebar nav{grid-template-columns:repeat(3,1fr)}.workspace-context-mini{grid-template-columns:auto 1fr;margin-top:20px}.onboarding-steps,.case-deliverables{grid-template-columns:1fr}.book-case-card{grid-column:auto}}
+@media(max-width:700px){.profile-head,.profile-project{grid-template-columns:1fr}.profile-project>div:last-child{justify-items:start}.profile-actions{align-items:flex-start;flex-direction:column}}
