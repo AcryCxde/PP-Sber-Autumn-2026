@@ -7,6 +7,7 @@
   <meta name="description" content="Интерактивный прототип CoreTeams: фасилитатор уточняет задачу, собирает ИИ-команду и доводит работу до общего результата.">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23000000'/%3E%3Ccircle cx='22' cy='32' r='8' fill='%238052ff'/%3E%3Ccircle cx='42' cy='22' r='6' fill='%23ffb829'/%3E%3Ccircle cx='42' cy='42' r='6' fill='%2355d7a5'/%3E%3Cpath d='M28 29 36 24M28 35l8 5' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/app.css?v=20260928-2">
+  <link rel="stylesheet" href="/extra.css?v=20260928-1">
 </head>
 <body>
   <header class="topbar">
@@ -30,6 +31,11 @@
       <input id="global-files" type="file" multiple accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg">
     </label>
     <ul id="material-list"><li>Материалов пока нет.</li></ul>
+    <label>Добавить контекст
+      <textarea id="global-context" placeholder="Опишите проект, ограничения, важные договорённости и то, что команда обязательно должна учесть"></textarea>
+    </label>
+    <button class="primary" id="save-context">Сохранить контекст</button>
+    <p class="context-state" id="context-state">Контекст пока не добавлен.</p>
     <p class="note">Демо хранит только названия файлов в браузере. Содержимое никуда не отправляется.</p>
   </aside>
 
@@ -67,7 +73,20 @@
       <div class="case-grid">
         <article><span>ОБРАЗОВАНИЕ</span><h3>Портфолио для студентов</h3><p>Команда превратила идею в понятный первый пользовательский путь.</p><small>Демонстрационный пример</small></article>
         <article><span>ГОРОДСКОЙ СЕРВИС</span><h3>Помощь соседям</h3><p>Из проблемы получилась структура сервиса и первая версия лендинга.</p><small>Демонстрационный пример</small></article>
+        <article class="book-case-card"><span>ИЗДАТЕЛЬСКИЙ ПРОЕКТ</span><h3>«Город между строк»</h3><p>Рукопись превратилась в редакционный план, книжный разворот и макет для печати.</p><button class="ghost" data-page="book-case">Открыть кейс</button></article>
       </div>
+    </section>
+
+    <section class="page hidden" id="book-case">
+      <p class="eyebrow">Кейс · создание книги</p>
+      <h2>«Город между строк»</h2>
+      <p class="lead">Автор пришёл с рукописью о городе, который хранит воспоминания жителей. Команда помогла собрать структуру, отредактировать главы и подготовить визуальную систему книги.</p>
+      <figure class="book-spread"><img src="/assets/book-spread.png" alt="Демонстрационный разворот книги Город между строк"><figcaption>Демонстрационный разворот главы · авторский текст и ночная иллюстрация</figcaption></figure>
+      <div class="case-deliverables">
+        <article><span>РЕДАКТУРА</span><b>12 глав</b><p>Структура, темп повествования и список редакторских решений.</p></article>
+        <article><span>МАКЕТ ДЛЯ ПЕЧАТИ</span><b>IDML · 18,4 МБ</b><p>Обменный формат, который открывается в Adobe InDesign.</p><button class="primary" id="download-idml">Скачать демо-файл</button></article>
+      </div>
+      <p class="note">Кейс и файл синтетические. IDML в демо показывает формат поставки и не является готовым типографским макетом.</p>
     </section>
 
     <section class="page hidden" id="about">
@@ -104,6 +123,37 @@
       <button class="primary" id="level-next" disabled>Продолжить</button>
     </section>
 
+    <section class="page flow hidden" id="onboarding">
+      <p class="eyebrow">Онбординг · 3 минуты</p><h2>Вы задаёте цель. Команда берёт работу на себя.</h2>
+      <div class="onboarding-steps">
+        <article><b>01</b><h3>Дайте контекст</h3><p>Опишите задачу своими словами и приложите исходные материалы.</p></article>
+        <article><b>02</b><h3>Ответьте на уточнения</h3><p>Фасилитатор спросит только то, без чего нельзя получить надёжный результат.</p></article>
+        <article><b>03</b><h3>Следите за работой</h3><p>В рабочем пространстве видны решения, прогресс, команда и общий артефакт.</p></article>
+      </div>
+      <p class="lead">Не знаете ответ — выберите «Предложите вариант». Все предположения команда покажет перед запуском.</p>
+      <button class="primary" id="onboarding-next">Создать первый проект</button>
+    </section>
+
+    <section class="page flow hidden" id="project-setup">
+      <p class="eyebrow">Новый проект</p><h2>Что команда должна сделать?</h2>
+      <form id="project-form" class="form project-form">
+        <label>Название проекта<input id="project-name" value="Пересмотр учебной программы" required></label>
+        <label>Тип результата</label>
+        <div class="choice-list compact" id="project-type">
+          <button type="button" class="selected" data-type="curriculum">Пересмотреть учебную программу</button>
+          <button type="button" data-type="book">Подготовить книгу</button>
+          <button type="button" data-type="custom">Другая задача</button>
+        </div>
+        <label>Желаемый результат<textarea id="project-goal" required>Найти проблемы в программе курса и подготовить обновлённую версию с понятными рекомендациями.</textarea></label>
+        <label>Контекст проекта<textarea id="project-context" placeholder="Для кого курс, что уже известно, сроки, ограничения, важные требования"></textarea></label>
+        <label class="upload">Добавить исходные материалы
+          <input id="project-files" type="file" multiple accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg">
+        </label>
+        <p class="context-hint">Контекст и материалы автоматически попадут в задачу фасилитатора и всех подключённых ролей.</p>
+        <button class="primary" type="submit">Сохранить проект и продолжить</button>
+      </form>
+    </section>
+
     <section class="page flow hidden" id="facilitator">
       <p class="eyebrow">Фасилитатор · уточнение задачи</p>
       <div class="facilitator-card">
@@ -122,6 +172,7 @@
         <article><span>Что должно измениться</span><b id="summary-outcome"></b></article>
         <article><span>Предположения команды</span><b id="summary-assumption"></b></article>
         <article><span>Материалы</span><b id="summary-files">Не добавлены</b></article>
+        <article><span>Контекст проекта</span><b id="summary-context">Не добавлен</b></article>
         <article><span>Первая версия</span><b>Один лендинг идеи</b></article>
       </div>
       <div class="action-row"><button class="ghost" id="summary-edit">Добавить детали</button><button class="primary" id="make-landing">Сформировать лендинг идеи</button></div>
@@ -148,9 +199,21 @@
     <section class="page flow hidden" id="development">
       <div class="development-head"><div><p class="eyebrow">Этап 2 · разработка</p><h2 id="development-title">Команда начинает работу</h2></div><strong id="progress-percent">0%</strong></div>
       <div class="progress"><i id="progress-bar"></i></div>
-      <div class="work-layout">
-        <section class="facilitator-live"><span>ФАСИЛИТАТОР</span><p id="facilitator-live-text">Разбираю задачу и выбираю роли.</p></section>
-        <section><p class="eyebrow">Агенты в работе</p><div class="agent-list" id="agent-list"></div></section>
+      <div class="workspace">
+        <aside class="workspace-sidebar">
+          <span>ПРОЕКТ</span><h3 id="workspace-project">Пересмотр учебной программы</h3>
+          <nav><button class="active" data-workspace-tab="activity">Ход работы</button><button data-workspace-tab="context">Контекст</button><button data-workspace-tab="artifacts">Артефакты</button></nav>
+          <div class="workspace-context-mini"><small>Материалы</small><b id="workspace-files">0</b><small>Контекст</small><b id="workspace-context-status">Добавлен</b></div>
+        </aside>
+        <section class="workspace-main">
+          <div class="workspace-panel" data-panel="activity"><p class="eyebrow">Журнал работы</p><div id="activity-feed" class="activity-feed"><p>Проект сохранён. Контекст передан фасилитатору.</p></div></div>
+          <div class="workspace-panel hidden" data-panel="context"><p class="eyebrow">Контекст проекта</p><p id="workspace-context-text"></p><button class="ghost" id="workspace-add-context">Добавить контекст или файл</button></div>
+          <div class="workspace-panel hidden" data-panel="artifacts"><p class="eyebrow">Артефакты</p><article class="artifact-row"><span>01</span><div><b>Лендинг идеи</b><p>Одобрен пользователем</p></div><i>Готов</i></article><article class="artifact-row"><span>02</span><div><b>Итоговый результат</b><p>Собирается командой</p></div><i>В работе</i></article></div>
+        </section>
+        <aside class="workspace-chat">
+          <section class="facilitator-live"><span>ФАСИЛИТАТОР</span><p id="facilitator-live-text">Разбираю задачу и выбираю роли.</p></section>
+          <section><p class="eyebrow">Команда</p><div class="agent-list" id="agent-list"></div></section>
+        </aside>
       </div>
       <p class="note">Это визуальная симуляция процесса CTF. Реальный параллельный запуск ролей в этом демо не подключён.</p>
     </section>

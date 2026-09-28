@@ -70,6 +70,12 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost"); const segments = url.pathname.split("/").filter(Boolean); const state = load();
   if (req.method === "GET" && url.pathname === "/") return serveStatic(res, "index.html");
   if (req.method === "GET" && url.pathname === "/app.css") return serveStatic(res, "app.css");
+  if (req.method === "GET" && url.pathname === "/extra.css") return serveStatic(res, "extra.css");
+  if (req.method === "GET" && url.pathname === "/assets/book-spread.png") {
+    const content = fs.readFileSync(path.join(publicDir, "assets", "book-spread.png"));
+    res.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=3600" });
+    return res.end(content);
+  }
   if (req.method === "GET" && url.pathname === "/app.js") {
     const content = fs.readFileSync(path.join(publicDir, "app.js"));
     res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });

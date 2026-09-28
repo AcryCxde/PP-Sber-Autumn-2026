@@ -11,11 +11,15 @@ const state = {
   question: 0,
   answers: [],
   materials: JSON.parse(localStorage.getItem("ct-materials") || "[]"),
+  context: localStorage.getItem("ct-context") || "",
+  projectType: localStorage.getItem("ct-project-type") || "curriculum",
+  projectName: localStorage.getItem("ct-project-name") || "Пересмотр учебной программы",
+  projectGoal: localStorage.getItem("ct-project-goal") || "Найти проблемы в программе курса и подготовить обновлённую версию с понятными рекомендациями.",
   revision: false,
   credits: Number(localStorage.getItem("ct-credits") || 0)
 };
 
-const questions = [
+const genericQuestions = [
   {
     title: "Что лучше описывает ваш запрос?",
     help: "Ответ поможет выбрать формат первого результата.",
@@ -33,13 +37,69 @@ const questions = [
   }
 ];
 
-const team = [
-  ["Аналитик", "Уточняет потребность и критерий результата"],
-  ["Дизайнер", "Собирает понятный пользовательский путь"],
-  ["Архитектор", "Определяет границы первой версии"],
-  ["Разработчик", "Создаёт согласованный результат"],
-  ["Тестировщик", "Независимо проверяет работу"]
+const curriculumQuestions = [
+  {
+    title: "Для кого предназначена программа?",
+    help: "Уровень слушателей определяет сложность, темп и допустимую нагрузку.",
+    options: ["Студенты бакалавриата", "Взрослые на переподготовке", "Сотрудники компании", "Пока не знаю — предложите аудиторию"]
+  },
+  {
+    title: "Какой результат пересмотра вам нужен?",
+    help: "Можно найти проблемы, обновить содержание или полностью пересобрать программу.",
+    options: ["Найти проблемы и риски", "Обновить устаревшие темы", "Связать цели, задания и оценивание", "Подготовить полностью обновлённую версию"]
+  },
+  {
+    title: "Что в программе нельзя менять?",
+    help: "Команда не будет предлагать решения, нарушающие эти границы.",
+    options: ["Продолжительность и количество часов", "Обязательные темы", "Формат итоговой аттестации", "Жёстких ограничений нет"]
+  },
+  {
+    title: "Какие ограничения нужно учитывать?",
+    help: "Например, образовательный стандарт, сроки, преподаватели или доступная платформа.",
+    options: ["Есть ограничение по срокам или часам", "Нужно соблюдать стандарт", "Нужно учитывать доступные ресурсы", "Пока не знаю — найдите ограничения в материалах"]
+  },
+  {
+    title: "По какому признаку результат будет хорошим?",
+    help: "Этот критерий станет рубрикой независимой проверки.",
+    options: ["Цели связаны с заданиями и оценкой", "Нагрузка реалистична", "Содержание актуально", "Результаты обучения сформулированы однозначно"]
+  }
 ];
+
+const bookQuestions = [
+  { title: "На какой стадии книга?", help: "От этого зависит состав команды.", options: ["Есть идея и синопсис", "Есть черновик", "Рукопись закончена", "Нужна помощь определить формат"] },
+  { title: "Для кого эта книга?", help: "Аудитория влияет на редактуру, объём и оформление.", options: ["Взрослая художественная проза", "Подростковая аудитория", "Детская книга", "Нон-фикшн"] },
+  { title: "Какой результат нужен первым?", help: "Команда ограничит первую версию одним проверяемым артефактом.", options: ["Редакторский разбор", "Структура и план глав", "Демонстрационный разворот", "Макет для печати"] }
+];
+
+function activeQuestions() {
+  if (state.projectType === "curriculum") return curriculumQuestions;
+  if (state.projectType === "book") return bookQuestions;
+  return genericQuestions;
+}
+
+const teams = {
+  curriculum: [
+    ["Методист", "Проверяет цели, темы, задания и оценивание"],
+    ["Предметный эксперт", "Ищет устаревшие и спорные положения"],
+    ["Аналитик нагрузки", "Проверяет объём работы и реалистичность сроков"],
+    ["Редактор", "Собирает ясную обновлённую программу"],
+    ["Независимый проверяющий", "Сверяет результат с согласованной рубрикой"]
+  ],
+  book: [
+    ["Литературный редактор", "Проверяет структуру и развитие истории"],
+    ["Корректор", "Убирает языковые и типографические ошибки"],
+    ["Арт-директор", "Создаёт визуальную систему книги"],
+    ["Верстальщик", "Готовит разворот и структуру печатного макета"],
+    ["Предпечатный проверяющий", "Проверяет комплектность файлов"]
+  ],
+  custom: [
+    ["Аналитик", "Уточняет потребность и критерий результата"],
+    ["Дизайнер", "Собирает понятный пользовательский путь"],
+    ["Архитектор", "Определяет границы первой версии"],
+    ["Разработчик", "Создаёт согласованный результат"],
+    ["Тестировщик", "Независимо проверяет работу"]
+  ]
+};
 
 function showPage(id, remember = true) {
   pages.forEach((page) => page.classList.add("hidden"));
@@ -57,6 +117,12 @@ function renderMaterials() {
     ? state.materials.map((name) => `<li>${name}</li>`).join("")
     : "<li>Материалов пока нет.</li>";
   $("#summary-files").textContent = state.materials.length ? state.materials.join(", ") : "Не добавлены";
+  $("#summary-context").textContent = state.context || "Не добавлен";
+  $("#global-context").value = state.context;
+  $("#context-state").textContent = state.context ? "Контекст сохранён и будет учтён командой автоматически." : "Контекст пока не добавлен.";
+  $("#workspace-files").textContent = state.materials.length;
+  $("#workspace-context-status").textContent = state.context ? "Добавлен" : "Не добавлен";
+  $("#workspace-context-text").textContent = state.context || "Контекст пока не добавлен. Его можно добавить в любой момент.";
 }
 
 function openDrawer(id) {
@@ -65,7 +131,7 @@ function openDrawer(id) {
 }
 
 function renderQuestion() {
-  const current = questions[state.question];
+  const current = activeQuestions()[state.question];
   $("#question-title").textContent = current.title;
   $("#question-help").textContent = current.help;
   $("#answer-options").innerHTML = current.options.map((option) => `<button data-answer="${option}">${option}</button>`).join("");
@@ -81,10 +147,12 @@ function renderQuestion() {
 }
 
 function fillSummary() {
-  const [request, audience, outcome] = state.answers;
-  $("#summary-result").textContent = request || "Формат уточнит команда";
-  $("#summary-audience").textContent = audience || "Команда предложит аудиторию";
-  $("#summary-outcome").textContent = outcome || "Критерий уточнит фасилитатор";
+  const [first, second] = state.answers;
+  $("#summary-result").textContent = state.projectGoal;
+  $("#summary-audience").textContent = first || "Команда предложит аудиторию";
+  $("#summary-outcome").textContent = state.projectType === "curriculum"
+    ? `${second || "Формат пересмотра уточняется"}; проверка: ${state.answers.at(-1) || "критерий уточняется"}`
+    : second || "Критерий уточнит фасилитатор";
   const unknown = state.answers.filter((answer) => /не знаю|предполож/i.test(answer || "")).length;
   $("#summary-assumption").textContent = unknown
     ? unknown === 1
@@ -95,12 +163,14 @@ function fillSummary() {
 }
 
 function fillLanding() {
-  const [request, audience, outcome] = state.answers;
-  const proposedTitle = /не знаю|предлож/i.test(request || "")
-    ? "Проверка идеи до больших вложений"
-    : request?.replace(/^Есть /, "") || "Первая версия идеи";
+  const [audience, outcome] = state.answers;
+  const proposedTitle = state.projectType === "curriculum"
+    ? "Курс, в котором цели ведут к результату"
+    : state.projectType === "book"
+      ? "Книга, готовая к редактуре и выпуску"
+      : state.projectName;
   $("#landing-title").textContent = proposedTitle;
-  $("#landing-copy").textContent = `Первая версия для аудитории: ${audience || "уточняется"}. Она поможет ${(outcome || "проверить ценность идеи").toLowerCase()}.`;
+  $("#landing-copy").textContent = `${state.projectGoal} Аудитория: ${audience || "уточняется"}. Первый фокус: ${(outcome || "проверить ценность решения").toLowerCase()}.`;
   $("#landing-audience").textContent = audience || "Аудитория уточняется";
 }
 
@@ -118,12 +188,17 @@ function runDevelopment(isRevision = false) {
   $("#progress-bar").style.width = "0%";
   $("#progress-percent").textContent = "0%";
   $("#development-title").textContent = isRevision ? "Команда дорабатывает результат" : "Команда начинает работу";
+  $("#workspace-project").textContent = state.projectName;
+  $("#workspace-files").textContent = state.materials.length;
+  $("#workspace-context-status").textContent = state.context ? "Добавлен" : "Не добавлен";
+  $("#workspace-context-text").textContent = state.context || "Контекст пока не добавлен. Его можно добавить в любой момент.";
+  $("#activity-feed").innerHTML = `<p>Проект «${state.projectName}» сохранён.</p><p>${state.materials.length ? `Команда получила материалов: ${state.materials.length}.` : "Материалы не приложены — фасилитатор учтёт это в вопросах."}</p><p>${state.context ? "Контекст автоматически передан всем подключённым ролям." : "Контекст можно добавить во время работы."}</p>`;
   localStorage.setItem("ct-run", JSON.stringify({ status: "running", revision: isRevision, startedAt: Date.now() }));
 
   let index = 0;
   const selectedTeam = isRevision
     ? [["Фасилитатор", "Уточняет запрос на изменение"], ["Дизайнер", "Обновляет структуру результата"], ["Разработчик", "Вносит согласованные изменения"], ["Тестировщик", "Сравнивает новую версию с запросом"]]
-    : team;
+    : teams[state.projectType] || teams.custom;
 
   const tick = () => {
     const percent = Math.round((index / selectedTeam.length) * 90);
@@ -138,6 +213,9 @@ function runDevelopment(isRevision = false) {
       card.className = "agent-card";
       card.innerHTML = `<b>${role}</b><p>${work}</p><span>Работает</span>`;
       $("#agent-list").append(card);
+      const event = document.createElement("p");
+      event.textContent = `${role}: ${work}`;
+      $("#activity-feed").append(event);
       index += 1;
       setTimeout(tick, 720);
       return;
@@ -163,10 +241,19 @@ document.querySelectorAll("[data-page]").forEach((button) => button.addEventList
 $("#materials-toggle").addEventListener("click", () => openDrawer("#materials-panel"));
 $("#notifications-toggle").addEventListener("click", () => openDrawer("#notifications-panel"));
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => document.getElementById(button.dataset.close).classList.add("hidden")));
-$("#global-files").addEventListener("change", (event) => {
-  const names = [...event.target.files].map((file) => file.name);
+function addFiles(files) {
+  const names = [...files].map((file) => file.name);
   state.materials = [...new Set([...state.materials, ...names])];
   localStorage.setItem("ct-materials", JSON.stringify(state.materials));
+  renderMaterials();
+}
+$("#global-files").addEventListener("change", (event) => {
+  addFiles(event.target.files);
+});
+$("#project-files").addEventListener("change", (event) => addFiles(event.target.files));
+$("#save-context").addEventListener("click", () => {
+  state.context = $("#global-context").value.trim();
+  localStorage.setItem("ct-context", state.context);
   renderMaterials();
 });
 $("#play-demo").addEventListener("click", () => showPage("about"));
@@ -182,6 +269,35 @@ $("#signup-form").addEventListener("submit", (event) => {
     return;
   }
   $("#signup-error").textContent = "";
+  showPage("onboarding", false);
+});
+
+$("#onboarding-next").addEventListener("click", () => showPage("project-setup", false));
+document.querySelectorAll("#project-type button").forEach((button) => button.addEventListener("click", () => {
+  document.querySelectorAll("#project-type button").forEach((item) => item.classList.remove("selected"));
+  button.classList.add("selected");
+  state.projectType = button.dataset.type;
+  if (state.projectType === "book") {
+    $("#project-name").value = "Создание книги";
+    $("#project-goal").value = "Подготовить рукопись к редактуре, собрать демонстрационный разворот и план печатного макета.";
+  } else if (state.projectType === "curriculum") {
+    $("#project-name").value = "Пересмотр учебной программы";
+    $("#project-goal").value = "Найти проблемы в программе курса и подготовить обновлённую версию с понятными рекомендациями.";
+  } else {
+    $("#project-name").value = "Новый проект";
+    $("#project-goal").value = "";
+  }
+}));
+$("#project-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  state.projectName = $("#project-name").value.trim();
+  state.projectGoal = $("#project-goal").value.trim();
+  state.context = $("#project-context").value.trim();
+  localStorage.setItem("ct-project-type", state.projectType);
+  localStorage.setItem("ct-project-name", state.projectName);
+  localStorage.setItem("ct-project-goal", state.projectGoal);
+  localStorage.setItem("ct-context", state.context);
+  renderMaterials();
   showPage("level");
 });
 
@@ -197,7 +313,7 @@ $("#level-next").addEventListener("click", () => {
   showPage("facilitator");
 });
 $("#question-next").addEventListener("click", () => {
-  if (state.question < questions.length - 1) {
+  if (state.question < activeQuestions().length - 1) {
     state.question += 1;
     renderQuestion();
   } else {
@@ -242,6 +358,25 @@ $("#invest").addEventListener("click", () => {
   $("#next-note").textContent = "Сначала сервис запросит согласие на состав публичных материалов. В демо данные не публикуются и никому не передаются.";
 });
 
+document.querySelectorAll("[data-workspace-tab]").forEach((button) => button.addEventListener("click", () => {
+  document.querySelectorAll("[data-workspace-tab]").forEach((item) => item.classList.remove("active"));
+  document.querySelectorAll("[data-panel]").forEach((panel) => panel.classList.add("hidden"));
+  button.classList.add("active");
+  document.querySelector(`[data-panel="${button.dataset.workspaceTab}"]`).classList.remove("hidden");
+}));
+$("#workspace-add-context").addEventListener("click", () => openDrawer("#materials-panel"));
+$("#download-idml").addEventListener("click", () => {
+  const content = `<?xml version="1.0" encoding="UTF-8"?>\n<idPkg:Story xmlns:idPkg="http://ns.adobe.com/AdobeInDesign/idml/1.0/packaging"><Story Self="demo"><Content>Демонстрационный макет книги «Город между строк». Не предназначен для реальной печати.</Content></Story></idPkg:Story>`;
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([content], { type: "application/xml" }));
+  link.download = "Город-между-строк-demo.idml";
+  link.click();
+  URL.revokeObjectURL(link.href);
+});
+
+$("#project-name").value = state.projectName;
+$("#project-goal").value = state.projectGoal;
+$("#project-context").value = state.context;
 renderMaterials();
 const savedPage = localStorage.getItem("ct-page");
 if (savedPage && document.getElementById(savedPage) && !["result", "next"].includes(savedPage)) showPage(savedPage, false);

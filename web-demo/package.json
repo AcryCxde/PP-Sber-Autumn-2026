@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
+    "build:standalone": "node build-standalone.mjs",
     "start": "node server.js",
     "test": "node --test test/*.test.js"
   }
