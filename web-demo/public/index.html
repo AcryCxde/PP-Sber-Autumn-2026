@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>CoreTeams — результат с командой ИИ</title>
+  <meta name="description" content="Интерактивный прототип CoreTeams: фасилитатор уточняет задачу, собирает ИИ-команду и доводит работу до общего результата.">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23000000'/%3E%3Ccircle cx='22' cy='32' r='8' fill='%238052ff'/%3E%3Ccircle cx='42' cy='22' r='6' fill='%23ffb829'/%3E%3Ccircle cx='42' cy='42' r='6' fill='%2355d7a5'/%3E%3Cpath d='M28 29 36 24M28 35l8 5' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/app.css?v=20260928-2">
+</head>
+<body>
+  <header class="topbar">
+    <button class="brand nav-link" data-page="home">core<span>teams</span></button>
+    <nav aria-label="Основная навигация">
+      <button class="nav-link" data-page="home">Главная</button>
+      <button class="nav-link" data-page="catalog">Каталог решений</button>
+      <button class="nav-link" data-page="about">Как это работает</button>
+    </nav>
+    <div class="header-actions">
+      <button class="ghost" id="materials-toggle">Материалы <span id="material-count">0</span></button>
+      <button class="ghost" id="notifications-toggle" aria-label="Уведомления">●</button>
+    </div>
+  </header>
+
+  <aside class="drawer hidden" id="materials-panel">
+    <button class="drawer-close" data-close="materials-panel">×</button>
+    <p class="eyebrow">Контекст проекта</p>
+    <h3>Материалы доступны на любом этапе</h3>
+    <label class="upload">Добавить документы или изображения
+      <input id="global-files" type="file" multiple accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg">
+    </label>
+    <ul id="material-list"><li>Материалов пока нет.</li></ul>
+    <p class="note">Демо хранит только названия файлов в браузере. Содержимое никуда не отправляется.</p>
+  </aside>
+
+  <aside class="drawer hidden" id="notifications-panel">
+    <button class="drawer-close" data-close="notifications-panel">×</button>
+    <p class="eyebrow">Уведомления</p>
+    <h3>Важные события проекта</h3>
+    <ul><li>Здесь появятся вопросы команды, завершение работы и ошибки.</li></ul>
+    <label class="toggle"><input type="checkbox" checked> Дублировать важные события по почте</label>
+    <p class="note">Отправка почты в демо не подключена.</p>
+  </aside>
+
+  <div class="credit-badge hidden" id="credit-badge"><span>Доступно кредитов</span><b><span id="credits-used">1 000</span> / 1 000</b></div>
+
+  <main>
+    <section class="page" id="home">
+      <div class="hero-copy">
+        <p class="eyebrow">От задачи — к готовому результату</p>
+        <h1>Получите результат без поиска отдельных специалистов</h1>
+        <p class="lead">Опишите задачу. CoreTeams соберёт ИИ-команду, задаст нужные вопросы и подготовит общий результат — от документа и лендинга до первой версии цифрового продукта.</p>
+        <button class="primary" id="begin">Начать работу</button>
+        <p class="note">Сейчас открыт технический демо-режим. Настоящая регистрация и агентская команда ещё не подключены.</p>
+      </div>
+      <div class="video-window">
+        <div class="particle-cloud" aria-hidden="true"></div>
+        <button class="play" id="play-demo" aria-label="Показать процесс">▶</button>
+        <div><span>КАК ЭТО РАБОТАЕТ · 01:18</span><b>От размытой идеи до проверенного результата</b></div>
+      </div>
+    </section>
+
+    <section class="page hidden" id="catalog">
+      <p class="eyebrow">Каталог решений</p>
+      <h2>Идеи людей, ставшие первыми версиями</h2>
+      <p class="lead">Автор сам решает, публиковать ли результат и отзыв.</p>
+      <div class="case-grid">
+        <article><span>ОБРАЗОВАНИЕ</span><h3>Портфолио для студентов</h3><p>Команда превратила идею в понятный первый пользовательский путь.</p><small>Демонстрационный пример</small></article>
+        <article><span>ГОРОДСКОЙ СЕРВИС</span><h3>Помощь соседям</h3><p>Из проблемы получилась структура сервиса и первая версия лендинга.</p><small>Демонстрационный пример</small></article>
+      </div>
+    </section>
+
+    <section class="page hidden" id="about">
+      <p class="eyebrow">Как это работает</p>
+      <h2>Один диалог — целая команда</h2>
+      <div class="steps">
+        <article><b>01</b><h3>Фасилитатор уточняет</h3><p>Задаёт короткие вопросы, предлагает варианты и фиксирует допущения.</p></article>
+        <article><b>02</b><h3>Подключает специалистов</h3><p>Вы видите, кого привлекли, зачем и над чем сейчас работает роль.</p></article>
+        <article><b>03</b><h3>Собирает общий результат</h3><p>Промежуточный шум остаётся внутри. Вы получаете один проверенный артефакт.</p></article>
+      </div>
+    </section>
+
+    <section class="page flow hidden" id="signup">
+      <p class="eyebrow">Создание проекта</p><h2>Сохраните будущий результат</h2>
+      <form id="signup-form" class="form">
+        <label>Электронная почта<input id="email" type="email" placeholder="name@example.com" required></label>
+        <label>Пароль<input id="password" type="password" minlength="8" placeholder="Не менее 8 символов" required></label>
+        <label>Повторите пароль<input id="password-repeat" type="password" minlength="8" required></label>
+        <label class="toggle"><input id="terms" type="checkbox" required> Принимаю условия демо</label>
+        <p class="form-error" id="signup-error"></p>
+        <button class="primary" type="submit">Создать проект</button>
+        <p class="note">Демо не создаёт настоящий аккаунт и не сохраняет пароль.</p>
+      </form>
+    </section>
+
+    <section class="page flow hidden" id="level">
+      <p class="eyebrow">Знакомство · 1 из 2</p><h2>Как объяснять вам ход работы?</h2>
+      <p class="lead">Это не экзамен. Ответ меняет язык объяснений, а не возможности сервиса.</p>
+      <div class="choice-list" id="level-options">
+        <button data-value="new">Без технических терминов</button>
+        <button data-value="basic">Можно использовать базовые понятия</button>
+        <button data-value="expert">Показывать больше деталей</button>
+      </div>
+      <button class="primary" id="level-next" disabled>Продолжить</button>
+    </section>
+
+    <section class="page flow hidden" id="facilitator">
+      <p class="eyebrow">Фасилитатор · уточнение задачи</p>
+      <div class="facilitator-card">
+        <div class="avatar">F</div>
+        <div><span>ФАСИЛИТАТОР</span><h2 id="question-title">У вас уже есть идея?</h2><p id="question-help">Ответ поможет выбрать первый формат результата.</p></div>
+      </div>
+      <div class="choice-list" id="answer-options"></div>
+      <button class="ghost hidden" id="question-next">Следующий вопрос</button>
+    </section>
+
+    <section class="page flow hidden" id="summary">
+      <p class="eyebrow">Данных достаточно</p><h2>Проверьте, правильно ли мы поняли задачу</h2>
+      <div class="summary-grid">
+        <article><span>Что создаём</span><b id="summary-result"></b></article>
+        <article><span>Для кого</span><b id="summary-audience"></b></article>
+        <article><span>Что должно измениться</span><b id="summary-outcome"></b></article>
+        <article><span>Предположения команды</span><b id="summary-assumption"></b></article>
+        <article><span>Материалы</span><b id="summary-files">Не добавлены</b></article>
+        <article><span>Первая версия</span><b>Один лендинг идеи</b></article>
+      </div>
+      <div class="action-row"><button class="ghost" id="summary-edit">Добавить детали</button><button class="primary" id="make-landing">Сформировать лендинг идеи</button></div>
+    </section>
+
+    <section class="page flow hidden" id="landing">
+      <p class="eyebrow">Этап 1 · лендинг идеи</p><h2>Первый общий артефакт</h2>
+      <div class="artifact">
+        <span>АРТЕФАКТ 01 · ЛЕНДИНГ ИДЕИ</span>
+        <h3 id="landing-title">Идея проекта</h3>
+        <p id="landing-copy"></p>
+        <div class="tags"><i id="landing-audience"></i><i>Первая версия</i></div>
+      </div>
+      <div class="action-row"><button class="ghost" id="landing-revise">Исправить суть</button><button class="primary" id="landing-approve">Перейти к разработке</button></div>
+    </section>
+
+    <section class="page flow hidden" id="estimate">
+      <p class="eyebrow">Перед разработкой</p><h2>Команда оценила первый запуск</h2>
+      <div class="estimate-card"><div><span>Доступно</span><b>1 000 кредитов</b></div><div><span>Резерв запуска</span><b>до 300 кредитов</b></div><div><span>После запуска</span><b>не менее 700</b></div></div>
+      <p class="lead">В резерв входят планирование, работа ролей и независимая проверка. Неиспользованные кредиты вернутся.</p>
+      <div class="action-row"><button class="ghost" id="estimate-back">Вернуться к идее</button><button class="primary" id="development-start">Начать разработку</button></div>
+    </section>
+
+    <section class="page flow hidden" id="development">
+      <div class="development-head"><div><p class="eyebrow">Этап 2 · разработка</p><h2 id="development-title">Команда начинает работу</h2></div><strong id="progress-percent">0%</strong></div>
+      <div class="progress"><i id="progress-bar"></i></div>
+      <div class="work-layout">
+        <section class="facilitator-live"><span>ФАСИЛИТАТОР</span><p id="facilitator-live-text">Разбираю задачу и выбираю роли.</p></section>
+        <section><p class="eyebrow">Агенты в работе</p><div class="agent-list" id="agent-list"></div></section>
+      </div>
+      <p class="note">Это визуальная симуляция процесса CTF. Реальный параллельный запуск ролей в этом демо не подключён.</p>
+    </section>
+
+    <section class="page flow hidden" id="result">
+      <p class="eyebrow">Общий результат готов</p><h2>Команда собрала и проверила артефакт</h2>
+      <div class="artifact result-artifact"><span>АРТЕФАКТ 02 · ВЕРСИЯ 1</span><h3 id="result-title"></h3><p id="result-copy"></p></div>
+      <div class="action-row"><button class="ghost" id="request-revision">Попросить доработку</button><button class="primary" id="accept-result">Принять результат</button></div>
+    </section>
+
+    <section class="page flow hidden" id="revision">
+      <p class="eyebrow">Фасилитатор · доработка</p><h2>Что нужно изменить в результате?</h2>
+      <div class="choice-list" id="revision-type"><button>Изменить смысл или аудиторию</button><button>Изменить структуру</button><button>Изменить тексты и оформление</button></div>
+      <label>Опишите желаемое изменение<textarea id="revision-text" placeholder="Фасилитатор уточнит запрос и подключит нужные роли"></textarea></label>
+      <button class="primary" id="revision-start" disabled>Запустить доработку</button>
+      <p class="note">Предыдущая версия сохранится. Демо показывает процесс, но не создаёт серверную версию.</p>
+    </section>
+
+    <section class="page flow hidden" id="next">
+      <p class="eyebrow">Результат принят</p><h2>Что делать с проектом дальше?</h2>
+      <div class="next-grid">
+        <button id="scale"><span>РАЗВИТИЕ</span><b>Масштабировать проект</b><p>Команда уточнит цели, ресурсы и границы роста.</p></button>
+        <button id="invest"><span>ПУБЛИКАЦИЯ</span><b>Привлечь инвестора</b><p>Подготовим публичный профиль только после вашего согласия.</p></button>
+      </div>
+      <p class="note" id="next-note">Эти действия пока показывают будущий сценарий и ничего не публикуют.</p>
+    </section>
+  </main>
+  <script src="/app.js?v=20260928-7"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "coreteams-web-demo",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  }
+}
