@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -9,7 +10,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import Conversation, Event, Message, Run
+from backend.models import Artifact, Conversation, Event, Message, Run
 
 
 ACTIVE_RUN_STATUSES = {"pending", "running"}
@@ -107,13 +108,46 @@ async def _append_event_in_transaction(
     if next_seq is None:
         raise LookupError(f"Run {run_id} was not found")
 
+    event_type = str(event_data["type"])
+    payload = deepcopy(
+        {key: value for key, value in event_data.items() if key != "type"}
+    )
+    if event_type == "tool" and payload.get("name") == "Write":
+        tool_input = payload.get("input")
+        if isinstance(tool_input, dict):
+            input_content = tool_input.pop("content", None)
+            if isinstance(input_content, str):
+                tool_input["content_size_bytes"] = len(input_content.encode("utf-8"))
+                tool_input["content_redacted"] = True
+
+    artifact: Artifact | None = None
+    file_payload = payload.get("file")
+    if event_type == "tool_result" and isinstance(file_payload, dict):
+        file_content = file_payload.pop("content", None)
+        file_path = file_payload.get("path")
+        if isinstance(file_path, str) and file_path:
+            artifact = Artifact(
+                run_id=run_id,
+                event_seq=next_seq,
+                path=file_path,
+                content=file_content if isinstance(file_content, str) else None,
+                size_bytes=(
+                    file_payload.get("content_size_bytes")
+                    if isinstance(file_payload.get("content_size_bytes"), int)
+                    else None
+                ),
+                truncated=file_payload.get("content_truncated") is True,
+            )
+
     event = Event(
         run_id=run_id,
         seq=next_seq,
-        type=str(event_data["type"]),
-        payload={key: value for key, value in event_data.items() if key != "type"},
+        type=event_type,
+        payload=payload,
     )
     session.add(event)
+    if artifact is not None:
+        session.add(artifact)
     await session.flush()
     return event
 

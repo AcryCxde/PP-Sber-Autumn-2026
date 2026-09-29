@@ -4,7 +4,6 @@ import logging
 import subprocess
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -12,10 +11,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from backend import models  # noqa: F401
 from backend.api.history import router as history_router
-from backend.config import Settings
+from backend.config import PROJECT_ROOT, Settings
 from backend.db import Database
 from backend.models import Event
-from backend.parser import NormalizedEvent, normalized_event, parse_event
+from backend.parser import (
+    NormalizedEvent,
+    bounded_file_content,
+    normalized_event,
+    parse_event,
+)
 from backend.repository import (
     RunAcceptance,
     RunAcceptanceError,
@@ -27,7 +31,6 @@ from backend.repository import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 APP_SETTINGS = Settings()
 logger = logging.getLogger(__name__)
 
@@ -247,6 +250,7 @@ async def handle_run_create(
     run_error: str | None = None
     error_code: str | None = None
     raw_error_parts: list[str] = []
+    tool_calls: dict[str, NormalizedEvent] = {}
     resume_session_id = (
         acceptance.resume_session_id
         if acceptance.context_mode == "resume"
@@ -303,6 +307,29 @@ async def handle_run_create(
                                 "Claude вернул другой session ID при resume."
                             )
                         observed_session_id = session_id
+                elif event_type == "tool" and event_data.get("tool_id"):
+                    tool_calls[str(event_data["tool_id"])] = event_data
+                elif event_type == "tool_result" and "file" not in event_data:
+                    tool_id = event_data.get("tool_id")
+                    tool_call = tool_calls.get(str(tool_id)) if tool_id else None
+                    if tool_call and tool_call.get("name") == "Write":
+                        tool_input = tool_call.get("input")
+                        if isinstance(tool_input, dict):
+                            file_path = tool_input.get("file_path")
+                            file_content = tool_input.get("content")
+                            if isinstance(file_path, str) and isinstance(file_content, str):
+                                (
+                                    bounded_content,
+                                    content_size_bytes,
+                                    content_truncated,
+                                ) = bounded_file_content(file_content)
+                                event_data["file"] = {
+                                    "path": file_path,
+                                    "content": bounded_content,
+                                    "content_size_bytes": content_size_bytes,
+                                    "content_truncated": content_truncated,
+                                    "num_lines": file_content.count("\n") + 1,
+                                }
                 elif event_type == "message" and event_data.get("content"):
                     assistant_parts.append(str(event_data["content"]))
                 elif event_type == "result":

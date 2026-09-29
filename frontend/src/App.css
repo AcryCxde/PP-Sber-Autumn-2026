@@ -571,6 +571,127 @@
   opacity: 0.62;
 }
 
+.agent-roles-panel,
+.artifacts-panel {
+  margin-bottom: 18px;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface-muted);
+}
+
+.panel-title {
+  margin-bottom: 9px;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.role-groups,
+.role-group,
+.role-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.role-groups {
+  gap: 12px;
+}
+
+.role-label,
+.artifact-meta,
+.available-roles summary {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.role-badge {
+  padding: 4px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 10px;
+}
+
+.role-badge.primary,
+.role-badge.used {
+  color: var(--success);
+  border-color: var(--success-border);
+  background: var(--success-soft);
+}
+
+.available-roles {
+  cursor: pointer;
+}
+
+.available-roles .role-badges {
+  margin-top: 9px;
+}
+
+.artifact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.artifact-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.artifact-info {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.artifact-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-meta {
+  flex-shrink: 0;
+}
+
+.artifact-download {
+  flex-shrink: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--surface-soft);
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.artifact-download:hover {
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.artifact-unavailable {
+  flex-shrink: 0;
+  color: var(--danger-text);
+  font-size: 10px;
+}
+
 @media (max-width: 760px) {
   .app-shell {
     flex-direction: column;
@@ -619,6 +740,15 @@
   .context-warning {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .artifact-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .artifact-download {
+    align-self: flex-start;
   }
 
   .chat {

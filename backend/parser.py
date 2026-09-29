@@ -1,9 +1,12 @@
 import json
 from typing import Any, Required, TypedDict
 
+from backend.config import Settings
+
 
 EVENT_SCHEMA_VERSION = 1
 MAX_RAW_CONTENT_LENGTH = 4_000
+MAX_FILE_CONTENT_BYTES = Settings().artifact_max_download_bytes
 
 
 class NormalizedEvent(TypedDict, total=False):
@@ -43,6 +46,19 @@ def normalized_event(normalized_type: str, **payload: Any) -> NormalizedEvent:
         "schema_version": EVENT_SCHEMA_VERSION,
         **payload,
     }
+
+
+def bounded_file_content(
+    value: Any,
+    max_bytes: int = MAX_FILE_CONTENT_BYTES,
+) -> tuple[str | None, int | None, bool]:
+    if not isinstance(value, str):
+        return None, None, False
+
+    size_bytes = len(value.encode("utf-8"))
+    if size_bytes > max_bytes:
+        return None, size_bytes, True
+    return value, size_bytes, False
 
 
 def invalid_shape(location: str, value: Any) -> NormalizedEvent:
@@ -179,9 +195,14 @@ def parse_event(raw: str) -> list[NormalizedEvent]:
                 if tool_result.get("file"):
                     file_info = tool_result["file"]
                     if isinstance(file_info, dict):
+                        file_content, content_size_bytes, content_truncated = (
+                            bounded_file_content(file_info.get("content"))
+                        )
                         result["file"] = {
                             "path": file_info.get("filePath"),
-                            "content": file_info.get("content"),
+                            "content": file_content,
+                            "content_size_bytes": content_size_bytes,
+                            "content_truncated": content_truncated,
                             "num_lines": file_info.get("numLines"),
                         }
                     else:

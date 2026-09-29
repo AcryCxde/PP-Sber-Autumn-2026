@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 
@@ -56,6 +57,7 @@ def test_initial_migration_creates_history_tables_and_parent_directory(
         "runs",
         "messages",
         "events",
+        "artifacts",
     } <= tables
 
 
@@ -87,7 +89,7 @@ def test_multiturn_migration_backfills_legacy_history(tmp_path) -> None:
                 "run-1",
                 "conversation-1",
                 "completed",
-                0,
+                3,
                 None,
                 "2026-09-29 00:00:01",
                 None,
@@ -111,6 +113,64 @@ def test_multiturn_migration_backfills_legacy_history(tmp_path) -> None:
                 "2026-09-29 00:00:00",
             ),
         )
+        connection.execute(
+            "INSERT INTO events (run_id, seq, type, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "run-1",
+                1,
+                "tool_result",
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "file": {
+                            "path": "legacy.txt",
+                            "content": "legacy snapshot",
+                            "num_lines": 1,
+                        },
+                    }
+                ),
+                "2026-09-29 00:00:00",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO events (run_id, seq, type, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "run-1",
+                2,
+                "tool",
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "name": "Write",
+                        "tool_id": "write-tool",
+                        "input": {
+                            "file_path": "written.txt",
+                            "content": "written snapshot",
+                        },
+                    }
+                ),
+                "2026-09-29 00:00:00",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO events (run_id, seq, type, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "run-1",
+                3,
+                "tool_result",
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "tool_id": "write-tool",
+                        "content": "File created successfully",
+                    }
+                ),
+                "2026-09-29 00:00:00",
+            ),
+        )
         connection.commit()
 
     command.upgrade(config, "head")
@@ -126,9 +186,41 @@ def test_multiturn_migration_backfills_legacy_history(tmp_path) -> None:
         kind = connection.execute(
             "SELECT kind FROM messages WHERE id = 'message-1'"
         ).fetchone()
+        artifact = connection.execute(
+            "SELECT path, content, size_bytes, truncated FROM artifacts "
+            "WHERE run_id = 'run-1' AND event_seq = 1"
+        ).fetchone()
+        event_payload = json.loads(
+            connection.execute(
+                "SELECT payload FROM events WHERE run_id = 'run-1' AND seq = 1"
+            ).fetchone()[0]
+        )
+        write_artifact = connection.execute(
+            "SELECT path, content, size_bytes, truncated FROM artifacts "
+            "WHERE run_id = 'run-1' AND event_seq = 3"
+        ).fetchone()
+        write_tool_payload = json.loads(
+            connection.execute(
+                "SELECT payload FROM events WHERE run_id = 'run-1' AND seq = 2"
+            ).fetchone()[0]
+        )
+        write_result_payload = json.loads(
+            connection.execute(
+                "SELECT payload FROM events WHERE run_id = 'run-1' AND seq = 3"
+            ).fetchone()[0]
+        )
 
     assert conversation == ("active", 1)
     assert run is not None
     assert len(run[0]) == 36
     assert run[1] == "session-1"
     assert kind == ("text",)
+    assert artifact == ("legacy.txt", "legacy snapshot", 15, 0)
+    assert "content" not in event_payload["file"]
+    assert event_payload["file"]["content_size_bytes"] == 15
+    assert event_payload["file"]["content_truncated"] is False
+    assert write_artifact == ("written.txt", "written snapshot", 16, 0)
+    assert "content" not in write_tool_payload["input"]
+    assert write_tool_payload["input"]["content_redacted"] is True
+    assert write_result_payload["file"]["path"] == "written.txt"
+    assert write_result_payload["file"]["content_size_bytes"] == 16

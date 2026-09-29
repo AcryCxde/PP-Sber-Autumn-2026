@@ -33,6 +33,23 @@ type EventData = {
   [key: string]: unknown;
 };
 
+type PersistedEvent = {
+  run_id: string;
+  seq: number;
+  type: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+type Artifact = {
+  run_id: string;
+  seq: number;
+  path: string;
+  num_lines: number | null;
+  size_bytes: number | null;
+  downloadable: boolean;
+};
+
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
 type Theme = 'light' | 'dark';
 type ContextState = Conversation['context_state'];
@@ -110,10 +127,85 @@ function canonicalMessageEvent(value: unknown): EventData | null {
   };
 }
 
+function agentNames(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      if (typeof item === 'string') {
+        return item;
+      }
+      if (isRecord(item) && typeof item.name === 'string') {
+        return item.name;
+      }
+      return null;
+    })
+    .filter((item): item is string => Boolean(item));
+}
+
+function usedAgentNames(value: unknown): string[] {
+  if (!isRecord(value) || !isRecord(value.by_type)) {
+    return [];
+  }
+  return Object.entries(value.by_type)
+    .filter(([, stats]) => {
+      if (typeof stats === 'number') {
+        return stats > 0;
+      }
+      if (!isRecord(stats)) {
+        return false;
+      }
+      return Object.values(stats).some((count) => typeof count === 'number' && count > 0);
+    })
+    .map(([name]) => name);
+}
+
+function artifactFromEvent(event: EventData): Artifact | null {
+  if (event.type !== 'tool_result' || !event.run_id || typeof event.seq !== 'number') {
+    return null;
+  }
+  const file = isRecord(event.file) ? event.file : null;
+  if (!file || typeof file.path !== 'string' || !file.path) {
+    return null;
+  }
+  return {
+    run_id: event.run_id,
+    seq: event.seq,
+    path: file.path,
+    num_lines: typeof file.num_lines === 'number' ? file.num_lines : null,
+    size_bytes: typeof file.content_size_bytes === 'number' ? file.content_size_bytes : null,
+    downloadable:
+      file.content_truncated === false &&
+      typeof file.content_size_bytes === 'number',
+  };
+}
+
+async function fetchRunEvents(runId: string): Promise<PersistedEvent[]> {
+  const events: PersistedEvent[] = [];
+  let afterSeq = 0;
+
+  while (true) {
+    const response = await fetch(`/api/runs/${runId}/events?after_seq=${afterSeq}&limit=500`);
+    if (!response.ok) {
+      return events;
+    }
+    const page = (await response.json()) as PersistedEvent[];
+    events.push(...page);
+    if (page.length < 500) {
+      return events;
+    }
+    afterSeq = page[page.length - 1].seq;
+  }
+}
+
 function App() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
   const [prompt, setPrompt] = useState('');
   const [events, setEvents] = useState<EventData[]>([]);
+  const [availableAgents, setAvailableAgents] = useState<string[]>([]);
+  const [usedAgents, setUsedAgents] = useState<string[]>([]);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [contextState, setContextState] = useState<ContextState>('new');
@@ -182,14 +274,51 @@ function App() {
         throw new Error('Не удалось загрузить сообщения диалога');
       }
       const messages = (await response.json()) as StoredMessage[];
+      const runIds = Array.from(
+        new Set(
+          messages
+            .map((message) => message.run_id)
+            .filter((runId): runId is string => Boolean(runId)),
+        ),
+      );
+      const persistedEvents = (await Promise.all(runIds.map(fetchRunEvents))).flat();
       if (selectionVersion !== selectionVersionRef.current) {
         return;
+      }
+
+      const flattenedEvents: EventData[] = persistedEvents.map((event) => ({
+        ...event.payload,
+        type: event.type,
+        run_id: event.run_id,
+        seq: event.seq,
+      }));
+      const available = new Set<string>();
+      const used = new Set<string>();
+      const storedArtifacts = new Map<string, Artifact>();
+      for (const event of flattenedEvents) {
+        if (event.type === 'session') {
+          for (const name of agentNames(event.agents)) {
+            available.add(name);
+          }
+        }
+        if (event.type === 'result') {
+          for (const name of usedAgentNames(event.subagent_stats)) {
+            used.add(name);
+          }
+        }
+        const artifact = artifactFromEvent(event);
+        if (artifact) {
+          storedArtifacts.set(`${artifact.run_id}:${artifact.seq}`, artifact);
+        }
       }
 
       activeConversationRef.current = conversationId;
       setActiveConversationId(conversationId);
       window.localStorage.setItem(SELECTED_CONVERSATION_KEY, conversationId);
       setResetContextOnNextRun(false);
+      setAvailableAgents(Array.from(available).sort());
+      setUsedAgents(Array.from(used).sort());
+      setArtifacts(Array.from(storedArtifacts.values()));
       setEvents(messages.map(storedMessageEvent));
     } catch (loadError) {
       if (selectionVersion === selectionVersionRef.current) {
@@ -340,6 +469,19 @@ function App() {
           lastSeqByRunRef.current.set(event.run_id, event.seq);
         }
 
+        if (event.type === 'session') {
+          if (event.conversation_id !== activeConversationRef.current) {
+            return;
+          }
+          const names = agentNames(event.agents);
+          if (names.length > 0) {
+            setAvailableAgents((previous) =>
+              Array.from(new Set([...previous, ...names])).sort(),
+            );
+          }
+          return;
+        }
+
         if (event.type === 'context.reset') {
           const marker = canonicalMessageEvent(event.message);
           if (marker) {
@@ -407,6 +549,14 @@ function App() {
         }
 
         if (event.type === 'result' && event.run_id === activeRunRef.current) {
+          if (event.conversation_id === activeConversationRef.current) {
+            const names = usedAgentNames(event.subagent_stats);
+            if (names.length > 0) {
+              setUsedAgents((previous) =>
+                Array.from(new Set([...previous, ...names])).sort(),
+              );
+            }
+          }
           activeRunRef.current = null;
           setIsRunning(false);
           if (typeof event.session_state === 'string') {
@@ -430,6 +580,15 @@ function App() {
         }
         if (event.conversation_id && event.conversation_id !== activeConversationRef.current) {
           return;
+        }
+        const artifact = artifactFromEvent(event);
+        if (artifact) {
+          setArtifacts((previous) => {
+            const key = `${artifact.run_id}:${artifact.seq}`;
+            return previous.some((item) => `${item.run_id}:${item.seq}` === key)
+              ? previous
+              : [...previous, artifact];
+          });
         }
         setEvents((previous) => [...previous, event]);
       };
@@ -481,6 +640,9 @@ function App() {
     setContextState('new');
     setResetContextOnNextRun(false);
     setIsHistoryLoading(false);
+    setAvailableAgents([]);
+    setUsedAgents([]);
+    setArtifacts([]);
     setEvents([]);
     setError(null);
   };
@@ -569,7 +731,7 @@ function App() {
                   }
                 });
               }}
-              disabled={isReplaying}
+              disabled={isReplaying || isRunning}
             >
               <span className="conversation-title">{conversation.title}</span>
               <span className="conversation-time">{formatConversationTime(conversation.updated_at)}</span>
@@ -602,6 +764,61 @@ function App() {
           <div className="chat-content">
             {events.length === 0 && !isHistoryLoading && (
               <div className="empty-state"><div className="empty-mark">C</div><h2>Новый диалог</h2><p>Напишите запрос, чтобы начать работу с Claude Code.</p></div>
+            )}
+
+            {events.length > 0 && (
+              <div className="agent-roles-panel">
+                <div className="panel-title">Роли сессии</div>
+                <div className="role-groups">
+                  <div className="role-group">
+                    <span className="role-label">Основная</span>
+                    <span className="role-badge primary">Claude Code</span>
+                  </div>
+                  {usedAgents.length > 0 && (
+                    <div className="role-group">
+                      <span className="role-label">Привлечены</span>
+                      {usedAgents.map((agent) => <span key={agent} className="role-badge used">{agent}</span>)}
+                    </div>
+                  )}
+                  {availableAgents.length > 0 && (
+                    <details className="available-roles">
+                      <summary>Доступные роли: {availableAgents.length}</summary>
+                      <div className="role-badges">
+                        {availableAgents.map((agent) => <span key={agent} className="role-badge">{agent}</span>)}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {artifacts.length > 0 && (
+              <div className="artifacts-panel">
+                <div className="panel-title">Файлы сессии</div>
+                <div className="artifact-list">
+                  {artifacts.map((artifact) => (
+                    <div key={`${artifact.run_id}:${artifact.seq}`} className="artifact-item">
+                      <div className="artifact-info">
+                        <span className="artifact-icon">📄</span>
+                        <span className="artifact-path">{artifact.path}</span>
+                        {artifact.num_lines !== null && <span className="artifact-meta">{artifact.num_lines} строк</span>}
+                        {artifact.size_bytes !== null && <span className="artifact-meta">{(artifact.size_bytes / 1024).toFixed(1)} КБ</span>}
+                      </div>
+                      {artifact.downloadable ? (
+                        <a
+                          className="artifact-download"
+                          href={`/api/runs/${artifact.run_id}/events/${artifact.seq}/file`}
+                          download
+                        >
+                          Скачать
+                        </a>
+                      ) : (
+                        <span className="artifact-unavailable">Snapshot недоступен</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
 
             {contextState === 'unavailable' && (

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -104,6 +105,10 @@ class Run(Base):
         cascade="all, delete-orphan",
         order_by="Event.seq",
     )
+    artifacts: Mapped[list[Artifact]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
 
 
 class Message(Base):
@@ -159,3 +164,27 @@ class Event(Base):
     )
 
     run: Mapped[Run] = relationship(back_populates="events")
+
+
+class Artifact(Base):
+    __tablename__ = "artifacts"
+    __table_args__ = (
+        UniqueConstraint("run_id", "event_seq", name="uq_artifacts_run_event"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    event_seq: Mapped[int] = mapped_column(Integer)
+    path: Mapped[str] = mapped_column(Text)
+    content: Mapped[str | None] = mapped_column(Text)
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+
+    run: Mapped[Run] = relationship(back_populates="artifacts")

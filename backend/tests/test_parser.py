@@ -1,6 +1,6 @@
 import json
 
-from backend.parser import MAX_RAW_CONTENT_LENGTH, parse_event
+from backend.parser import MAX_RAW_CONTENT_LENGTH, bounded_file_content, parse_event
 
 
 def test_parser_preserves_all_assistant_blocks_in_order() -> None:
@@ -75,6 +75,8 @@ def test_parser_preserves_multiple_tool_results() -> None:
     assert events[1]["file"] == {
         "path": "example.py",
         "content": "print('ok')",
+        "content_size_bytes": 11,
+        "content_truncated": False,
         "num_lines": 1,
     }
 
@@ -152,6 +154,14 @@ def test_parser_normalizes_valid_json_with_invalid_shapes() -> None:
         "raw_event",
     ]
     assert file_events[1]["subtype"] == "user.tool_result.file"
+
+
+def test_large_file_content_is_not_persisted() -> None:
+    content, size_bytes, truncated = bounded_file_content("абвг", max_bytes=4)
+
+    assert content is None
+    assert size_bytes == 8
+    assert truncated is True
 
 
 def test_parser_returns_empty_list_for_blank_input() -> None:

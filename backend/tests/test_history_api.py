@@ -3,11 +3,13 @@ import json
 from types import SimpleNamespace
 from uuid import uuid4
 
-from fastapi import WebSocketDisconnect
+import pytest
+from fastapi import HTTPException, WebSocketDisconnect
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 import backend.main as main_module
+from backend.api.history import download_event_file
 from backend.db import Database
 from backend.models import Event, Run
 from backend.repository import create_request
@@ -133,6 +135,68 @@ def claude_lines(response: str, session_id: str = "session-1") -> list[str]:
     ]
 
 
+def tool_result_line(file_path: str, content: str) -> str:
+    return json.dumps(
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-1",
+                        "content": "File written",
+                        "tool_use_result": {
+                            "type": "file",
+                            "file": {
+                                "filePath": file_path,
+                                "content": content,
+                                "numLines": content.count("\n") + 1,
+                            },
+                        },
+                    }
+                ]
+            },
+        }
+    )
+
+
+def write_tool_events(file_path: str, content: str) -> list[str]:
+    return [
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "write-tool",
+                            "name": "Write",
+                            "input": {
+                                "file_path": file_path,
+                                "content": content,
+                            },
+                        }
+                    ]
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "write-tool",
+                            "content": f"File created successfully at: {file_path}",
+                        }
+                    ]
+                },
+            }
+        ),
+    ]
+
+
 def run_command(
     content: str,
     *,
@@ -203,6 +267,118 @@ def test_websocket_request_is_saved_to_history(tmp_path, monkeypatch) -> None:
             (1, "user", "text"),
             (2, "assistant", "text"),
         ]
+
+
+def test_created_file_can_be_downloaded_from_recorded_event(tmp_path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    created_file = project_root / "created.txt"
+    created_file.write_text("download me", encoding="utf-8")
+    lines = claude_lines("File created")
+    lines[1:1] = write_tool_events(str(created_file), "download me")
+
+    async def fake_start_claude(
+        prompt: str,
+        resume_session_id: str | None = None,
+    ) -> FakeProcess:
+        del prompt, resume_session_id
+        return FakeProcess(lines)
+
+    monkeypatch.setattr(main_module, "start_claude", fake_start_claude)
+    app = main_module.create_app(make_database(tmp_path))
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(run_command("Create a file"))
+            accepted = websocket.receive_json()
+            websocket.receive_json()
+            assert websocket.receive_json()["type"] == "tool"
+            tool_event = websocket.receive_json()
+            assert tool_event["type"] == "tool_result"
+            assert tool_event["file"]["path"] == str(created_file)
+            assert "content" not in tool_event["file"]
+            websocket.receive_json()
+            websocket.receive_json()
+
+        response = client.get(
+            f"/api/runs/{accepted['run_id']}/events/{tool_event['seq']}/file"
+        )
+
+    assert response.status_code == 200
+    assert response.content == b"download me"
+    assert "attachment" in response.headers["content-disposition"]
+
+
+def test_file_download_uses_persisted_snapshot_not_live_path(tmp_path, monkeypatch) -> None:
+    live_file = tmp_path / "changed.txt"
+    live_file.write_text("live content that must not be read", encoding="utf-8")
+
+    lines = claude_lines("File created")
+    lines.insert(1, tool_result_line(str(live_file), "persisted snapshot"))
+
+    async def fake_start_claude(
+        prompt: str,
+        resume_session_id: str | None = None,
+    ) -> FakeProcess:
+        del prompt, resume_session_id
+        return FakeProcess(lines)
+
+    monkeypatch.setattr(main_module, "start_claude", fake_start_claude)
+    app = main_module.create_app(make_database(tmp_path))
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(run_command("Create a file"))
+            accepted = websocket.receive_json()
+            websocket.receive_json()
+            tool_event = websocket.receive_json()
+            websocket.receive_json()
+            websocket.receive_json()
+
+        response = client.get(
+            f"/api/runs/{accepted['run_id']}/events/{tool_event['seq']}/file"
+        )
+
+    assert response.status_code == 200
+    assert response.content == b"persisted snapshot"
+    assert response.content != live_file.read_bytes()
+
+
+async def test_unregistered_legacy_file_snapshot_is_not_downloadable(tmp_path) -> None:
+    database = make_database(tmp_path)
+    await database.create_schema()
+
+    try:
+        async with database.session() as session:
+            created = await create_request(session, "Legacy file")
+
+        async with database.session() as session:
+            run = await session.get(Run, created.run_id)
+            assert run is not None
+            run.next_event_seq = 2
+            session.add(
+                Event(
+                    run_id=created.run_id,
+                    seq=2,
+                    type="tool_result",
+                    payload={
+                        "schema_version": 1,
+                        "file": {
+                            "path": "legacy.txt",
+                            "content": "legacy content without metadata",
+                        },
+                    },
+                )
+            )
+            await session.commit()
+
+        async with database.session() as session:
+            with pytest.raises(HTTPException) as error:
+                await download_event_file(created.run_id, 2, session)
+
+        assert error.value.status_code == 404
+    finally:
+        await database.dispose()
 
 
 def test_multiple_websocket_requests_resume_same_conversation(tmp_path, monkeypatch) -> None:

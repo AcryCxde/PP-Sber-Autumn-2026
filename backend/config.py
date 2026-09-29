@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BACKEND_DIR.parent
 DEFAULT_DATABASE_PATH = BACKEND_DIR / "data" / "history.db"
 
 
@@ -17,6 +18,7 @@ class Settings(BaseSettings):
         "manual",
         "plan",
     ] = "acceptEdits"
+    artifact_max_download_bytes: int = 10 * 1024 * 1024
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,9 +1,13 @@
 from typing import Annotated
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.config import Settings
 from backend.dependencies import get_session
+from backend.models import Artifact
 from backend.repository import (
     get_active_run_ids,
     list_conversations,
@@ -14,6 +18,7 @@ from backend.schemas import ConversationRead, EventRead, MessageRead
 
 
 router = APIRouter(prefix="/api", tags=["history"])
+API_SETTINGS = Settings()
 SessionDependency = Annotated[AsyncSession, Depends(get_session)]
 
 
@@ -78,3 +83,54 @@ async def get_run_events(
         )
 
     return [EventRead.model_validate(item) for item in page.events]
+
+
+@router.get("/runs/{run_id}/events/{event_seq}/file")
+async def download_event_file(
+    run_id: str,
+    event_seq: int,
+    session: SessionDependency,
+) -> Response:
+    artifact = await session.scalar(
+        select(Artifact).where(
+            Artifact.run_id == run_id,
+            Artifact.event_seq == event_seq,
+        )
+    )
+    if artifact is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File artifact not found",
+        )
+    if artifact.truncated or (
+        artifact.size_bytes is not None
+        and artifact.size_bytes > API_SETTINGS.artifact_max_download_bytes
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Persisted file snapshot exceeds the download limit",
+        )
+    if artifact.content is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Artifact has no persisted file content",
+        )
+
+    content = artifact.content.encode("utf-8")
+    if len(content) > API_SETTINGS.artifact_max_download_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="File is too large to download",
+        )
+
+    filename = artifact.path.replace("\\", "/").rsplit("/", 1)[-1]
+    filename = filename.replace("\r", "").replace("\n", "") or "artifact"
+    return Response(
+        content=content,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+            )
+        },
+    )
