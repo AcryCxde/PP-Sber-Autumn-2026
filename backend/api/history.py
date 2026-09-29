@@ -4,8 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.dependencies import get_session
-from backend.repository import list_conversations, list_messages
-from backend.schemas import ConversationRead, MessageRead
+from backend.repository import (
+    list_conversations,
+    list_messages,
+    list_run_events,
+)
+from backend.schemas import ConversationRead, EventRead, MessageRead
 
 
 router = APIRouter(prefix="/api", tags=["history"])
@@ -42,3 +46,25 @@ async def get_conversation_messages(
         )
 
     return [MessageRead.model_validate(item) for item in messages]
+
+
+@router.get("/runs/{run_id}/events", response_model=list[EventRead])
+async def get_run_events(
+    run_id: str,
+    session: SessionDependency,
+    after_seq: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> list[EventRead]:
+    page = await list_run_events(
+        session,
+        run_id,
+        after_seq=after_seq,
+        limit=limit,
+    )
+    if page is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Run not found",
+        )
+
+    return [EventRead.model_validate(item) for item in page.events]

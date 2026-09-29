@@ -25,5 +25,15 @@ def test_initial_migration_creates_history_tables_and_parent_directory(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
+        run_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(runs)")
+        }
 
-    assert {"alembic_version", "conversations", "runs", "messages"} <= tables
+    assert "next_event_seq" in run_columns
+    assert {
+        "alembic_version",
+        "conversations",
+        "runs",
+        "messages",
+        "events",
+    } <= tables

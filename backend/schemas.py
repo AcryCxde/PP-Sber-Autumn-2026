@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -20,6 +21,16 @@ class MessageRead(BaseModel):
     role: str
     sequence: int
     content: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EventRead(BaseModel):
+    run_id: str
+    seq: int
+    type: str
+    payload: dict[str, Any]
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

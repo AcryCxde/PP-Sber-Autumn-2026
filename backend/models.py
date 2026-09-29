@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import (
+    JSON,
     DateTime,
     ForeignKey,
     Integer,
@@ -64,6 +66,7 @@ class Run(Base):
         index=True,
     )
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    next_event_seq: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
@@ -74,6 +77,11 @@ class Run(Base):
 
     conversation: Mapped[Conversation] = relationship(back_populates="runs")
     messages: Mapped[list[Message]] = relationship(back_populates="run")
+    events: Mapped[list[Event]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="Event.seq",
+    )
 
 
 class Message(Base):
@@ -106,3 +114,25 @@ class Message(Base):
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
     run: Mapped[Run | None] = relationship(back_populates="messages")
+
+
+class Event(Base):
+    __tablename__ = "events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "seq", name="uq_events_run_sequence"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    seq: Mapped[int] = mapped_column(Integer)
+    type: Mapped[str] = mapped_column(String(50))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+
+    run: Mapped[Run] = relationship(back_populates="events")

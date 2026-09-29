@@ -1,11 +1,13 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import Conversation, Message, Run
+from backend.models import Conversation, Event, Message, Run
 
 
 @dataclass(frozen=True)
@@ -13,6 +15,12 @@ class CreatedRequest:
     conversation_id: str
     run_id: str
     message_id: str
+
+
+@dataclass(frozen=True)
+class RunEventPage:
+    conversation_id: str
+    events: list[Event]
 
 
 def make_title(prompt: str, max_length: int = 80) -> str:
@@ -101,6 +109,58 @@ async def finalize_run(
         conversation.claude_session_id = session_id
 
     await session.commit()
+
+
+async def append_event(
+    session: AsyncSession,
+    run_id: str,
+    event_data: Mapping[str, Any],
+) -> Event:
+    next_seq = await session.scalar(
+        update(Run)
+        .where(Run.id == run_id)
+        .values(next_event_seq=Run.next_event_seq + 1)
+        .returning(Run.next_event_seq)
+    )
+    if next_seq is None:
+        raise LookupError(f"Run {run_id} was not found")
+
+    event = Event(
+        run_id=run_id,
+        seq=next_seq,
+        type=str(event_data["type"]),
+        payload={
+            key: value
+            for key, value in event_data.items()
+            if key != "type"
+        },
+    )
+    session.add(event)
+    await session.commit()
+    return event
+
+
+async def list_run_events(
+    session: AsyncSession,
+    run_id: str,
+    *,
+    after_seq: int,
+    limit: int,
+) -> RunEventPage | None:
+    run = await session.get(Run, run_id)
+    if run is None:
+        return None
+
+    result = await session.scalars(
+        select(Event)
+        .where(Event.run_id == run_id, Event.seq > after_seq)
+        .order_by(Event.seq.asc())
+        .limit(limit)
+    )
+    return RunEventPage(
+        conversation_id=run.conversation_id,
+        events=list(result),
+    )
 
 
 async def list_conversations(
