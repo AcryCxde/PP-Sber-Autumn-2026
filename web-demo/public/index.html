@@ -260,6 +260,17 @@
     <section class="page flow hidden" id="result">
       <p class="eyebrow">Единый результат готов</p><h2>Команда объединила выводы и проверила результат</h2>
       <div class="artifact result-artifact"><span>ОБЩИЙ РЕЗУЛЬТАТ · ВЕРСИЯ 1</span><h3 id="result-title"></h3><p id="result-copy"></p></div>
+      <section class="result-feedback" id="result-feedback" data-bind="feedback.result_usefulness">
+        <p class="eyebrow">Оценка результата</p>
+        <h3>Помог ли результат принять решение или сделать следующий шаг?</h3>
+        <div class="feedback-options" id="feedback-options" role="group" aria-label="Полезность результата">
+          <button type="button" data-feedback-value="ready_to_act">Да, могу действовать</button>
+          <button type="button" data-feedback-value="needs_revision">Частично — нужна доработка</button>
+          <button type="button" data-feedback-value="not_helpful">Нет, результат не помог</button>
+        </div>
+        <label class="feedback-note">Что стоит улучшить?<textarea id="feedback-note" placeholder="Необязательно — добавьте короткий комментарий"></textarea></label>
+        <div class="feedback-submit-row"><button class="ghost" id="feedback-submit" disabled>Отправить оценку</button><span id="feedback-state">В демо оценка сохраняется только в этом браузере.</span></div>
+      </section>
       <div class="action-row"><button class="ghost" id="download-artifact">Скачать результат</button><button class="ghost" id="request-revision">Попросить доработку</button><button class="primary" id="finish-project">Завершить работу и сохранить в профиле</button></div>
       <p class="context-state" id="save-result-state">Результат ещё не сохранён в профиле.</p>
     </section>
@@ -313,22 +324,50 @@
 
       <nav class="admin-tabs" aria-label="Разделы операторской консоли">
         <button class="active" data-admin-tab="overview">Обзор</button>
+        <button data-admin-tab="metrics">Метрики</button>
+        <button data-admin-tab="feedback">Обратная связь</button>
         <button data-admin-tab="runs">Запуски <i>1</i></button>
+        <button data-admin-tab="system">Система</button>
         <button data-admin-tab="users">Пользователи</button>
         <button data-admin-tab="audit">Аудит</button>
       </nav>
 
       <section class="admin-panel" data-admin-panel="overview">
         <div class="admin-metrics">
-          <article><span>Состояние сервиса</span><strong class="health-good">Работает</strong><small>Все основные компоненты доступны</small></article>
-          <article><span>Активные работы</span><strong>7</strong><small>3 команды выполняют передачу между ролями</small></article>
-          <article><span>Ждут пользователя</span><strong>2</strong><small>Время обработки приостановлено</small></article>
-          <article><span>Требует внимания</span><strong class="health-warn">1</strong><small>Запуск без события более 8 минут</small></article>
+          <article data-bind="metrics.useful_result_rate"><span>Полезный принятый результат</span><strong>—</strong><small>Ключевая метрика · данные не подключены</small></article>
+          <article data-bind="metrics.projects_started"><span>Проекты с начатой работой</span><strong>—</strong><small>Источник: событие run_started</small></article>
+          <article data-bind="metrics.results_saved"><span>Результаты сохранены</span><strong>—</strong><small>Источник: событие artifact_saved</small></article>
+          <article data-bind="metrics.feedback_response_rate"><span>Ответили на вопрос о результате</span><strong>—</strong><small>Источник: feedback_submitted</small></article>
         </div>
         <div class="admin-overview-grid">
-          <article class="service-health"><p class="eyebrow">Компоненты</p><div><b>Гейтвей сессий</b><span class="health-good">Доступен</span></div><div><b>Исполнители</b><span class="health-good">6 из 6</span></div><div><b>Хранилище результатов</b><span class="health-good">Доступно</span></div><div><b>Поток событий</b><span class="health-warn">Задержка 4 с</span></div></article>
-          <article class="admin-attention"><p class="eyebrow">Требует внимания</p><h3>Запуск run_1048 не присылал событий 8 минут</h3><p>Проектные материалы скрыты. Доступны только состояние, время и безопасная диагностика.</p><button class="ghost" data-open-run="run_1048">Открыть запуск</button></article>
+          <article class="north-star-card"><p class="eyebrow">Ключевая метрика</p><h3>Доля проектов с результатом, достаточным для следующего действия</h3><p><code>artifact_saved + ready_to_act</code> среди проектов, где работа команды действительно началась.</p><button class="ghost" data-open-admin-tab="metrics">Открыть воронку</button></article>
+          <article class="connection-summary"><p class="eyebrow">Подключение данных</p><div><b>Продуктовые события</b><span class="binding-pending">Ожидает API</span></div><div><b>Отзывы</b><span class="binding-demo" id="overview-feedback-source">Локальное демо</span></div><div><b>Gateway и runner</b><span class="binding-pending">Ожидает адаптер</span></div><button class="ghost" data-open-admin-tab="system">Открыть схему подключения</button></article>
         </div>
+      </section>
+
+      <section class="admin-panel hidden" data-admin-panel="metrics">
+        <div class="admin-section-head"><div><p class="eyebrow">Продуктовая ценность</p><h3>Путь от задачи до полезного результата</h3></div><label>Период<select id="metrics-period" disabled><option>Последние 30 дней</option></select></label></div>
+        <p class="admin-data-note">Поля подготовлены для агрегированного API. Пока значения не рассчитываются и не подменяются демонстрационными числами.</p>
+        <div class="metric-funnel" aria-label="Воронка продукта">
+          <article data-bind="funnel.project_created"><span>01</span><div><b>Проект создан</b><small>project_created</small></div><strong>—</strong><i>—</i></article>
+          <article data-bind="funnel.team_approved"><span>02</span><div><b>Команда согласована</b><small>team_approved</small></div><strong>—</strong><i>—</i></article>
+          <article data-bind="funnel.run_started"><span>03</span><div><b>Работа началась</b><small>run_started</small></div><strong>—</strong><i>—</i></article>
+          <article data-bind="funnel.artifact_saved"><span>04</span><div><b>Результат сохранён</b><small>artifact_saved</small></div><strong>—</strong><i>—</i></article>
+          <article data-bind="funnel.result_accepted"><span>05</span><div><b>Результат принят</b><small>result_accepted</small></div><strong>—</strong><i>—</i></article>
+          <article data-bind="funnel.ready_to_act"><span>06</span><div><b>Пользователь может действовать</b><small>feedback_submitted: ready_to_act</small></div><strong>—</strong><i>Ключевая метрика</i></article>
+        </div>
+        <div class="metric-contract"><b>Будущий источник данных</b><p>Серверные события проекта и запуска. Содержание задачи, материалы и ответы агентов в расчёт метрик не передаются.</p></div>
+      </section>
+
+      <section class="admin-panel hidden" data-admin-panel="feedback">
+        <div class="admin-section-head"><div><p class="eyebrow">Голос пользователя</p><h3>Оценка единого результата</h3></div><span class="data-source-badge">Демо · этот браузер</span></div>
+        <div class="admin-metrics feedback-metrics">
+          <article data-bind="feedback.ready_to_act"><span>Может действовать</span><strong id="feedback-ready-count">—</strong><small>Главный положительный сигнал</small></article>
+          <article data-bind="feedback.needs_revision"><span>Нужна доработка</span><strong id="feedback-revision-count">—</strong><small>Причины попадут в очередь улучшений</small></article>
+          <article data-bind="feedback.not_helpful"><span>Результат не помог</span><strong id="feedback-negative-count">—</strong><small>Требует разбора сценария</small></article>
+          <article data-bind="feedback.response_rate"><span>Доля ответивших</span><strong>—</strong><small>Появится после подключения числа результатов</small></article>
+        </div>
+        <div class="feedback-feed" id="admin-feedback-feed"><div class="admin-empty-state"><b>Обратной связи пока нет</b><p>После оценки результата здесь появится безопасная запись без материалов проекта.</p></div></div>
       </section>
 
       <section class="admin-panel hidden" data-admin-panel="runs">
@@ -339,6 +378,18 @@
           <tr data-run-state="attention"><td><b>Городской сервис</b><small>run_1048 · 67%</small></td><td><span class="status-pill attention">Нет событий</span></td><td>Проверка рисков</td><td>8 минут назад</td><td><button class="ghost compact-button" data-open-run="run_1048">Диагностика</button></td></tr>
           <tr data-run-state="running"><td><b>Редактура книги</b><small>run_1047 · 78%</small></td><td><span class="status-pill running">В работе</span></td><td>Предпечатная проверка</td><td>36 секунд назад</td><td><button class="ghost compact-button" data-open-run="run_1047">Диагностика</button></td></tr>
         </tbody></table></div>
+      </section>
+
+      <section class="admin-panel hidden" data-admin-panel="system">
+        <div class="admin-section-head"><div><p class="eyebrow">Техническое состояние</p><h3>Gateway, runner и Claude</h3></div><span class="data-source-badge">Ожидает интеграцию 2.1 / 2.4</span></div>
+        <p class="admin-data-note">Статусы разделены, чтобы доступность Gateway не выдавала зависшую Claude-сессию за исправную работу.</p>
+        <div class="system-grid">
+          <article data-bind="system.gateway"><div class="system-card-head"><span>Gateway</span><b class="binding-pending">Не подключён</b></div><dl><div><dt>Последний heartbeat</dt><dd data-field="last_heartbeat_at">—</dd></div><div><dt>Задержка событий</dt><dd data-field="event_lag_seconds">—</dd></div><div><dt>Переподключения</dt><dd data-field="reconnect_count">—</dd></div></dl><small>Будущий источник: WebSocket hello / heartbeat / event</small></article>
+          <article data-bind="system.runner"><div class="system-card-head"><span>Runner</span><b class="binding-pending">Нет данных</b></div><dl><div><dt>Здоровье</dt><dd data-field="health">—</dd></div><div><dt>Фаза</dt><dd data-field="phase">—</dd></div><div><dt>Последний прогресс</dt><dd data-field="last_progress_at">—</dd></div></dl><small>Будущий источник: health.json или heartbeat runner</small></article>
+          <article data-bind="system.claude_proxy"><div class="system-card-head"><span>Claude gateway</span><b class="binding-pending">Не проверен</b></div><dl><div><dt>Проверка доступа</dt><dd data-field="probe_result">—</dd></div><div><dt>Модель</dt><dd data-field="model">—</dd></div><div><dt>Время ответа</dt><dd data-field="latency_ms">—</dd></div></dl><small>Будущий источник: безопасный результат probe без ключа и ответа модели</small></article>
+          <article data-bind="system.demo_session"><div class="system-card-head"><span>Демо-сессия Claude</span><b class="binding-pending">Не запускалась</b></div><dl><div><dt>Сессия</dt><dd data-field="session_id">—</dd></div><div><dt>Последнее событие</dt><dd data-field="last_event_kind">—</dd></div><div><dt>Номер события</dt><dd data-field="last_seq">—</dd></div></dl><small>Будущий источник: безопасная проекция events.jsonl</small></article>
+        </div>
+        <div class="system-contract"><span>Runner</span><i></i><span>Gateway</span><i></i><span>Публичные события</span><i></i><span>Веб</span></div>
       </section>
 
       <section class="admin-panel hidden" data-admin-panel="users">

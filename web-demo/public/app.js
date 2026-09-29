@@ -17,6 +17,8 @@ const state = {
   projectName: localStorage.getItem("ct-project-name") || "Кофейня у университета",
   projectGoal: localStorage.getItem("ct-project-goal") || "Хочу открыть небольшую кофейню рядом с университетом и понять, насколько идея жизнеспособна и что потребуется для запуска.",
   projects: JSON.parse(localStorage.getItem("ct-projects") || "[]"),
+  feedback: JSON.parse(localStorage.getItem("ct-feedback") || "[]"),
+  productEvents: JSON.parse(localStorage.getItem("ct-product-events") || "[]"),
   currentProjectId: localStorage.getItem("ct-current-project") || "",
   revision: false,
   credits: Number(localStorage.getItem("ct-credits") || 0)
@@ -31,6 +33,54 @@ function hasAdminSession() {
 
 function syncAdminUi() {
   $("#admin-nav").classList.toggle("hidden", !hasAdminSession());
+}
+
+function trackProductEvent(type, payload = {}) {
+  const event = {
+    contractVersion: "1.0",
+    eventId: `local-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    projectId: state.currentProjectId || null,
+    createdAt: new Date().toISOString(),
+    type,
+    payload
+  };
+  state.productEvents = [...state.productEvents.slice(-99), event];
+  localStorage.setItem("ct-product-events", JSON.stringify(state.productEvents));
+  return event;
+}
+
+function currentFeedback() {
+  return state.feedback.find((item) => item.projectId === state.currentProjectId) || null;
+}
+
+let selectedFeedback = "";
+function renderResultFeedback() {
+  const saved = currentFeedback();
+  selectedFeedback = saved?.value || "";
+  document.querySelectorAll("[data-feedback-value]").forEach((button) => {
+    button.classList.toggle("selected", saved?.value === button.dataset.feedbackValue);
+  });
+  $("#feedback-note").value = saved?.note || "";
+  $("#feedback-submit").disabled = !saved;
+  $("#feedback-state").textContent = saved
+    ? "Оценка сохранена в демо. Её можно изменить."
+    : "В демо оценка сохраняется только в этом браузере.";
+}
+
+function renderAdminFeedback() {
+  const labels = {
+    ready_to_act: "Может действовать",
+    needs_revision: "Нужна доработка",
+    not_helpful: "Результат не помог"
+  };
+  const counts = state.feedback.reduce((total, item) => ({ ...total, [item.value]: (total[item.value] || 0) + 1 }), {});
+  $("#feedback-ready-count").textContent = counts.ready_to_act || "—";
+  $("#feedback-revision-count").textContent = counts.needs_revision || "—";
+  $("#feedback-negative-count").textContent = counts.not_helpful || "—";
+  $("#overview-feedback-source").textContent = state.feedback.length ? `Локальных ответов: ${state.feedback.length}` : "Локальное демо";
+  $("#admin-feedback-feed").innerHTML = state.feedback.length
+    ? state.feedback.slice().reverse().map((item) => `<article><div><b>${escapeHtml(labels[item.value] || item.value)}</b><span>${escapeHtml(item.projectName || "Проект")}</span></div><p>${escapeHtml(item.note || "Без комментария")}</p><time>${new Date(item.createdAt).toLocaleString("ru-RU")}</time></article>`).join("")
+    : '<div class="admin-empty-state"><b>Обратной связи пока нет</b><p>После оценки результата здесь появится безопасная запись без материалов проекта.</p></div>';
 }
 
 const genericQuestions = [
@@ -229,7 +279,9 @@ function showPage(id, remember = true) {
     $("#save-result-state").textContent = state.projects.find((project) => project.id === state.currentProjectId)?.status === "Завершён"
       ? "Результат сохранён в профиле."
       : "Результат ещё не сохранён в профиле.";
+    renderResultFeedback();
   }
+  if (id === "admin") renderAdminFeedback();
   if (remember && !["signup", "development"].includes(id)) localStorage.setItem("ct-page", id);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -379,6 +431,7 @@ function runDevelopment(isRevision = false) {
   $("#workspace-context-text").textContent = state.context || "Контекст пока не добавлен. Его можно добавить в любой момент.";
   $("#activity-feed").innerHTML = `<p>Проект «${state.projectName}» сохранён.</p><p>${state.materials.length ? `Команда получила материалов: ${state.materials.length}.` : "Материалы не приложены — фасилитатор учтёт это в вопросах."}</p><p>${state.context ? "Контекст автоматически передан всем подключённым ролям." : "Контекст можно добавить во время работы."}</p>`;
   localStorage.setItem("ct-run", JSON.stringify({ status: "running", revision: isRevision, startedAt: Date.now() }));
+  trackProductEvent("run_started", { revision: isRevision });
 
   let index = 0;
   const selectedTeam = isRevision
@@ -449,6 +502,7 @@ function runDevelopment(isRevision = false) {
     submit.onclick = () => {
       const answer = custom.value.trim() || selected;
       if (!answer) return;
+      trackProductEvent("facilitator_answered", { usedCustomAnswer: Boolean(custom.value.trim()) });
       questionResolved = true;
       panel.classList.add("hidden");
       const event = document.createElement("p");
@@ -461,6 +515,7 @@ function runDevelopment(isRevision = false) {
       setTimeout(tick, 350);
     };
     panel.classList.remove("hidden");
+    trackProductEvent("facilitator_question_shown", { projectType: state.projectType });
     localStorage.setItem("ct-run", JSON.stringify({ status: "waiting_for_input", revision: isRevision, question: question.title }));
   };
 
@@ -507,6 +562,7 @@ function runDevelopment(isRevision = false) {
         ? "Фасилитатор собрал запрос, нужные роли внесли изменения, тестировщик проверил новую версию. Предыдущая версия сохранена."
         : "Специалисты завершили свои зоны ответственности, передали выводы по общей последовательности, а фасилитатор собрал их в один согласованный результат.";
       showPage("result");
+      trackProductEvent("artifact_saved", { artifactKind: "unified_result", version: 1 });
     }, 600);
   };
   setTimeout(tick, 450);
@@ -601,6 +657,7 @@ $("#project-form").addEventListener("submit", (event) => {
   localStorage.setItem("ct-project-goal", state.projectGoal);
   localStorage.setItem("ct-context", state.context);
   upsertProject("Черновик");
+  trackProductEvent("project_created", { projectType: state.projectType });
   renderMaterials();
   showPage("level");
 });
@@ -636,6 +693,7 @@ $("#make-team").addEventListener("click", () => {
 });
 $("#team-back").addEventListener("click", () => showPage("summary"));
 $("#team-approve").addEventListener("click", () => {
+  trackProductEvent("team_approved", { rolesCount: (teams[state.projectType] || teams.custom).length });
   fillLanding();
   showPage("landing");
 });
@@ -651,7 +709,10 @@ $("#simulate-unknown").addEventListener("click", () => showRunProblem("unknown")
 $("#simulate-limit").addEventListener("click", () => showRunProblem("limit_reached"));
 $("#problem-profile").addEventListener("click", () => showPage("profile"));
 $("#problem-retry").addEventListener("click", () => showPage("estimate"));
-$("#request-revision").addEventListener("click", () => showPage("revision"));
+$("#request-revision").addEventListener("click", () => {
+  trackProductEvent("revision_requested");
+  showPage("revision");
+});
 let revisionTypeSelected = false;
 function updateRevisionButton() {
   $("#revision-start").disabled = !revisionTypeSelected || !$("#revision-text").value.trim();
@@ -675,6 +736,7 @@ $("#download-artifact").addEventListener("click", () => {
 });
 $("#finish-project").addEventListener("click", () => {
   upsertProject("Завершён");
+  trackProductEvent("result_accepted");
   $("#save-result-state").textContent = "Результат сохранён в профиле. Его можно открыть позже без повторной загрузки материалов.";
   showPage("next");
 });
@@ -732,9 +794,33 @@ $("#admin-logout").addEventListener("click", () => {
 function selectAdminTab(tabName) {
   document.querySelectorAll("[data-admin-tab]").forEach((button) => button.classList.toggle("active", button.dataset.adminTab === tabName));
   document.querySelectorAll("[data-admin-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.adminPanel !== tabName));
+  if (tabName === "feedback" || tabName === "overview") renderAdminFeedback();
 }
 
 document.querySelectorAll("[data-admin-tab]").forEach((button) => button.addEventListener("click", () => selectAdminTab(button.dataset.adminTab)));
+document.querySelectorAll("[data-open-admin-tab]").forEach((button) => button.addEventListener("click", () => selectAdminTab(button.dataset.openAdminTab)));
+
+document.querySelectorAll("[data-feedback-value]").forEach((button) => button.addEventListener("click", () => {
+  selectedFeedback = button.dataset.feedbackValue;
+  document.querySelectorAll("[data-feedback-value]").forEach((item) => item.classList.toggle("selected", item === button));
+  $("#feedback-submit").disabled = false;
+}));
+$("#feedback-submit").addEventListener("click", () => {
+  if (!selectedFeedback) return;
+  const record = {
+    projectId: state.currentProjectId || "demo-project",
+    projectName: state.projectName,
+    value: selectedFeedback,
+    note: $("#feedback-note").value.trim(),
+    createdAt: new Date().toISOString()
+  };
+  const existing = state.feedback.findIndex((item) => item.projectId === record.projectId);
+  if (existing >= 0) state.feedback[existing] = record; else state.feedback.push(record);
+  localStorage.setItem("ct-feedback", JSON.stringify(state.feedback));
+  trackProductEvent("feedback_submitted", { value: record.value, hasNote: Boolean(record.note) });
+  $("#feedback-state").textContent = "Спасибо. Оценка сохранена в демо и появилась в операторской.";
+  renderAdminFeedback();
+});
 
 $("#admin-run-filter").addEventListener("change", (event) => {
   document.querySelectorAll("#admin-runs-body tr").forEach((row) => {
