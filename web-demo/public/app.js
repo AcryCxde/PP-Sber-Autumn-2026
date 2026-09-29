@@ -696,6 +696,53 @@ $("#invest").addEventListener("click", () => {
   $("#next-note").textContent = "Сначала сервис запросит согласие на состав публичных материалов. В демо данные не публикуются и никому не передаются.";
 });
 
+function selectAdminTab(tabName) {
+  document.querySelectorAll("[data-admin-tab]").forEach((button) => button.classList.toggle("active", button.dataset.adminTab === tabName));
+  document.querySelectorAll("[data-admin-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.adminPanel !== tabName));
+}
+
+document.querySelectorAll("[data-admin-tab]").forEach((button) => button.addEventListener("click", () => selectAdminTab(button.dataset.adminTab)));
+
+$("#admin-run-filter").addEventListener("change", (event) => {
+  document.querySelectorAll("#admin-runs-body tr").forEach((row) => {
+    row.classList.toggle("hidden", event.target.value !== "all" && row.dataset.runState !== event.target.value);
+  });
+});
+
+$("#admin-user-search").addEventListener("input", (event) => {
+  const query = event.target.value.trim().toLowerCase();
+  document.querySelectorAll("#admin-users-body tr").forEach((row) => row.classList.toggle("hidden", !row.dataset.userSearch.includes(query)));
+});
+
+function openAdminDialog(kind, id) {
+  const dialog = $("#admin-dialog");
+  if (kind === "run") {
+    $("#admin-dialog-eyebrow").textContent = "Безопасная диагностика";
+    $("#admin-dialog-title").textContent = `Запуск ${id}`;
+    $("#admin-dialog-body").innerHTML = `<dl class="diagnostic-list"><div><dt>Состояние</dt><dd>${id === "run_1048" ? "Нет событий 8 минут" : "Работает штатно"}</dd></div><div><dt>Последняя подтверждённая операция</dt><dd>${id === "run_1048" ? "Риск-аналитик получил входные данные" : "Событие принято и сохранено"}</dd></div><div><dt>Доступно администратору</dt><dd>Время, состояние, роли и корреляционный номер</dd></div><div><dt>Недоступно</dt><dd>Материалы проекта, скрытые рассуждения, промпты и секреты</dd></div></dl>`;
+    $("#admin-dialog-action").textContent = "Пометить для разбора";
+  } else {
+    $("#admin-dialog-eyebrow").textContent = "Карточка пользователя";
+    $("#admin-dialog-title").textContent = id;
+    $("#admin-dialog-body").innerHTML = `<p class="admin-dialog-note">Администратору доступны статус аккаунта, количество проектов, активные запуски и лимит. Содержимое проектов закрыто.</p><dl class="diagnostic-list"><div><dt>Статус</dt><dd>Активен</dd></div><div><dt>Уровень доступа</dt><dd>Пользователь</dd></div><div><dt>Последний вход</dt><dd>Сегодня, 12:08</dd></div><div><dt>Служебный доступ</dt><dd>Не запрашивался</dd></div></dl>`;
+    $("#admin-dialog-action").textContent = "Изменить тестовый лимит";
+  }
+  $("#admin-dialog-action").onclick = () => {
+    $("#admin-dialog-body").insertAdjacentHTML("beforeend", '<p class="context-state">Демо: действие не выполнено. В рабочей версии потребуется причина, подтверждение и запись в аудите.</p>');
+    $("#admin-dialog-action").disabled = true;
+  };
+  $("#admin-dialog-action").disabled = false;
+  dialog.showModal();
+}
+
+document.querySelectorAll("[data-open-run]").forEach((button) => button.addEventListener("click", () => {
+  selectAdminTab("runs");
+  openAdminDialog("run", button.dataset.openRun);
+}));
+document.querySelectorAll("[data-open-user]").forEach((button) => button.addEventListener("click", () => openAdminDialog("user", button.dataset.openUser)));
+$("#admin-dialog-close").addEventListener("click", () => $("#admin-dialog").close());
+$("#admin-dialog-cancel").addEventListener("click", () => $("#admin-dialog").close());
+
 document.querySelectorAll("[data-workspace-tab]").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll("[data-workspace-tab]").forEach((item) => item.classList.remove("active"));
   document.querySelectorAll("[data-panel]").forEach((panel) => panel.classList.add("hidden"));

@@ -16,6 +16,37 @@
 .team-why{padding:20px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
 .team-why summary{cursor:pointer;color:#fff;font-weight:500}
 .team-why p{max-width:720px;color:var(--muted);line-height:1.6}
+.admin-entry{color:#ffcf72!important}
+.admin-page{max-width:1200px}
+.admin-head{display:grid;grid-template-columns:1fr 310px;gap:46px;align-items:end}
+.admin-head h2{font-size:clamp(2.4rem,4.7vw,4.3rem)}
+.admin-boundary{padding:22px;border:1px solid #ffb82955;border-radius:18px;background:#ffb8290c;display:grid;gap:10px}
+.admin-boundary b{font-size:15px;color:#fff}
+.admin-boundary span{color:var(--muted);font-size:13px;line-height:1.4}
+.admin-tabs{display:flex;gap:6px;margin:42px 0 30px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.admin-tabs button{border:0;border-radius:999px;background:transparent;color:var(--muted);padding:10px 14px;font:inherit;font-size:14px;cursor:pointer}
+.admin-tabs button.active{background:#8052ff22;color:#fff}
+.admin-tabs i{display:inline-grid;place-items:center;min-width:20px;height:20px;margin-left:5px;border-radius:99px;background:#ffb82922;color:var(--amber);font-style:normal;font-size:11px}
+.admin-metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.admin-metrics article{min-height:158px;padding:20px;border:1px solid var(--line);border-radius:18px;background:#0b0b0d;display:grid;align-content:space-between;gap:10px}
+.admin-metrics span,.admin-metrics small{color:var(--muted);font-size:13px;line-height:1.4}
+.admin-metrics strong{font-size:30px;font-weight:400}
+.health-good{color:var(--green)!important}.health-warn{color:var(--amber)!important}
+.admin-overview-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+.service-health,.admin-attention{padding:24px;border:1px solid var(--line);border-radius:20px;background:#09090b}
+.service-health>div{display:flex;justify-content:space-between;gap:20px;padding:15px 0;border-bottom:1px solid var(--line)}
+.service-health>div:last-child{border-bottom:0}.service-health b{font-weight:400}.service-health span{font-size:13px}
+.admin-attention{border-color:#ffb82955}.admin-attention h3{margin:14px 0}.admin-attention p:not(.eyebrow){color:var(--muted);line-height:1.5}.admin-attention button{margin-top:8px}
+.admin-section-head{display:flex;align-items:end;justify-content:space-between;gap:30px;margin-bottom:18px}
+.admin-section-head h3{margin:8px 0 0;font-size:32px}.admin-section-head label{margin:0;color:var(--muted)}
+.admin-section-head select,.admin-section-head input{display:block;min-width:220px;margin-top:7px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#0b0b0d;color:#fff;font:inherit}
+.admin-table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:18px}
+.admin-table{width:100%;border-collapse:collapse;min-width:800px;background:#09090b}
+.admin-table th,.admin-table td{padding:16px 18px;border-bottom:1px solid var(--line);text-align:left;font-size:14px;vertical-align:middle}.admin-table tr:last-child td{border-bottom:0}.admin-table th{color:var(--muted);font-size:12px;font-weight:500}.admin-table td{color:#d2d2d7}.admin-table td b{display:block;color:#fff;font-weight:500}.admin-table td small{display:block;margin-top:5px;color:var(--muted)}
+.compact-button{padding:8px 11px!important;font-size:12px!important;white-space:nowrap}
+.status-pill{display:inline-flex;padding:6px 9px;border-radius:99px;font-size:12px;white-space:nowrap}.status-pill.running{background:#55d7a51a;color:var(--green)}.status-pill.waiting{background:#ffb8291a;color:var(--amber)}.status-pill.attention{background:#ff7f7f1c;color:#ff9f9f}
+.audit-sealed{padding:8px 11px;border:1px solid #55d7a544;border-radius:99px;color:var(--green);font-size:12px}.audit-list{border-top:1px solid var(--line)}.audit-list article{display:grid;grid-template-columns:70px 1fr auto;gap:20px;padding:19px 0;border-bottom:1px solid var(--line);align-items:start}.audit-list time,.audit-list span{color:var(--muted);font-size:12px}.audit-list b{font-weight:500}.audit-list p{margin:6px 0 0;color:#bdbdc4;line-height:1.5}
+.admin-dialog{width:min(620px,calc(100% - 32px));padding:34px;border:1px solid var(--line);border-radius:22px;background:#111114;color:#fff;box-shadow:0 30px 100px #000}.admin-dialog::backdrop{background:#000b;backdrop-filter:blur(5px)}.admin-dialog h3{font-size:32px;margin:10px 0 22px}.diagnostic-list{margin:0}.diagnostic-list>div{display:grid;grid-template-columns:190px 1fr;gap:18px;padding:14px 0;border-top:1px solid var(--line)}.diagnostic-list dt{color:var(--muted);font-size:13px}.diagnostic-list dd{margin:0;color:#ddd;line-height:1.45}.admin-dialog-note{color:var(--muted);line-height:1.55}.admin-dialog .drawer-close{cursor:pointer}
 .drawer textarea{min-height:130px}
 .drawer .primary{margin-top:8px}
 .book-case-card{grid-column:1/-1}
@@ -111,4 +142,5 @@
 .safe-boundary b{font-weight:500}
 .safe-boundary p{margin:9px 0 0;color:var(--muted);line-height:1.5}
 @media(max-width:900px){.workspace{grid-template-columns:1fr}.workspace-sidebar,.workspace-main{border-right:0;border-bottom:1px solid var(--line)}.workspace-sidebar nav{grid-template-columns:repeat(3,1fr)}.workspace-context-mini{grid-template-columns:auto 1fr;margin-top:20px}.onboarding-steps,.case-deliverables{grid-template-columns:1fr}.book-case-card{grid-column:auto}}
-@media(max-width:700px){.profile-head,.profile-project,.team-plan-card{grid-template-columns:1fr}.profile-project>div:last-child{justify-items:start}.profile-actions{align-items:flex-start;flex-direction:column}.team-principle{grid-template-columns:1fr}.team-principle i{width:1px;height:22px;justify-self:center}.team-principle i::after{right:-3px;top:auto;bottom:0;transform:rotate(135deg)}.team-plan-card>b{text-align:left}}
+@media(max-width:900px){.admin-head,.admin-overview-grid{grid-template-columns:1fr}.admin-metrics{grid-template-columns:1fr 1fr}}
+@media(max-width:700px){.profile-head,.profile-project,.team-plan-card{grid-template-columns:1fr}.profile-project>div:last-child{justify-items:start}.profile-actions{align-items:flex-start;flex-direction:column}.team-principle{grid-template-columns:1fr}.team-principle i{width:1px;height:22px;justify-self:center}.team-principle i::after{right:-3px;top:auto;bottom:0;transform:rotate(135deg)}.team-plan-card>b{text-align:left}.admin-metrics{grid-template-columns:1fr}.admin-tabs{overflow-x:auto}.admin-section-head{align-items:flex-start;flex-direction:column}.audit-list article{grid-template-columns:54px 1fr}.audit-list article>span{grid-column:2}.diagnostic-list>div{grid-template-columns:1fr;gap:6px}}

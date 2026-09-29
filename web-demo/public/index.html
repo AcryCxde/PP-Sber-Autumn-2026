@@ -17,6 +17,7 @@
       <button class="nav-link" data-page="catalog">Каталог решений</button>
       <button class="nav-link" data-page="about">Как это работает</button>
       <button class="nav-link" data-page="profile">Мои проекты</button>
+      <button class="nav-link admin-entry" data-page="admin">Операторская</button>
     </nav>
     <div class="header-actions">
       <button class="ghost" id="materials-toggle">Материалы <span id="material-count">0</span></button>
@@ -289,7 +290,72 @@
       <div class="profile-projects" id="profile-projects"></div>
       <p class="note">В демо профиль и проекты сохраняются только в этом браузере.</p>
     </section>
+
+    <section class="page admin-page hidden" id="admin">
+      <div class="admin-head">
+        <div><p class="eyebrow">Операторская консоль · демо</p><h2>Контроль сервиса без доступа к содержимому проектов</h2><p class="lead">Здесь администратор следит за работоспособностью, запусками, лимитами и инцидентами. Клиентские материалы закрыты по умолчанию.</p></div>
+        <div class="admin-boundary"><b>Граница доступа</b><span>Метаданные — доступны</span><span>Содержание — по обоснованию</span><span>Секреты и рассуждения — никогда</span></div>
+      </div>
+
+      <nav class="admin-tabs" aria-label="Разделы операторской консоли">
+        <button class="active" data-admin-tab="overview">Обзор</button>
+        <button data-admin-tab="runs">Запуски <i>1</i></button>
+        <button data-admin-tab="users">Пользователи</button>
+        <button data-admin-tab="audit">Аудит</button>
+      </nav>
+
+      <section class="admin-panel" data-admin-panel="overview">
+        <div class="admin-metrics">
+          <article><span>Состояние сервиса</span><strong class="health-good">Работает</strong><small>Все основные компоненты доступны</small></article>
+          <article><span>Активные работы</span><strong>7</strong><small>3 команды выполняют передачу между ролями</small></article>
+          <article><span>Ждут пользователя</span><strong>2</strong><small>Время обработки приостановлено</small></article>
+          <article><span>Требует внимания</span><strong class="health-warn">1</strong><small>Запуск без события более 8 минут</small></article>
+        </div>
+        <div class="admin-overview-grid">
+          <article class="service-health"><p class="eyebrow">Компоненты</p><div><b>Гейтвей сессий</b><span class="health-good">Доступен</span></div><div><b>Исполнители</b><span class="health-good">6 из 6</span></div><div><b>Хранилище результатов</b><span class="health-good">Доступно</span></div><div><b>Поток событий</b><span class="health-warn">Задержка 4 с</span></div></article>
+          <article class="admin-attention"><p class="eyebrow">Требует внимания</p><h3>Запуск run_1048 не присылал событий 8 минут</h3><p>Проектные материалы скрыты. Доступны только состояние, время и безопасная диагностика.</p><button class="ghost" data-open-run="run_1048">Открыть запуск</button></article>
+        </div>
+      </section>
+
+      <section class="admin-panel hidden" data-admin-panel="runs">
+        <div class="admin-section-head"><div><p class="eyebrow">Текущие работы</p><h3>Запуски команд</h3></div><label>Фильтр<select id="admin-run-filter"><option value="all">Все состояния</option><option value="attention">Требуют внимания</option><option value="waiting">Ждут пользователя</option><option value="running">В работе</option></select></label></div>
+        <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Проект</th><th>Состояние</th><th>Текущий этап</th><th>Последнее событие</th><th></th></tr></thead><tbody id="admin-runs-body">
+          <tr data-run-state="running"><td><b>Кофейня у университета</b><small>run_1052 · 42%</small></td><td><span class="status-pill running">В работе</span></td><td>Финансовая модель</td><td>12 секунд назад</td><td><button class="ghost compact-button" data-open-run="run_1052">Диагностика</button></td></tr>
+          <tr data-run-state="waiting"><td><b>Онлайн-курс эксперта</b><small>run_1051 · 31%</small></td><td><span class="status-pill waiting">Нужен ответ</span></td><td>Вопрос фасилитатора</td><td>4 минуты назад</td><td><button class="ghost compact-button" data-open-run="run_1051">Диагностика</button></td></tr>
+          <tr data-run-state="attention"><td><b>Городской сервис</b><small>run_1048 · 67%</small></td><td><span class="status-pill attention">Нет событий</span></td><td>Проверка рисков</td><td>8 минут назад</td><td><button class="ghost compact-button" data-open-run="run_1048">Диагностика</button></td></tr>
+          <tr data-run-state="running"><td><b>Редактура книги</b><small>run_1047 · 78%</small></td><td><span class="status-pill running">В работе</span></td><td>Предпечатная проверка</td><td>36 секунд назад</td><td><button class="ghost compact-button" data-open-run="run_1047">Диагностика</button></td></tr>
+        </tbody></table></div>
+      </section>
+
+      <section class="admin-panel hidden" data-admin-panel="users">
+        <div class="admin-section-head"><div><p class="eyebrow">Доступ и ограничения</p><h3>Пользователи</h3></div><label>Поиск<input id="admin-user-search" placeholder="Имя или почта"></label></div>
+        <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Пользователь</th><th>Проекты</th><th>Активные работы</th><th>Лимит</th><th>Статус</th><th></th></tr></thead><tbody id="admin-users-body">
+          <tr data-user-search="анна anna@example.com"><td><b>Анна В.</b><small>anna@example.com</small></td><td>2 из 3</td><td>1</td><td>760 кредитов</td><td><span class="status-pill running">Активен</span></td><td><button class="ghost compact-button" data-open-user="Анна В.">Карточка</button></td></tr>
+          <tr data-user-search="михаил mikhail@example.com"><td><b>Михаил К.</b><small>mikhail@example.com</small></td><td>3 из 3</td><td>1</td><td>420 кредитов</td><td><span class="status-pill running">Активен</span></td><td><button class="ghost compact-button" data-open-user="Михаил К.">Карточка</button></td></tr>
+          <tr data-user-search="елена elena@example.com"><td><b>Елена С.</b><small>elena@example.com</small></td><td>1 из 3</td><td>0</td><td>1 000 кредитов</td><td><span class="status-pill waiting">Проверка</span></td><td><button class="ghost compact-button" data-open-user="Елена С.">Карточка</button></td></tr>
+        </tbody></table></div>
+        <p class="note">Открытие содержимого проекта требует отдельного обоснования и создаёт запись в аудите. В демо такого действия нет.</p>
+      </section>
+
+      <section class="admin-panel hidden" data-admin-panel="audit">
+        <div class="admin-section-head"><div><p class="eyebrow">Неизменяемый журнал</p><h3>Аудит действий</h3></div><span class="audit-sealed">Защищён от редактирования</span></div>
+        <div class="audit-list">
+          <article><time>12:41</time><div><b>system.monitor</b><p>Пометил run_1048 как требующий внимания: нет событий 8 минут</p></div><span>Автоматически</span></article>
+          <article><time>12:26</time><div><b>admin.kate</b><p>Изменил тестовый лимит пользователя: 700 → 1 000 кредитов</p></div><span>Причина указана</span></article>
+          <article><time>11:58</time><div><b>admin.dmitry</b><p>Остановил зависший run_1039 после подтверждённой ошибки исполнителя</p></div><span>Инцидент INC-014</span></article>
+          <article><time>11:17</time><div><b>admin.kate</b><p>Открыл безопасную диагностику run_1037</p></div><span>Без содержимого</span></article>
+        </div>
+      </section>
+    </section>
   </main>
-  <script src="/app.js?v=20260928-7"></script>
+
+  <dialog class="admin-dialog" id="admin-dialog">
+    <button class="drawer-close" id="admin-dialog-close" aria-label="Закрыть">×</button>
+    <p class="eyebrow" id="admin-dialog-eyebrow">Безопасная диагностика</p>
+    <h3 id="admin-dialog-title">Запуск</h3>
+    <div id="admin-dialog-body"></div>
+    <div class="action-row"><button class="ghost" id="admin-dialog-cancel">Закрыть</button><button class="primary" id="admin-dialog-action">Пометить для разбора</button></div>
+  </dialog>
+  <script src="/app.js?v=20260929-8"></script>
 </body>
 </html>
