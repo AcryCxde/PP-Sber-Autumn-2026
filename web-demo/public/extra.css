@@ -67,9 +67,23 @@
 .profile-empty{padding:34px 0;border-top:1px solid var(--line);color:var(--muted)}
 .run-progress{display:grid;justify-items:end;gap:7px}
 .run-progress>span{color:var(--muted);font-size:12px}
+.run-progress>small{color:var(--muted);font-size:12px}
 #run-status,.problem-status{display:inline-flex;padding:7px 11px;border-radius:999px;background:#ffb82922;color:var(--amber);font-size:13px;font-weight:500}
 #run-status[data-status="running"]{background:#8052ff2b;color:#bba6ff}
+#run-status[data-status="waiting_for_input"]{background:#ffb82922;color:var(--amber)}
 #run-status[data-status="completed"]{background:#55d7a522;color:var(--green)}
+.estimate-time{margin:24px 0 0;padding:18px 20px;border:1px solid var(--line);border-radius:16px;background:#0b0b0d;color:var(--muted);line-height:1.5}
+.estimate-time b{color:#fff;font-weight:500}
+.development-question{margin-bottom:26px;padding:24px;border:1px solid #ffb82955;border-radius:18px;background:#ffb8290d}
+.development-question h3{margin:8px 0 10px;font-size:24px}
+.development-question>p:not(.eyebrow){margin:0 0 20px;color:var(--muted);line-height:1.5}
+.development-question label{display:block;margin:18px 0;color:#ddd;font-size:13px}
+.development-question input{display:block;width:100%;box-sizing:border-box;margin-top:8px;padding:13px 14px;border:1px solid var(--line);border-radius:10px;background:#09090b;color:#fff;font:inherit;outline:none}
+.development-question input:focus{border-color:var(--amber)}
+.development-options{display:grid;gap:8px}
+.development-options button{padding:12px 14px;border:1px solid var(--line);border-radius:12px;background:#09090b;color:#ddd;text-align:left;cursor:pointer}
+.development-options button.selected{border-color:var(--amber);background:#ffb82919;color:#fff}
+.development-question .primary:disabled{opacity:.45;cursor:not-allowed}
 .demo-scenarios{margin-top:42px;padding:18px 0;border-top:1px solid var(--line);color:var(--muted)}
 .demo-scenarios summary{color:#ddd;cursor:pointer}
 .demo-scenarios p{font-size:14px}

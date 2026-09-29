@@ -198,12 +198,13 @@
       <p class="eyebrow">Перед разработкой</p><h2>Команда оценила первый запуск</h2>
       <div class="estimate-card"><div><span>Доступно</span><b>1 000 кредитов</b></div><div><span>Резерв запуска</span><b>до 300 кредитов</b></div><div><span>После запуска</span><b>не менее 700</b></div></div>
       <p class="lead">В резерв входят планирование, работа ролей и независимая проверка. Неиспользованные кредиты вернутся.</p>
+      <p class="estimate-time"><b>Примерное время: 4–7 минут.</b> Если команде понадобится уточнение, отсчёт приостановится до вашего ответа.</p>
       <div class="action-row"><button class="ghost" id="estimate-back">Вернуться к идее</button><button class="primary" id="development-start">Начать разработку</button></div>
       <details class="demo-scenarios"><summary>Сценарии для проверки демо</summary><p>Показывают безопасные сообщения без технических логов и внутренних деталей.</p><div class="action-row"><button class="ghost" id="simulate-failed">Ошибка выполнения</button><button class="ghost" id="simulate-unknown">Связь прервалась</button><button class="ghost" id="simulate-limit">Недостаточно лимита</button></div></details>
     </section>
 
     <section class="page flow hidden" id="development">
-      <div class="development-head"><div><p class="eyebrow">Этап 2 · разработка</p><h2 id="development-title">Команда начинает работу</h2></div><div class="run-progress"><span>Статус запуска</span><b id="run-status" data-status="queued">В очереди</b><strong id="progress-percent">0%</strong></div></div>
+      <div class="development-head"><div><p class="eyebrow">Этап 2 · разработка</p><h2 id="development-title">Команда начинает работу</h2></div><div class="run-progress"><span>Статус запуска</span><b id="run-status" data-status="queued">В очереди</b><strong id="progress-percent">0%</strong><small id="run-eta">Осталось примерно 5 минут</small></div></div>
       <div class="progress"><i id="progress-bar"></i></div>
       <div class="workspace">
         <aside class="workspace-sidebar">
@@ -212,6 +213,14 @@
           <div class="workspace-context-mini"><small>Материалы</small><b id="workspace-files">0</b><small>Контекст</small><b id="workspace-context-status">Добавлен</b></div>
         </aside>
         <section class="workspace-main">
+          <section class="development-question hidden" id="development-question">
+            <p class="eyebrow">Нужен ваш ответ</p>
+            <h3 id="development-question-title">Уточнение от фасилитатора</h3>
+            <p id="development-question-help">Команда продолжит работу после ответа.</p>
+            <div class="development-options" id="development-question-options"></div>
+            <label>Свой вариант<input id="development-answer-custom" placeholder="Напишите, что ещё важно учесть"></label>
+            <button class="primary" id="development-answer-submit" disabled>Передать ответ команде</button>
+          </section>
           <div class="workspace-panel" data-panel="activity"><p class="eyebrow">Журнал работы</p><div id="activity-feed" class="activity-feed"><p>Проект сохранён. Контекст передан фасилитатору.</p></div></div>
           <div class="workspace-panel hidden" data-panel="context"><p class="eyebrow">Контекст проекта</p><p id="workspace-context-text"></p><button class="ghost" id="workspace-add-context">Добавить контекст или файл</button></div>
           <div class="workspace-panel hidden" data-panel="artifacts"><p class="eyebrow">Артефакты</p><article class="artifact-row"><span>01</span><div><b>Лендинг идеи</b><p>Одобрен пользователем</p></div><i>Готов</i></article><article class="artifact-row"><span>02</span><div><b>Итоговый результат</b><p>Собирается командой</p></div><i>В работе</i></article></div>

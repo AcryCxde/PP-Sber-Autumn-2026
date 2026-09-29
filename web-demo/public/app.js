@@ -265,7 +265,7 @@ function updateCredits(value) {
 }
 
 function setRunStatus(status) {
-  const labels = { queued: "В очереди", running: "В работе", completed: "Завершено" };
+  const labels = { queued: "В очереди", running: "В работе", waiting_for_input: "Нужен ответ", completed: "Завершено" };
   $("#run-status").dataset.status = status;
   $("#run-status").textContent = labels[status] || status;
 }
@@ -292,6 +292,8 @@ function runDevelopment(isRevision = false) {
   $("#agent-list").innerHTML = "";
   $("#progress-bar").style.width = "0%";
   $("#progress-percent").textContent = "0%";
+  $("#development-question").classList.add("hidden");
+  $("#development-answer-custom").value = "";
   setRunStatus("queued");
   $("#development-title").textContent = isRevision ? "Команда дорабатывает результат" : "Команда начинает работу";
   $("#workspace-project").textContent = state.projectName;
@@ -306,7 +308,87 @@ function runDevelopment(isRevision = false) {
     ? [["Фасилитатор", "Уточняет запрос на изменение"], ["Дизайнер", "Обновляет структуру результата"], ["Разработчик", "Вносит согласованные изменения"], ["Тестировщик", "Сравнивает новую версию с запросом"]]
     : teams[state.projectType] || teams.custom;
 
+  const initialMinutes = isRevision ? 4 : ({ curriculum: 5, book: 7, custom: 6 }[state.projectType] || 6);
+  const questionIndex = Math.min(2, Math.max(1, selectedTeam.length - 1));
+  let questionResolved = false;
+  const questions = {
+    curriculum: {
+      title: "Что важнее, если программа не помещается в заданное число часов?",
+      help: "Аналитик обнаружил конфликт между объёмом тем и доступной нагрузкой. Выберите приоритет — команда учтёт его в результате.",
+      options: ["Сохранить количество часов и сократить темы", "Сохранить все темы и уменьшить глубину", "Подготовить оба варианта для сравнения"]
+    },
+    book: {
+      title: "Что важнее при редактуре спорного фрагмента?",
+      help: "Редактору нужен ваш приоритет, прежде чем команда продолжит работу над макетом.",
+      options: ["Сохранить авторский голос", "Упростить текст для читателя", "Подготовить два варианта для сравнения"]
+    },
+    custom: {
+      title: "Какой приоритет важнее для первой версии?",
+      help: "Фасилитатор сверяет направление работы, чтобы роли не принимали важное решение за вас.",
+      options: ["Быстрее получить рабочую версию", "Сделать результат максимально полным", "Подготовить варианты для сравнения"]
+    }
+  };
+
+  const updateEta = () => {
+    const remainingShare = Math.max(0, (selectedTeam.length - index) / selectedTeam.length);
+    const minutes = Math.max(1, Math.ceil(initialMinutes * remainingShare));
+    $("#run-eta").textContent = index >= selectedTeam.length ? "Меньше минуты" : `Осталось примерно ${minutes} мин.`;
+  };
+
+  const askDevelopmentQuestion = () => {
+    const question = questions[state.projectType] || questions.custom;
+    const panel = $("#development-question");
+    const options = $("#development-question-options");
+    const custom = $("#development-answer-custom");
+    const submit = $("#development-answer-submit");
+    let selected = "";
+
+    setRunStatus("waiting_for_input");
+    $("#run-eta").textContent = "Ожидаем ваш ответ · время приостановлено";
+    $("#facilitator-live-text").textContent = "Команде нужно ваше решение. Я сформулировал один уточняющий вопрос.";
+    $("#development-question-title").textContent = question.title;
+    $("#development-question-help").textContent = question.help;
+    options.innerHTML = "";
+    custom.value = "";
+    submit.disabled = true;
+
+    question.options.forEach((option) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = option;
+      button.onclick = () => {
+        selected = option;
+        options.querySelectorAll("button").forEach((item) => item.classList.toggle("selected", item === button));
+        submit.disabled = false;
+      };
+      options.append(button);
+    });
+    custom.oninput = () => { submit.disabled = !custom.value.trim() && !selected; };
+    submit.onclick = () => {
+      const answer = custom.value.trim() || selected;
+      if (!answer) return;
+      questionResolved = true;
+      panel.classList.add("hidden");
+      const event = document.createElement("p");
+      event.textContent = `Фасилитатор получил уточнение: ${answer}`;
+      $("#activity-feed").append(event);
+      $("#facilitator-live-text").textContent = "Ответ передан всем нужным ролям. Команда продолжает работу.";
+      setRunStatus("running");
+      localStorage.setItem("ct-run", JSON.stringify({ status: "running", revision: isRevision, resumedAt: Date.now() }));
+      updateEta();
+      setTimeout(tick, 350);
+    };
+    panel.classList.remove("hidden");
+    localStorage.setItem("ct-run", JSON.stringify({ status: "waiting_for_input", revision: isRevision, question: question.title }));
+  };
+
+  $("#run-eta").textContent = `Осталось примерно ${initialMinutes} мин.`;
+
   const tick = () => {
+    if (!questionResolved && index === questionIndex) {
+      askDevelopmentQuestion();
+      return;
+    }
     setRunStatus("running");
     const percent = Math.round((index / selectedTeam.length) * 90);
     $("#progress-bar").style.width = `${percent}%`;
@@ -324,6 +406,7 @@ function runDevelopment(isRevision = false) {
       event.textContent = `${role}: ${work}`;
       $("#activity-feed").append(event);
       index += 1;
+      updateEta();
       setTimeout(tick, 720);
       return;
     }
@@ -331,6 +414,7 @@ function runDevelopment(isRevision = false) {
     $("#progress-bar").style.width = "100%";
     $("#progress-percent").textContent = "100%";
     setRunStatus("completed");
+    $("#run-eta").textContent = "Готово";
     $("#facilitator-live-text").textContent = "Команда завершила работу. Общий результат сохранён.";
     updateCredits(isRevision ? Math.min(1000, state.credits) : 240);
     localStorage.setItem("ct-run", JSON.stringify({ status: "completed", revision: isRevision }));
