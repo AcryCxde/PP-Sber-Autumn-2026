@@ -1,3 +1,4 @@
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -5,17 +6,17 @@ from fastapi.testclient import TestClient
 
 import backend.main as main_module
 from backend.db import Database
-from backend.models import Event
+from backend.models import Event, Run
 from backend.repository import create_request
 
 
 class FakeStdout:
     def __init__(self, lines: list[str]):
-        self.lines = [f"{line}\n".encode() for line in lines]
+        self.lines = [f"{line}\n" for line in lines]
 
-    async def readline(self) -> bytes:
+    def readline(self) -> str:
         if not self.lines:
-            return b""
+            return ""
         return self.lines.pop(0)
 
 
@@ -25,9 +26,13 @@ class FakeProcess:
         self.exit_code = exit_code
         self.returncode: int | None = None
 
-    async def wait(self) -> int:
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
         self.returncode = self.exit_code
         return self.exit_code
+
+    def poll(self) -> int | None:
+        return self.returncode
 
     def terminate(self) -> None:
         self.returncode = self.exit_code
@@ -234,10 +239,18 @@ def test_rest_and_websocket_replay_events(tmp_path, monkeypatch) -> None:
                 websocket.receive_json(),
                 websocket.receive_json(),
             ]
+            replay_complete = websocket.receive_json()
 
         assert [event["seq"] for event in replayed] == [3, 4]
         assert [event["type"] for event in replayed] == ["message", "result"]
         assert all(event["run_id"] == run_id for event in replayed)
+        assert replay_complete == {
+            "type": "replay.complete",
+            "run_id": run_id,
+            "after_seq": 2,
+            "last_seq": 4,
+            "status": "completed",
+        }
 
 
 async def test_websocket_replay_reads_all_pages(tmp_path) -> None:
@@ -249,6 +262,9 @@ async def test_websocket_replay_reads_all_pages(tmp_path) -> None:
             created = await create_request(session, "Large replay")
 
         async with database.session() as session:
+            run = await session.get(Run, created.run_id)
+            assert run is not None
+            run.status = "completed"
             session.add_all(
                 Event(
                     run_id=created.run_id,
@@ -270,9 +286,68 @@ async def test_websocket_replay_reads_all_pages(tmp_path) -> None:
             after_seq=0,
         )
 
-        assert len(websocket.messages) == 501
+        assert len(websocket.messages) == 502
         assert websocket.messages[0]["seq"] == 1
-        assert websocket.messages[-1]["seq"] == 501
+        assert websocket.messages[-2]["seq"] == 501
+        assert websocket.messages[-1] == {
+            "type": "replay.complete",
+            "run_id": created.run_id,
+            "after_seq": 0,
+            "last_seq": 501,
+            "status": "completed",
+        }
+    finally:
+        await database.dispose()
+
+
+async def test_websocket_replay_waits_for_running_run_to_finish(tmp_path) -> None:
+    database = make_database(tmp_path)
+    await database.create_schema()
+
+    try:
+        async with database.session() as session:
+            created = await create_request(session, "Running replay")
+            run = await session.get(Run, created.run_id)
+            assert run is not None
+            run.status = "running"
+            await session.commit()
+
+        websocket = RecordingWebSocket(database)
+        subscription = asyncio.create_task(
+            main_module.handle_subscription(
+                websocket,
+                created.run_id,
+                after_seq=0,
+            )
+        )
+
+        await asyncio.sleep(0.05)
+        assert not subscription.done()
+
+        async with database.session() as session:
+            run = await session.get(Run, created.run_id)
+            assert run is not None
+            run.status = "completed"
+            session.add(
+                Event(
+                    run_id=created.run_id,
+                    seq=1,
+                    type="result",
+                    payload={"schema_version": 1, "result": "done"},
+                )
+            )
+            await session.commit()
+
+        await asyncio.wait_for(subscription, timeout=1)
+
+        assert websocket.messages[0]["type"] == "result"
+        assert websocket.messages[1] == {
+            "type": "replay.complete",
+            "run_id": created.run_id,
+            "after_seq": 0,
+            "last_seq": 1,
+            "status": "completed",
+        }
     finally:
         await database.dispose()
 

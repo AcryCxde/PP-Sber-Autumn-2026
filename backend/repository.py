@@ -20,6 +20,7 @@ class CreatedRequest:
 @dataclass(frozen=True)
 class RunEventPage:
     conversation_id: str
+    run_status: str
     events: list[Event]
 
 
@@ -159,6 +160,7 @@ async def list_run_events(
     )
     return RunEventPage(
         conversation_id=run.conversation_id,
+        run_status=run.status,
         events=list(result),
     )
 

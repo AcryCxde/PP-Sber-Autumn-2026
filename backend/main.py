@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+import subprocess
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,53 +25,65 @@ from backend.repository import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+logger = logging.getLogger(__name__)
 
 
-async def start_claude(prompt: str) -> asyncio.subprocess.Process:
-    process = await asyncio.create_subprocess_exec(
-        "claude",
-        "--print",
-        "--verbose",
-        "--output-format",
-        "stream-json",
-        cwd=PROJECT_ROOT,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-
+def write_prompt(process: subprocess.Popen[str], prompt: str) -> None:
     if process.stdin is None:
         process.terminate()
         raise RuntimeError("Claude CLI stdin is unavailable")
 
-    process.stdin.write(prompt.encode("utf-8"))
-    await process.stdin.drain()
+    process.stdin.write(prompt)
     process.stdin.close()
-    await process.stdin.wait_closed()
 
+
+async def start_claude(prompt: str) -> subprocess.Popen[str]:
+    process = await asyncio.to_thread(
+        subprocess.Popen,
+        [
+            "claude",
+            "--print",
+            "--verbose",
+            "--output-format",
+            "stream-json",
+        ],
+        cwd=PROJECT_ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+    await asyncio.to_thread(write_prompt, process, prompt)
     return process
 
 
 async def process_output(
-    process: asyncio.subprocess.Process,
+    process: subprocess.Popen[str],
 ) -> AsyncIterator[str]:
     if process.stdout is None:
         raise RuntimeError("Claude CLI stdout is unavailable")
 
-    while line := await process.stdout.readline():
-        yield line.decode("utf-8", errors="replace")
+    while line := await asyncio.to_thread(process.stdout.readline):
+        yield line
 
 
-async def stop_process(process: asyncio.subprocess.Process | None) -> None:
-    if process is None or process.returncode is not None:
+async def wait_process(process: subprocess.Popen[str]) -> int:
+    return await asyncio.to_thread(process.wait)
+
+
+async def stop_process(process: subprocess.Popen[str] | None) -> None:
+    if process is None or process.poll() is not None:
         return
 
     process.terminate()
     try:
-        await asyncio.wait_for(process.wait(), timeout=5)
-    except TimeoutError:
+        await asyncio.to_thread(process.wait, 5)
+    except subprocess.TimeoutExpired:
         process.kill()
-        await process.wait()
+        await asyncio.to_thread(process.wait)
 
 
 def websocket_event(event: Event, conversation_id: str) -> dict[str, Any]:
@@ -96,7 +110,7 @@ async def send_stored_event(
 
 
 async def handle_prompt(websocket: WebSocket, prompt: str) -> None:
-    process: asyncio.subprocess.Process | None = None
+    process: subprocess.Popen[str] | None = None
     conversation_id: str | None = None
     run_id: str | None = None
     assistant_parts: list[str] = []
@@ -187,7 +201,7 @@ async def handle_prompt(websocket: WebSocket, prompt: str) -> None:
 
                 await publish_event(event_data)
 
-        exit_code = await process.wait()
+        exit_code = await wait_process(process)
         if exit_code == 0 and not result_event.get("is_error", False):
             run_status = "completed"
         else:
@@ -213,9 +227,11 @@ async def handle_prompt(websocket: WebSocket, prompt: str) -> None:
         run_status = "cancelled"
         run_error = "Backend task cancelled"
         terminal_error = error
-    except Exception:
+    except Exception as error:
+        logger.exception("Claude request failed for run %s", run_id)
         run_status = "failed"
-        run_error = "Claude request failed"
+        error_details = str(error) or type(error).__name__
+        run_error = f"Claude request failed: {error_details}"
         send_error = True
     finally:
         await stop_process(process)
@@ -248,6 +264,7 @@ async def handle_subscription(
     after_seq: int,
 ) -> None:
     page_size = 500
+    terminal_statuses = {"completed", "failed", "cancelled"}
     cursor = after_seq
 
     while True:
@@ -276,10 +293,26 @@ async def handle_subscription(
         for event in page.events:
             await send_stored_event(websocket, event, page.conversation_id)
 
-        if len(page.events) < page_size:
-            return
+        if page.events:
+            cursor = page.events[-1].seq
 
-        cursor = page.events[-1].seq
+        if len(page.events) < page_size:
+            if page.run_status in terminal_statuses:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "replay.complete",
+                            "run_id": run_id,
+                            "after_seq": after_seq,
+                            "last_seq": cursor,
+                            "status": page.run_status,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                return
+
+            await asyncio.sleep(0.25)
 
 
 def parse_websocket_command(raw: str) -> tuple[str, dict[str, Any] | str]:
