@@ -17,9 +17,9 @@
       <button class="nav-link" data-page="catalog">Каталог решений</button>
       <button class="nav-link" data-page="about">Как это работает</button>
       <button class="nav-link" data-page="profile">Мои проекты</button>
-      <button class="nav-link admin-entry" data-page="admin">Операторская</button>
     </nav>
     <div class="header-actions">
+      <button class="ghost admin-entry hidden" id="admin-nav" data-page="admin">Операторская</button>
       <button class="ghost" id="materials-toggle">Материалы <span id="material-count">0</span></button>
       <button class="ghost" id="notifications-toggle" aria-label="Уведомления">●</button>
     </div>
@@ -61,6 +61,7 @@
         <div class="hero-actions"><button class="primary" id="begin">Поставить задачу команде</button><button class="ghost" id="show-coffee-example">Посмотреть пример</button></div>
         <div class="promise-line"><span>Не нужно искать специалистов</span><span>Не нужно распределять работу</span><span>Не нужно соединять отдельные ответы</span></div>
         <p class="note">Сейчас открыт интерактивный прототип. Полная обработка задач командой ещё не подключена.</p>
+        <button class="staff-entry" id="staff-login-open">Вход для сотрудников</button>
       </div>
       <div class="video-window">
         <div class="particle-cloud" aria-hidden="true"></div>
@@ -291,10 +292,23 @@
       <p class="note">В демо профиль и проекты сохраняются только в этом браузере.</p>
     </section>
 
+    <section class="page flow hidden" id="admin-login">
+      <p class="eyebrow">Отдельный служебный контур</p><h2>Вход для сотрудников</h2>
+      <p class="lead">Операторская консоль недоступна из пользовательского аккаунта. Доступ разрешается только сотрудникам с административной ролью.</p>
+      <form class="form admin-login-form" id="admin-login-form">
+        <label>Рабочая почта<input id="admin-email" type="email" autocomplete="username" required placeholder="name@coreteams.team"></label>
+        <label>Одноразовый код<input id="admin-code" type="password" autocomplete="one-time-code" required placeholder="Введите служебный код"></label>
+        <p class="form-error" id="admin-login-error"></p>
+        <button class="primary" type="submit">Войти в операторскую</button>
+      </form>
+      <div class="safe-boundary"><b>Как будет работать в продукте</b><p>Сервер проверяет административную роль при открытии каждой страницы и выполнении каждого действия. Скрытая кнопка или адрес страницы не считаются защитой.</p></div>
+      <button class="ghost" id="admin-login-back">Вернуться в сервис</button>
+    </section>
+
     <section class="page admin-page hidden" id="admin">
       <div class="admin-head">
         <div><p class="eyebrow">Операторская консоль · демо</p><h2>Контроль сервиса без доступа к содержимому проектов</h2><p class="lead">Здесь администратор следит за работоспособностью, запусками, лимитами и инцидентами. Клиентские материалы закрыты по умолчанию.</p></div>
-        <div class="admin-boundary"><b>Граница доступа</b><span>Метаданные — доступны</span><span>Содержание — по обоснованию</span><span>Секреты и рассуждения — никогда</span></div>
+        <div><div class="admin-boundary"><b>Граница доступа</b><span>Метаданные — доступны</span><span>Содержание — по обоснованию</span><span>Секреты и рассуждения — никогда</span></div><button class="staff-entry admin-logout" id="admin-logout">Выйти из операторской</button></div>
       </div>
 
       <nav class="admin-tabs" aria-label="Разделы операторской консоли">
@@ -356,6 +370,6 @@
     <div id="admin-dialog-body"></div>
     <div class="action-row"><button class="ghost" id="admin-dialog-cancel">Закрыть</button><button class="primary" id="admin-dialog-action">Пометить для разбора</button></div>
   </dialog>
-  <script src="/app.js?v=20260929-8"></script>
+  <script src="/app.js?v=20260929-9"></script>
 </body>
 </html>

@@ -22,6 +22,16 @@ const state = {
   credits: Number(localStorage.getItem("ct-credits") || 0)
 };
 const PROJECT_LIMIT = 3;
+const ADMIN_DEMO_EMAIL = "operator@coreteams.team";
+const ADMIN_DEMO_CODE = "CT-ADMIN-25";
+
+function hasAdminSession() {
+  return sessionStorage.getItem("ct-admin-session") === "active";
+}
+
+function syncAdminUi() {
+  $("#admin-nav").classList.toggle("hidden", !hasAdminSession());
+}
 
 const genericQuestions = [
   {
@@ -205,6 +215,8 @@ function renderProfile() {
 }
 
 function showPage(id, remember = true) {
+  if (id === "admin" && !hasAdminSession()) id = "admin-login";
+  if (id === "admin-login" && hasAdminSession()) id = "admin";
   pages.forEach((page) => page.classList.add("hidden"));
   const page = document.getElementById(id);
   if (!page) return;
@@ -521,6 +533,7 @@ $("#save-context").addEventListener("click", () => {
 });
 $("#play-demo").addEventListener("click", () => showPage("about"));
 $("#show-coffee-example").addEventListener("click", () => showPage("catalog"));
+$("#staff-login-open").addEventListener("click", () => showPage("admin-login", false));
 $("#begin").addEventListener("click", () => {
   showPage(state.projects.length ? "profile" : "signup", false);
 });
@@ -696,6 +709,26 @@ $("#invest").addEventListener("click", () => {
   $("#next-note").textContent = "Сначала сервис запросит согласие на состав публичных материалов. В демо данные не публикуются и никому не передаются.";
 });
 
+$("#admin-login-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const email = $("#admin-email").value.trim().toLowerCase();
+  const code = $("#admin-code").value.trim();
+  if (email !== ADMIN_DEMO_EMAIL || code !== ADMIN_DEMO_CODE) {
+    $("#admin-login-error").textContent = "Доступ не подтверждён. Пользовательский аккаунт не даёт права входа в операторскую.";
+    return;
+  }
+  sessionStorage.setItem("ct-admin-session", "active");
+  $("#admin-login-error").textContent = "";
+  syncAdminUi();
+  showPage("admin", false);
+});
+$("#admin-login-back").addEventListener("click", () => showPage("home"));
+$("#admin-logout").addEventListener("click", () => {
+  sessionStorage.removeItem("ct-admin-session");
+  syncAdminUi();
+  showPage("home");
+});
+
 function selectAdminTab(tabName) {
   document.querySelectorAll("[data-admin-tab]").forEach((button) => button.classList.toggle("active", button.dataset.adminTab === tabName));
   document.querySelectorAll("[data-admin-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.adminPanel !== tabName));
@@ -762,6 +795,7 @@ $("#download-idml").addEventListener("click", () => {
 $("#project-name").value = state.projectName;
 $("#project-goal").value = state.projectGoal;
 $("#project-context").value = state.context;
+syncAdminUi();
 renderMaterials();
 renderProfile();
 const savedPage = localStorage.getItem("ct-page");

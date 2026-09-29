@@ -17,6 +17,7 @@
 .team-why summary{cursor:pointer;color:#fff;font-weight:500}
 .team-why p{max-width:720px;color:var(--muted);line-height:1.6}
 .admin-entry{color:#ffcf72!important}
+.staff-entry{display:inline-flex;margin-top:10px;padding:7px 0;border:0;border-bottom:1px solid #ffffff2d;background:transparent;color:var(--muted);font:inherit;font-size:12px;cursor:pointer}.staff-entry:hover{color:#fff;border-color:#fff}.admin-login-form{margin-top:34px}.admin-login-form+.safe-boundary{max-width:660px}.admin-logout{margin-top:14px;color:#ffcf72}
 .admin-page{max-width:1200px}
 .admin-head{display:grid;grid-template-columns:1fr 310px;gap:46px;align-items:end}
 .admin-head h2{font-size:clamp(2.4rem,4.7vw,4.3rem)}
