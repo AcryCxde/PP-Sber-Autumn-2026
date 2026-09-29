@@ -199,10 +199,11 @@
       <div class="estimate-card"><div><span>Доступно</span><b>1 000 кредитов</b></div><div><span>Резерв запуска</span><b>до 300 кредитов</b></div><div><span>После запуска</span><b>не менее 700</b></div></div>
       <p class="lead">В резерв входят планирование, работа ролей и независимая проверка. Неиспользованные кредиты вернутся.</p>
       <div class="action-row"><button class="ghost" id="estimate-back">Вернуться к идее</button><button class="primary" id="development-start">Начать разработку</button></div>
+      <details class="demo-scenarios"><summary>Сценарии для проверки демо</summary><p>Показывают безопасные сообщения без технических логов и внутренних деталей.</p><div class="action-row"><button class="ghost" id="simulate-failed">Ошибка выполнения</button><button class="ghost" id="simulate-unknown">Связь прервалась</button><button class="ghost" id="simulate-limit">Недостаточно лимита</button></div></details>
     </section>
 
     <section class="page flow hidden" id="development">
-      <div class="development-head"><div><p class="eyebrow">Этап 2 · разработка</p><h2 id="development-title">Команда начинает работу</h2></div><strong id="progress-percent">0%</strong></div>
+      <div class="development-head"><div><p class="eyebrow">Этап 2 · разработка</p><h2 id="development-title">Команда начинает работу</h2></div><div class="run-progress"><span>Статус запуска</span><b id="run-status" data-status="queued">В очереди</b><strong id="progress-percent">0%</strong></div></div>
       <div class="progress"><i id="progress-bar"></i></div>
       <div class="workspace">
         <aside class="workspace-sidebar">
@@ -221,6 +222,15 @@
         </aside>
       </div>
       <p class="note">Это визуальная симуляция процесса CTF. Реальный параллельный запуск ролей в этом демо не подключён.</p>
+    </section>
+
+    <section class="page flow hidden" id="run-problem">
+      <p class="eyebrow">Статус работы</p><div class="problem-status" id="problem-status">Ошибка</div>
+      <h2 id="problem-title">Работу не удалось завершить</h2>
+      <p class="lead" id="problem-copy">Данные проекта и последняя подтверждённая версия сохранены.</p>
+      <div class="safe-boundary"><b>Что доступно</b><p id="problem-available">Можно повторить запуск или вернуться к проекту.</p></div>
+      <div class="action-row"><button class="ghost" id="problem-profile">Вернуться в профиль</button><button class="primary" id="problem-retry">Повторить запуск</button></div>
+      <p class="note">Технические логи, внутренние пути и сведения об инфраструктуре пользователю не показываются.</p>
     </section>
 
     <section class="page flow hidden" id="result">

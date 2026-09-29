@@ -76,20 +76,6 @@
 .profile-project>div:last-child{display:grid;align-content:center;justify-items:end;gap:12px}
 .profile-status{color:var(--green);font-size:13px}
 .profile-empty{padding:34px 0;border-top:1px solid var(--line);color:var(--muted)}
-.run-progress{display:grid;justify-items:end;gap:7px}
-.run-progress>span{color:var(--muted);font-size:12px}
-#run-status,.problem-status{display:inline-flex;padding:7px 11px;border-radius:999px;background:#ffb82922;color:var(--amber);font-size:13px;font-weight:500}
-#run-status[data-status="running"]{background:#8052ff2b;color:#bba6ff}
-#run-status[data-status="completed"]{background:#55d7a522;color:var(--green)}
-.demo-scenarios{margin-top:42px;padding:18px 0;border-top:1px solid var(--line);color:var(--muted)}
-.demo-scenarios summary{color:#ddd;cursor:pointer}
-.demo-scenarios p{font-size:14px}
-.problem-status{margin:18px 0;background:#ff7f7f22;color:#ff9f9f}
-.problem-status[data-status="unknown"]{background:#ffb82922;color:var(--amber)}
-.problem-status[data-status="limit_reached"]{background:#8052ff2b;color:#bba6ff}
-.safe-boundary{margin:32px 0;padding:22px;border:1px solid var(--line);border-radius:18px;background:#0b0b0d}
-.safe-boundary b{font-weight:500}
-.safe-boundary p{margin:9px 0 0;color:var(--muted);line-height:1.5}
 @media(max-width:900px){.workspace{grid-template-columns:1fr}.workspace-sidebar,.workspace-main{border-right:0;border-bottom:1px solid var(--line)}.workspace-sidebar nav{grid-template-columns:repeat(3,1fr)}.workspace-context-mini{grid-template-columns:auto 1fr;margin-top:20px}.onboarding-steps,.case-deliverables{grid-template-columns:1fr}.book-case-card{grid-column:auto}}
 @media(max-width:700px){.profile-head,.profile-project{grid-template-columns:1fr}.profile-project>div:last-child{justify-items:start}.profile-actions{align-items:flex-start;flex-direction:column}}
 
@@ -285,11 +271,10 @@
       <div class="estimate-card"><div><span>Доступно</span><b>1 000 кредитов</b></div><div><span>Резерв запуска</span><b>до 300 кредитов</b></div><div><span>После запуска</span><b>не менее 700</b></div></div>
       <p class="lead">В резерв входят планирование, работа ролей и независимая проверка. Неиспользованные кредиты вернутся.</p>
       <div class="action-row"><button class="ghost" id="estimate-back">Вернуться к идее</button><button class="primary" id="development-start">Начать разработку</button></div>
-      <details class="demo-scenarios"><summary>Сценарии для проверки демо</summary><p>Показывают безопасные сообщения без технических логов и внутренних деталей.</p><div class="action-row"><button class="ghost" id="simulate-failed">Ошибка выполнения</button><button class="ghost" id="simulate-unknown">Связь прервалась</button><button class="ghost" id="simulate-limit">Недостаточно лимита</button></div></details>
     </section>
 
     <section class="page flow hidden" id="development">
-      <div class="development-head"><div><p class="eyebrow">Этап 2 · разработка</p><h2 id="development-title">Команда начинает работу</h2></div><div class="run-progress"><span>Статус запуска</span><b id="run-status" data-status="queued">В очереди</b><strong id="progress-percent">0%</strong></div></div>
+      <div class="development-head"><div><p class="eyebrow">Этап 2 · разработка</p><h2 id="development-title">Команда начинает работу</h2></div><strong id="progress-percent">0%</strong></div>
       <div class="progress"><i id="progress-bar"></i></div>
       <div class="workspace">
         <aside class="workspace-sidebar">
@@ -308,15 +293,6 @@
         </aside>
       </div>
       <p class="note">Это визуальная симуляция процесса CTF. Реальный параллельный запуск ролей в этом демо не подключён.</p>
-    </section>
-
-    <section class="page flow hidden" id="run-problem">
-      <p class="eyebrow">Статус работы</p><div class="problem-status" id="problem-status">Ошибка</div>
-      <h2 id="problem-title">Работу не удалось завершить</h2>
-      <p class="lead" id="problem-copy">Данные проекта и последняя подтверждённая версия сохранены.</p>
-      <div class="safe-boundary"><b>Что доступно</b><p id="problem-available">Можно повторить запуск или вернуться к проекту.</p></div>
-      <div class="action-row"><button class="ghost" id="problem-profile">Вернуться в профиль</button><button class="primary" id="problem-retry">Повторить запуск</button></div>
-      <p class="note">Технические логи, внутренние пути и сведения об инфраструктуре пользователю не показываются.</p>
     </section>
 
     <section class="page flow hidden" id="result">
@@ -621,27 +597,6 @@ function updateCredits(value) {
   $("#credits-used").textContent = (1000 - value).toLocaleString("ru-RU");
 }
 
-function setRunStatus(status) {
-  const labels = { queued: "В очереди", running: "В работе", completed: "Завершено" };
-  $("#run-status").dataset.status = status;
-  $("#run-status").textContent = labels[status] || status;
-}
-
-function showRunProblem(status) {
-  const copy = {
-    failed: ["Ошибка", "Работу не удалось завершить", "Данные проекта и последняя подтверждённая версия сохранены.", "Можно повторить запуск или вернуться в профиль."],
-    unknown: ["Результат не подтверждён", "Связь с исполнителем прервалась", "Мы не помечаем работу завершённой, пока сохранение результата не подтверждено.", "Последняя подтверждённая версия доступна. Запуск можно повторить."],
-    limit_reached: ["Лимит достигнут", "Запуск не начался", "Доступного лимита недостаточно. Команда не запускалась и кредиты не списывались.", "Вернитесь в профиль или повторите после восстановления лимита."]
-  }[status];
-  $("#problem-status").dataset.status = status;
-  $("#problem-status").textContent = copy[0];
-  $("#problem-title").textContent = copy[1];
-  $("#problem-copy").textContent = copy[2];
-  $("#problem-available").textContent = copy[3];
-  localStorage.setItem("ct-run", JSON.stringify({ status, projectId: state.currentProjectId }));
-  showPage("run-problem");
-}
-
 function runDevelopment(isRevision = false) {
   state.revision = isRevision;
   showPage("development", false);
@@ -649,7 +604,6 @@ function runDevelopment(isRevision = false) {
   $("#agent-list").innerHTML = "";
   $("#progress-bar").style.width = "0%";
   $("#progress-percent").textContent = "0%";
-  setRunStatus("queued");
   $("#development-title").textContent = isRevision ? "Команда дорабатывает результат" : "Команда начинает работу";
   $("#workspace-project").textContent = state.projectName;
   $("#workspace-files").textContent = state.materials.length;
@@ -664,7 +618,6 @@ function runDevelopment(isRevision = false) {
     : teams[state.projectType] || teams.custom;
 
   const tick = () => {
-    setRunStatus("running");
     const percent = Math.round((index / selectedTeam.length) * 90);
     $("#progress-bar").style.width = `${percent}%`;
     $("#progress-percent").textContent = `${percent}%`;
@@ -687,7 +640,6 @@ function runDevelopment(isRevision = false) {
 
     $("#progress-bar").style.width = "100%";
     $("#progress-percent").textContent = "100%";
-    setRunStatus("completed");
     $("#facilitator-live-text").textContent = "Команда завершила работу. Общий результат сохранён.";
     updateCredits(isRevision ? Math.min(1000, state.credits) : 240);
     localStorage.setItem("ct-run", JSON.stringify({ status: "completed", revision: isRevision }));
@@ -700,7 +652,7 @@ function runDevelopment(isRevision = false) {
       showPage("result");
     }, 600);
   };
-  setTimeout(tick, 450);
+  tick();
 }
 
 document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => showPage(button.dataset.page)));
@@ -809,11 +761,6 @@ $("#development-start").addEventListener("click", () => {
   updateCredits(0);
   runDevelopment(false);
 });
-$("#simulate-failed").addEventListener("click", () => showRunProblem("failed"));
-$("#simulate-unknown").addEventListener("click", () => showRunProblem("unknown"));
-$("#simulate-limit").addEventListener("click", () => showRunProblem("limit_reached"));
-$("#problem-profile").addEventListener("click", () => showPage("profile"));
-$("#problem-retry").addEventListener("click", () => showPage("estimate"));
 $("#request-revision").addEventListener("click", () => showPage("revision"));
 let revisionTypeSelected = false;
 function updateRevisionButton() {

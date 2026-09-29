@@ -264,6 +264,27 @@ function updateCredits(value) {
   $("#credits-used").textContent = (1000 - value).toLocaleString("ru-RU");
 }
 
+function setRunStatus(status) {
+  const labels = { queued: "В очереди", running: "В работе", completed: "Завершено" };
+  $("#run-status").dataset.status = status;
+  $("#run-status").textContent = labels[status] || status;
+}
+
+function showRunProblem(status) {
+  const copy = {
+    failed: ["Ошибка", "Работу не удалось завершить", "Данные проекта и последняя подтверждённая версия сохранены.", "Можно повторить запуск или вернуться в профиль."],
+    unknown: ["Результат не подтверждён", "Связь с исполнителем прервалась", "Мы не помечаем работу завершённой, пока сохранение результата не подтверждено.", "Последняя подтверждённая версия доступна. Запуск можно повторить."],
+    limit_reached: ["Лимит достигнут", "Запуск не начался", "Доступного лимита недостаточно. Команда не запускалась и кредиты не списывались.", "Вернитесь в профиль или повторите после восстановления лимита."]
+  }[status];
+  $("#problem-status").dataset.status = status;
+  $("#problem-status").textContent = copy[0];
+  $("#problem-title").textContent = copy[1];
+  $("#problem-copy").textContent = copy[2];
+  $("#problem-available").textContent = copy[3];
+  localStorage.setItem("ct-run", JSON.stringify({ status, projectId: state.currentProjectId }));
+  showPage("run-problem");
+}
+
 function runDevelopment(isRevision = false) {
   state.revision = isRevision;
   showPage("development", false);
@@ -271,6 +292,7 @@ function runDevelopment(isRevision = false) {
   $("#agent-list").innerHTML = "";
   $("#progress-bar").style.width = "0%";
   $("#progress-percent").textContent = "0%";
+  setRunStatus("queued");
   $("#development-title").textContent = isRevision ? "Команда дорабатывает результат" : "Команда начинает работу";
   $("#workspace-project").textContent = state.projectName;
   $("#workspace-files").textContent = state.materials.length;
@@ -285,6 +307,7 @@ function runDevelopment(isRevision = false) {
     : teams[state.projectType] || teams.custom;
 
   const tick = () => {
+    setRunStatus("running");
     const percent = Math.round((index / selectedTeam.length) * 90);
     $("#progress-bar").style.width = `${percent}%`;
     $("#progress-percent").textContent = `${percent}%`;
@@ -307,6 +330,7 @@ function runDevelopment(isRevision = false) {
 
     $("#progress-bar").style.width = "100%";
     $("#progress-percent").textContent = "100%";
+    setRunStatus("completed");
     $("#facilitator-live-text").textContent = "Команда завершила работу. Общий результат сохранён.";
     updateCredits(isRevision ? Math.min(1000, state.credits) : 240);
     localStorage.setItem("ct-run", JSON.stringify({ status: "completed", revision: isRevision }));
@@ -319,7 +343,7 @@ function runDevelopment(isRevision = false) {
       showPage("result");
     }, 600);
   };
-  tick();
+  setTimeout(tick, 450);
 }
 
 document.querySelectorAll("[data-page]").forEach((button) => button.addEventListener("click", () => showPage(button.dataset.page)));
@@ -428,6 +452,11 @@ $("#development-start").addEventListener("click", () => {
   updateCredits(0);
   runDevelopment(false);
 });
+$("#simulate-failed").addEventListener("click", () => showRunProblem("failed"));
+$("#simulate-unknown").addEventListener("click", () => showRunProblem("unknown"));
+$("#simulate-limit").addEventListener("click", () => showRunProblem("limit_reached"));
+$("#problem-profile").addEventListener("click", () => showPage("profile"));
+$("#problem-retry").addEventListener("click", () => showPage("estimate"));
 $("#request-revision").addEventListener("click", () => showPage("revision"));
 let revisionTypeSelected = false;
 function updateRevisionButton() {
