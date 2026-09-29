@@ -5,6 +5,8 @@ type Conversation = {
   id: string;
   title: string;
   status: string;
+  context_state: 'new' | 'active' | 'reset' | 'unavailable';
+  active_run_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -14,6 +16,7 @@ type StoredMessage = {
   conversation_id: string;
   run_id: string | null;
   role: string;
+  kind: string;
   sequence: number;
   content: string;
   created_at: string;
@@ -24,11 +27,24 @@ type EventData = {
   conversation_id?: string;
   run_id?: string;
   seq?: number;
+  client_request_id?: string;
   content?: unknown;
+  optimistic?: boolean;
   [key: string]: unknown;
 };
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+type Theme = 'light' | 'dark';
+type ContextState = Conversation['context_state'];
+type PendingRequest = {
+  content: string;
+  conversation_id: string | null;
+  context_mode: 'resume' | 'reset';
+};
+
+const SELECTED_CONVERSATION_KEY = 'claude-web.selected-conversation';
+const THEME_KEY = 'claude-web.theme';
+const TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -48,11 +64,60 @@ function formatConversationTime(value: string): string {
   }).format(new Date(value));
 }
 
+function initialTheme(): Theme {
+  const documentTheme = document.documentElement.dataset.theme;
+  if (documentTheme === 'light' || documentTheme === 'dark') {
+    return documentTheme;
+  }
+  const saved = window.localStorage.getItem(THEME_KEY);
+  if (saved === 'light' || saved === 'dark') {
+    return saved;
+  }
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function storedMessageEvent(message: StoredMessage): EventData {
+  if (message.kind === 'context_reset' || message.role === 'system') {
+    return {
+      type: 'context.reset',
+      event_id: message.id,
+      conversation_id: message.conversation_id,
+      run_id: message.run_id ?? undefined,
+      content: message.content,
+    };
+  }
+  return {
+    type: message.role === 'user' ? 'user_message' : 'message',
+    event_id: message.id,
+    conversation_id: message.conversation_id,
+    run_id: message.run_id ?? undefined,
+    content: message.content,
+  };
+}
+
+function canonicalMessageEvent(value: unknown): EventData | null {
+  if (!isRecord(value) || typeof value.id !== 'string' || typeof value.content !== 'string') {
+    return null;
+  }
+  const role = typeof value.role === 'string' ? value.role : 'user';
+  const kind = typeof value.kind === 'string' ? value.kind : 'text';
+  return {
+    type: kind === 'context_reset' || role === 'system' ? 'context.reset' : role === 'user' ? 'user_message' : 'message',
+    event_id: value.id,
+    conversation_id: typeof value.conversation_id === 'string' ? value.conversation_id : undefined,
+    run_id: typeof value.run_id === 'string' ? value.run_id : undefined,
+    content: value.content,
+  };
+}
+
 function App() {
+  const [theme, setTheme] = useState<Theme>(initialTheme);
   const [prompt, setPrompt] = useState('');
   const [events, setEvents] = useState<EventData[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [contextState, setContextState] = useState<ContextState>('new');
+  const [resetContextOnNextRun, setResetContextOnNextRun] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting');
   const [isRunning, setIsRunning] = useState(false);
   const [isReplaying, setIsReplaying] = useState(false);
@@ -67,15 +132,42 @@ function App() {
   const replayingRunRef = useRef<string | null>(null);
   const selectionVersionRef = useRef(0);
   const lastSeqByRunRef = useRef(new Map<string, number>());
+  const pendingRequestsRef = useRef(new Map<string, PendingRequest>());
+
+  const subscribeToRun = useCallback((runId: string) => {
+    activeRunRef.current = runId;
+    setIsRunning(true);
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      replayingRunRef.current = runId;
+      setIsReplaying(true);
+      ws.send(JSON.stringify({
+        type: 'run.subscribe',
+        run_id: runId,
+        after_seq: lastSeqByRunRef.current.get(runId) ?? 0,
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
 
   const refreshConversations = useCallback(async (): Promise<Conversation[]> => {
     const response = await fetch('/api/conversations?limit=100');
     if (!response.ok) {
       throw new Error('Не удалось загрузить список диалогов');
     }
-
     const items = (await response.json()) as Conversation[];
     setConversations(items);
+
+    const activeId = activeConversationRef.current;
+    const activeConversation = items.find((item) => item.id === activeId);
+    if (activeConversation) {
+      setContextState(activeConversation.context_state);
+    }
     return items;
   }, []);
 
@@ -89,7 +181,6 @@ function App() {
       if (!response.ok) {
         throw new Error('Не удалось загрузить сообщения диалога');
       }
-
       const messages = (await response.json()) as StoredMessage[];
       if (selectionVersion !== selectionVersionRef.current) {
         return;
@@ -97,15 +188,9 @@ function App() {
 
       activeConversationRef.current = conversationId;
       setActiveConversationId(conversationId);
-      setEvents(
-        messages.map((message) => ({
-          type: message.role === 'user' ? 'user_message' : 'message',
-          event_id: message.id,
-          conversation_id: message.conversation_id,
-          run_id: message.run_id ?? undefined,
-          content: message.content,
-        })),
-      );
+      window.localStorage.setItem(SELECTED_CONVERSATION_KEY, conversationId);
+      setResetContextOnNextRun(false);
+      setEvents(messages.map(storedMessageEvent));
     } catch (loadError) {
       if (selectionVersion === selectionVersionRef.current) {
         setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить диалог');
@@ -123,13 +208,19 @@ function App() {
     const initializeHistory = async () => {
       try {
         const items = await refreshConversations();
-        if (!cancelled && items.length > 0) {
-          await selectConversation(items[0].id);
+        if (cancelled || items.length === 0) {
+          return;
+        }
+        const savedId = window.localStorage.getItem(SELECTED_CONVERSATION_KEY);
+        const selected = items.find((item) => item.id === savedId) ?? items[0];
+        setContextState(selected.context_state);
+        await selectConversation(selected.id);
+        if (selected.active_run_id) {
+          subscribeToRun(selected.active_run_id);
         }
       } catch (loadError) {
         if (!cancelled) {
           setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить историю');
-          setIsHistoryLoading(false);
         }
       } finally {
         if (!cancelled) {
@@ -139,11 +230,10 @@ function App() {
     };
 
     void initializeHistory();
-
     return () => {
       cancelled = true;
     };
-  }, [refreshConversations, selectConversation]);
+  }, [refreshConversations, selectConversation, subscribeToRun]);
 
   useEffect(() => {
     let disposed = false;
@@ -153,7 +243,6 @@ function App() {
       if (disposed) {
         return;
       }
-
       setConnectionStatus('connecting');
       const ws = new WebSocket(websocketUrl());
       wsRef.current = ws;
@@ -163,7 +252,6 @@ function App() {
           ws.close();
           return;
         }
-
         reconnectDelay = 500;
         setConnectionStatus('connected');
         setError(null);
@@ -172,16 +260,28 @@ function App() {
         if (runId) {
           replayingRunRef.current = runId;
           setIsReplaying(true);
-          ws.send(
-            JSON.stringify({
-              type: 'run.subscribe',
-              run_id: runId,
-              after_seq: lastSeqByRunRef.current.get(runId) ?? 0,
-            }),
-          );
+          ws.send(JSON.stringify({
+            type: 'run.subscribe',
+            run_id: runId,
+            after_seq: lastSeqByRunRef.current.get(runId) ?? 0,
+          }));
         } else {
-          replayingRunRef.current = null;
-          setIsReplaying(false);
+          const pending = pendingRequestsRef.current.entries().next().value as
+            | [string, PendingRequest]
+            | undefined;
+          if (pending) {
+            const [clientRequestId, request] = pending;
+            ws.send(JSON.stringify({
+              type: 'run.create',
+              conversation_id: request.conversation_id,
+              client_request_id: clientRequestId,
+              content: request.content,
+              context_mode: request.context_mode,
+            }));
+          } else {
+            replayingRunRef.current = null;
+            setIsReplaying(false);
+          }
         }
       };
 
@@ -199,11 +299,10 @@ function App() {
         }
 
         if (event.type === 'replay.complete') {
-          const terminalStatuses = new Set(['completed', 'failed', 'cancelled']);
           if (
             event.run_id === replayingRunRef.current &&
             typeof event.status === 'string' &&
-            terminalStatuses.has(event.status)
+            TERMINAL_STATUSES.has(event.status)
           ) {
             replayingRunRef.current = null;
             if (event.run_id === activeRunRef.current) {
@@ -215,17 +314,22 @@ function App() {
           return;
         }
 
-        if (
-          event.type === 'raw' &&
-          event.error_code === 'run_not_found' &&
-          event.run_id === replayingRunRef.current
-        ) {
-          replayingRunRef.current = null;
-          if (event.run_id === activeRunRef.current) {
-            activeRunRef.current = null;
-            setIsRunning(false);
+        if (event.type === 'command.error') {
+          const requestId = typeof event.client_request_id === 'string' ? event.client_request_id : null;
+          if (requestId) {
+            const pendingRequest = pendingRequestsRef.current.get(requestId);
+            if (pendingRequest) {
+              setPrompt(pendingRequest.content);
+            }
+            pendingRequestsRef.current.delete(requestId);
+            setEvents((previous) => previous.filter((item) => item.client_request_id !== requestId));
           }
-          setIsReplaying(false);
+          if (event.code === 'conversation_context_unavailable') {
+            setContextState('unavailable');
+          }
+          setIsRunning(false);
+          setError(String(event.message ?? 'Команда не выполнена'));
+          return;
         }
 
         if (event.run_id && typeof event.seq === 'number') {
@@ -236,14 +340,68 @@ function App() {
           lastSeqByRunRef.current.set(event.run_id, event.seq);
         }
 
-        if (event.type === 'history') {
+        if (event.type === 'context.reset') {
+          const marker = canonicalMessageEvent(event.message);
+          if (marker) {
+            setEvents((previous) => {
+              const markerId = marker.event_id;
+              if (
+                typeof markerId === 'string' &&
+                previous.some((item) => item.event_id === markerId)
+              ) {
+                return previous;
+              }
+              return [...previous, marker];
+            });
+          }
+          setContextState('reset');
+          return;
+        }
+
+        if (event.type === 'run.accepted') {
+          const requestId = typeof event.client_request_id === 'string' ? event.client_request_id : null;
+          const canonical = canonicalMessageEvent(event.message);
           if (event.conversation_id && event.run_id) {
             selectionVersionRef.current += 1;
             activeConversationRef.current = event.conversation_id;
             activeRunRef.current = event.run_id;
             setActiveConversationId(event.conversation_id);
-            setIsHistoryLoading(false);
-            void refreshConversations().catch(() => undefined);
+            window.localStorage.setItem(SELECTED_CONVERSATION_KEY, event.conversation_id);
+          }
+          if (requestId && canonical) {
+            setEvents((previous) => {
+              const optimisticIndex = previous.findIndex((item) => item.client_request_id === requestId);
+              const canonicalId = canonical.event_id;
+              const canonicalExists =
+                typeof canonicalId === 'string' &&
+                previous.some((item) => item.event_id === canonicalId);
+
+              if (optimisticIndex === -1) {
+                return canonicalExists ? previous : [...previous, canonical];
+              }
+              const next = [...previous];
+              next[optimisticIndex] = canonical;
+              return next.filter(
+                (item, index) =>
+                  index === optimisticIndex ||
+                  typeof canonicalId !== 'string' ||
+                  item.event_id !== canonicalId,
+              );
+            });
+            pendingRequestsRef.current.delete(requestId);
+          }
+          setResetContextOnNextRun(false);
+          setIsHistoryLoading(false);
+          void refreshConversations().catch(() => undefined);
+
+          if (event.idempotent_replay === true && event.run_id) {
+            replayingRunRef.current = event.run_id;
+            setIsReplaying(true);
+            ws.send(JSON.stringify({
+              type: 'run.subscribe',
+              run_id: event.run_id,
+              after_seq: lastSeqByRunRef.current.get(event.run_id) ?? event.seq ?? 0,
+            }));
           }
           return;
         }
@@ -251,29 +409,28 @@ function App() {
         if (event.type === 'result' && event.run_id === activeRunRef.current) {
           activeRunRef.current = null;
           setIsRunning(false);
+          if (typeof event.session_state === 'string') {
+            setContextState(event.session_state as ContextState);
+          }
           void refreshConversations().catch(() => undefined);
         }
 
-        if (
-          event.type === 'raw' &&
-          event.error_code === 'claude_request_failed' &&
-          event.run_id === activeRunRef.current
-        ) {
+        if (event.type === 'run.failed' && event.run_id === activeRunRef.current) {
           activeRunRef.current = null;
           setIsRunning(false);
+          if (typeof event.session_state === 'string') {
+            setContextState(event.session_state as ContextState);
+          }
+          setError(String(event.message ?? 'Запрос завершился с ошибкой'));
+          void refreshConversations().catch(() => undefined);
         }
 
         if (event.type === 'thinking') {
           return;
         }
-
-        if (
-          event.conversation_id &&
-          event.conversation_id !== activeConversationRef.current
-        ) {
+        if (event.conversation_id && event.conversation_id !== activeConversationRef.current) {
           return;
         }
-
         setEvents((previous) => [...previous, event]);
       };
 
@@ -287,12 +444,10 @@ function App() {
         if (wsRef.current !== ws) {
           return;
         }
-
         wsRef.current = null;
         replayingRunRef.current = null;
         setIsReplaying(false);
         setConnectionStatus('disconnected');
-
         if (!disposed) {
           reconnectTimerRef.current = window.setTimeout(() => {
             reconnectDelay = Math.min(reconnectDelay * 2, 5000);
@@ -303,7 +458,6 @@ function App() {
     };
 
     connect();
-
     return () => {
       disposed = true;
       if (reconnectTimerRef.current !== null) {
@@ -322,7 +476,10 @@ function App() {
     selectionVersionRef.current += 1;
     activeConversationRef.current = null;
     activeRunRef.current = null;
+    window.localStorage.removeItem(SELECTED_CONVERSATION_KEY);
     setActiveConversationId(null);
+    setContextState('new');
+    setResetContextOnNextRun(false);
     setIsHistoryLoading(false);
     setEvents([]);
     setError(null);
@@ -331,38 +488,38 @@ function App() {
   const sendPrompt = () => {
     const ws = wsRef.current;
     const text = prompt.trim();
-
-    if (
-      !ws ||
-      ws.readyState !== WebSocket.OPEN ||
-      !text ||
-      isRunning ||
-      isReplaying
-    ) {
+    if (!ws || ws.readyState !== WebSocket.OPEN || !text || isRunning || isReplaying) {
       return;
     }
 
-    selectionVersionRef.current += 1;
-    activeConversationRef.current = null;
-    activeRunRef.current = null;
-    setActiveConversationId(null);
-    setIsHistoryLoading(false);
-    setEvents([
+    const clientRequestId = crypto.randomUUID();
+    const conversationId = activeConversationRef.current;
+    const contextMode = resetContextOnNextRun ? 'reset' : 'resume';
+    pendingRequestsRef.current.set(clientRequestId, {
+      content: text,
+      conversation_id: conversationId,
+      context_mode: contextMode,
+    });
+    setEvents((previous) => [
+      ...previous,
       {
         type: 'user_message',
         content: text,
+        client_request_id: clientRequestId,
+        optimistic: true,
       },
     ]);
     setPrompt('');
     setError(null);
     setIsRunning(true);
 
-    ws.send(
-      JSON.stringify({
-        type: 'run.create',
-        content: text,
-      }),
-    );
+    ws.send(JSON.stringify({
+      type: 'run.create',
+      conversation_id: conversationId,
+      client_request_id: clientRequestId,
+      content: text,
+      context_mode: contextMode,
+    }));
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -378,6 +535,13 @@ function App() {
     disconnected: 'Нет соединения',
   }[connectionStatus];
 
+  const contextLabel = {
+    new: 'Новый контекст',
+    active: 'Контекст активен',
+    reset: 'Контекст сброшен',
+    unavailable: 'Контекст недоступен',
+  }[contextState];
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -386,37 +550,29 @@ function App() {
             <div className="eyebrow">Claude Web</div>
             <h1>История</h1>
           </div>
-          <button
-            className="new-chat-button"
-            type="button"
-            onClick={startNewConversation}
-            disabled={isRunning || isReplaying}
-            title="Новый диалог"
-          >
-            +
-          </button>
+          <button className="new-chat-button" type="button" onClick={startNewConversation} disabled={isRunning || isReplaying} title="Новый диалог">+</button>
         </div>
 
         <div className="conversation-list">
           {isHistoryLoading && <div className="sidebar-state">Загрузка истории…</div>}
-          {!isHistoryLoading && conversations.length === 0 && (
-            <div className="sidebar-state">Диалогов пока нет</div>
-          )}
-
+          {!isHistoryLoading && conversations.length === 0 && <div className="sidebar-state">Диалогов пока нет</div>}
           {conversations.map((conversation) => (
             <button
               key={conversation.id}
               type="button"
-              className={`conversation-item ${
-                activeConversationId === conversation.id ? 'active' : ''
-              }`}
-              onClick={() => void selectConversation(conversation.id)}
+              className={`conversation-item ${activeConversationId === conversation.id ? 'active' : ''}`}
+              onClick={() => {
+                setContextState(conversation.context_state);
+                void selectConversation(conversation.id).then(() => {
+                  if (conversation.active_run_id) {
+                    subscribeToRun(conversation.active_run_id);
+                  }
+                });
+              }}
               disabled={isReplaying}
             >
               <span className="conversation-title">{conversation.title}</span>
-              <span className="conversation-time">
-                {formatConversationTime(conversation.updated_at)}
-              </span>
+              <span className="conversation-time">{formatConversationTime(conversation.updated_at)}</span>
             </button>
           ))}
         </div>
@@ -424,124 +580,70 @@ function App() {
 
       <section className="app">
         <header className="header">
-          <div className="header-title">
-            <span className={`status-dot ${connectionStatus}`} />
-            <span>{connectionLabel}</span>
+          <div className="header-statuses">
+            <div className="header-title"><span className={`status-dot ${connectionStatus}`} /><span>{connectionLabel}</span></div>
+            <div className={`context-status ${contextState}`}>{contextLabel}</div>
           </div>
-          {isReplaying ? (
-            <div className="run-status">Восстановление событий…</div>
-          ) : (
-            isRunning && <div className="run-status">Claude выполняет запрос…</div>
-          )}
+          <div className="header-actions">
+            {isReplaying ? <div className="run-status">Восстановление событий…</div> : isRunning && <div className="run-status">Claude выполняет запрос…</div>}
+            <button
+              className="theme-toggle"
+              type="button"
+              onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')}
+              aria-label={theme === 'light' ? 'Включить тёмную тему' : 'Включить светлую тему'}
+              title={theme === 'light' ? 'Тёмная тема' : 'Светлая тема'}
+            >
+              {theme === 'light' ? '☾' : '☀'}
+            </button>
+          </div>
         </header>
 
         <main className="chat">
           <div className="chat-content">
             {events.length === 0 && !isHistoryLoading && (
-              <div className="empty-state">
-                <div className="empty-mark">C</div>
-                <h2>Новый диалог</h2>
-                <p>Напишите запрос, чтобы начать работу с Claude Code.</p>
-              </div>
+              <div className="empty-state"><div className="empty-mark">C</div><h2>Новый диалог</h2><p>Напишите запрос, чтобы начать работу с Claude Code.</p></div>
             )}
 
+            {contextState === 'unavailable' && (
+              <div className="context-warning">
+                <div><strong>Контекст Claude недоступен.</strong><span> Продолжение требует явного сброса сессии.</span></div>
+                <button type="button" onClick={() => setResetContextOnNextRun(true)} disabled={isRunning}>Сбросить при следующем запросе</button>
+              </div>
+            )}
+            {resetContextOnNextRun && <div className="context-reset-pending">Следующий запрос начнёт новую Claude-сессию в этом чате.</div>}
+
             {events.map((event, index) => {
-              const key =
-                typeof event.event_id === 'string'
-                  ? event.event_id
-                  : `${event.run_id ?? 'local'}-${event.seq ?? index}-${event.type}`;
+              const key = typeof event.event_id === 'string' ? event.event_id : `${event.run_id ?? event.client_request_id ?? 'local'}-${event.seq ?? index}-${event.type}`;
 
+              if (event.type === 'context.reset') {
+                return <div key={key} className="context-divider"><span>{String(event.content ?? 'Контекст Claude был сброшен')}</span></div>;
+              }
               if (event.type === 'user_message') {
-                return (
-                  <div key={key} className="message-row user">
-                    <div className="message user-message">
-                      <div className="message-label">Вы</div>
-                      <div className="message-content">{String(event.content ?? '')}</div>
-                    </div>
-                  </div>
-                );
+                return <div key={key} className={`message-row user ${event.optimistic ? 'optimistic' : ''}`}><div className="message user-message"><div className="message-label">Вы</div><div className="message-content">{String(event.content ?? '')}</div></div></div>;
               }
-
               if (event.type === 'message') {
-                return (
-                  <div key={key} className="message-row claude">
-                    <div className="message claude-message">
-                      <div className="message-label">Claude</div>
-                      <div className="message-content">{String(event.content ?? '')}</div>
-                    </div>
-                  </div>
-                );
+                return <div key={key} className="message-row claude"><div className="message claude-message"><div className="message-label">Claude</div><div className="message-content">{String(event.content ?? '')}</div></div></div>;
               }
-
               if (event.type === 'tool') {
                 const input = isRecord(event.input) ? event.input : {};
                 const filePath = typeof input.file_path === 'string' ? input.file_path : null;
-
-                return (
-                  <div key={key} className="tool-row">
-                    <div className="tool-card">
-                      <div className="tool-header">
-                        <span className="tool-icon">⚙</span>
-                        <strong>{String(event.name ?? 'Tool')}</strong>
-                        <span className="tool-status">выполняется</span>
-                      </div>
-                      {filePath ? (
-                        <div className="tool-path">{filePath}</div>
-                      ) : (
-                        <pre className="tool-input">{JSON.stringify(input, null, 2)}</pre>
-                      )}
-                    </div>
-                  </div>
-                );
+                return <div key={key} className="tool-row"><div className="tool-card"><div className="tool-header"><span className="tool-icon">⚙</span><strong>{String(event.name ?? 'Tool')}</strong><span className="tool-status">выполняется</span></div>{filePath ? <div className="tool-path">{filePath}</div> : <pre className="tool-input">{JSON.stringify(input, null, 2)}</pre>}</div></div>;
               }
-
               if (event.type === 'tool_result') {
                 const file = isRecord(event.file) ? event.file : {};
                 const filePath = typeof file.path === 'string' ? file.path : null;
                 const lineCount = typeof file.num_lines === 'number' ? file.num_lines : null;
-
-                return (
-                  <div key={key} className="tool-row">
-                    <div className="tool-result">
-                      <div className="tool-result-header">
-                        <span>✓</span>
-                        <strong>Результат инструмента</strong>
-                        <span className="tool-status completed">готово</span>
-                      </div>
-                      {filePath && <div className="file-info">📄 {filePath}</div>}
-                      {lineCount !== null && <div className="file-info">{lineCount} строк</div>}
-                    </div>
-                  </div>
-                );
+                return <div key={key} className="tool-row"><div className="tool-result"><div className="tool-result-header"><span>✓</span><strong>Результат инструмента</strong><span className="tool-status completed">готово</span></div>{filePath && <div className="file-info">📄 {filePath}</div>}{lineCount !== null && <div className="file-info">{lineCount} строк</div>}</div></div>;
               }
-
               if (event.type === 'result') {
                 const turns = typeof event.num_turns === 'number' ? event.num_turns : 0;
                 const cost = typeof event.cost_usd === 'number' ? event.cost_usd : 0;
                 const duration = typeof event.duration_ms === 'number' ? event.duration_ms : 0;
-
-                return (
-                  <div key={key} className="result-row">
-                    <div className="result-card">
-                      <div className="result-header">Запрос завершён</div>
-                      <div className="result-stats">
-                        <span>Шагов: {turns}</span>
-                        <span>Стоимость: ${cost.toFixed(4)}</span>
-                        <span>Время: {(duration / 1000).toFixed(1)} с</span>
-                      </div>
-                    </div>
-                  </div>
-                );
+                return <div key={key} className="result-row"><div className="result-card"><div className="result-header">Запрос завершён</div><div className="result-stats"><span>Шагов: {turns}</span><span>Стоимость: ${cost.toFixed(4)}</span><span>Время: {(duration / 1000).toFixed(1)} с</span></div></div></div>;
               }
-
-              if (event.type === 'raw') {
-                return (
-                  <div key={key} className="warning-row">
-                    <div className="warning-card">⚠ {String(event.content ?? 'Ошибка')}</div>
-                  </div>
-                );
+              if (event.type === 'run.failed' || event.type === 'raw') {
+                return <div key={key} className="warning-row"><div className="warning-card">⚠ {String(event.message ?? event.content ?? 'Ошибка')}</div></div>;
               }
-
               return null;
             })}
 
@@ -556,29 +658,11 @@ function App() {
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={
-                isReplaying
-                  ? 'Восстанавливаем события…'
-                  : isRunning
-                    ? 'Дождитесь завершения запроса…'
-                    : 'Напишите сообщение…'
-              }
+              placeholder={isReplaying ? 'Восстанавливаем события…' : isRunning ? 'Дождитесь завершения запроса…' : 'Напишите сообщение…'}
               disabled={isRunning || isReplaying}
               rows={1}
             />
-            <button
-              type="button"
-              onClick={sendPrompt}
-              disabled={
-                !prompt.trim() ||
-                isRunning ||
-                isReplaying ||
-                connectionStatus !== 'connected'
-              }
-              aria-label="Отправить запрос"
-            >
-              ↑
-            </button>
+            <button type="button" onClick={sendPrompt} disabled={!prompt.trim() || isRunning || isReplaying || connectionStatus !== 'connected'} aria-label="Отправить запрос">↑</button>
           </div>
           <div className="input-hint">Enter — отправить · Shift + Enter — новая строка</div>
         </div>

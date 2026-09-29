@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.dependencies import get_session
 from backend.repository import (
+    get_active_run_ids,
     list_conversations,
     list_messages,
     list_run_events,
@@ -27,7 +28,16 @@ async def get_conversations(
         limit=limit,
         offset=offset,
     )
-    return [ConversationRead.model_validate(item) for item in conversations]
+    active_runs = await get_active_run_ids(
+        session,
+        [item.id for item in conversations],
+    )
+    return [
+        ConversationRead.model_validate(item).model_copy(
+            update={"active_run_id": active_runs.get(item.id)}
+        )
+        for item in conversations
+    ]
 
 
 @router.get(

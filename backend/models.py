@@ -9,11 +9,13 @@ from sqlalchemy import (
     JSON,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -35,6 +37,8 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
     claude_session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    context_state: Mapped[str] = mapped_column(String(20), default="new")
+    next_message_seq: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
@@ -59,6 +63,15 @@ class Conversation(Base):
 
 class Run(Base):
     __tablename__ = "runs"
+    __table_args__ = (
+        Index(
+            "uq_runs_one_active_per_conversation",
+            "conversation_id",
+            unique=True,
+            sqlite_where=text("status IN ('pending', 'running')"),
+            postgresql_where=text("status IN ('pending', 'running')"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     conversation_id: Mapped[str] = mapped_column(
@@ -66,6 +79,15 @@ class Run(Base):
         index=True,
     )
     status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    client_request_id: Mapped[str] = mapped_column(
+        String(36),
+        unique=True,
+        index=True,
+    )
+    context_mode: Mapped[str] = mapped_column(String(20), default="new")
+    resume_session_id: Mapped[str | None] = mapped_column(String(100))
+    claude_session_id: Mapped[str | None] = mapped_column(String(100))
+    error_code: Mapped[str | None] = mapped_column(String(64))
     next_event_seq: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -105,6 +127,7 @@ class Message(Base):
         index=True,
     )
     role: Mapped[str] = mapped_column(String(20))
+    kind: Mapped[str] = mapped_column(String(32), default="text")
     sequence: Mapped[int] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
