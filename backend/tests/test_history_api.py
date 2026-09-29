@@ -44,6 +44,18 @@ class FakeProcess:
         self.returncode = self.exit_code
 
 
+class CapturingStdin:
+    def __init__(self):
+        self.content = ""
+        self.closed = False
+
+    def write(self, content: str) -> None:
+        self.content += content
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class RecordingWebSocket:
     def __init__(self, database: Database):
         self.app = SimpleNamespace(state=SimpleNamespace(database=database))
@@ -62,6 +74,32 @@ class DisconnectingWebSocket(RecordingWebSocket):
 def make_database(tmp_path) -> Database:
     database_path = (tmp_path / "history.db").as_posix()
     return Database(f"sqlite+aiosqlite:///{database_path}")
+
+
+async def test_start_claude_allows_file_edits_without_unsafe_bypass(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    stdin = CapturingStdin()
+
+    class ProcessStub:
+        def __init__(self):
+            self.stdin = stdin
+
+    def fake_popen(arguments, **options):
+        captured["arguments"] = arguments
+        captured["options"] = options
+        return ProcessStub()
+
+    monkeypatch.setattr(main_module.subprocess, "Popen", fake_popen)
+
+    await main_module.start_claude("Create a file", "session-1")
+
+    arguments = captured["arguments"]
+    assert isinstance(arguments, list)
+    assert arguments[arguments.index("--permission-mode") + 1] == "acceptEdits"
+    assert "--dangerously-skip-permissions" not in arguments
+    assert arguments[arguments.index("--resume") + 1] == "session-1"
+    assert stdin.content == "Create a file"
+    assert stdin.closed is True
 
 
 def claude_lines(response: str, session_id: str = "session-1") -> list[str]:

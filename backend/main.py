@@ -28,6 +28,7 @@ from backend.repository import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+APP_SETTINGS = Settings()
 logger = logging.getLogger(__name__)
 
 
@@ -54,6 +55,8 @@ async def start_claude(
         "--verbose",
         "--output-format",
         "stream-json",
+        "--permission-mode",
+        APP_SETTINGS.claude_permission_mode,
     ]
     if resume_session_id:
         arguments.extend(["--resume", resume_session_id])
@@ -515,7 +518,7 @@ async def dispatch_websocket_message(websocket: WebSocket, raw: str) -> None:
 
 
 def create_app(database: Database | None = None) -> FastAPI:
-    selected_database = database or Database(Settings().database_url)
+    selected_database = database or Database(APP_SETTINGS.database_url)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

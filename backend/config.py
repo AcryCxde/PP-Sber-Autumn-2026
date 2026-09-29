@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -9,6 +10,13 @@ DEFAULT_DATABASE_PATH = BACKEND_DIR / "data" / "history.db"
 
 class Settings(BaseSettings):
     database_url: str = f"sqlite+aiosqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
+    claude_permission_mode: Literal[
+        "acceptEdits",
+        "auto",
+        "dontAsk",
+        "manual",
+        "plan",
+    ] = "acceptEdits"
 
     model_config = SettingsConfigDict(
         env_file=".env",
