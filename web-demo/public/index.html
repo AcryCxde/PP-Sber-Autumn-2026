@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>CoreTeams — результат с командой ИИ</title>
-  <meta name="description" content="Интерактивный прототип CoreTeams: фасилитатор уточняет задачу, собирает ИИ-команду и доводит работу до общего результата.">
+  <title>CoreTeams — команда вокруг вашей задачи</title>
+  <meta name="description" content="Принесите задачу. CoreTeams сам соберёт команду специалистов, распределит ответственность и подготовит единый результат.">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23000000'/%3E%3Ccircle cx='22' cy='32' r='8' fill='%238052ff'/%3E%3Ccircle cx='42' cy='22' r='6' fill='%23ffb829'/%3E%3Ccircle cx='42' cy='42' r='6' fill='%2355d7a5'/%3E%3Cpath d='M28 29 36 24M28 35l8 5' stroke='white' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/app.css?v=20260928-2">
-  <link rel="stylesheet" href="/extra.css?v=20260928-1">
+  <link rel="stylesheet" href="/app.css?v=20260929-4">
+  <link rel="stylesheet" href="/extra.css?v=20260929-4">
 </head>
 <body>
   <header class="topbar">
@@ -54,16 +54,17 @@
   <main>
     <section class="page" id="home">
       <div class="hero-copy">
-        <p class="eyebrow">От задачи — к готовому результату</p>
-        <h1>Получите результат без поиска отдельных специалистов</h1>
-        <p class="lead">Опишите задачу. CoreTeams соберёт ИИ-команду, задаст нужные вопросы и подготовит общий результат — от документа и лендинга до первой версии цифрового продукта.</p>
-        <button class="primary" id="begin">Начать работу</button>
-        <p class="note">Сейчас открыт технический демо-режим. Настоящая регистрация и агентская команда ещё не подключены.</p>
+        <p class="eyebrow">Give us the problem. We assemble the team.</p>
+        <h1>У вас есть задача. Мы соберём команду для её решения.</h1>
+        <p class="lead">Опишите идею, проблему или цель. Core Team Framework определит, какие специалисты нужны, распределит между ними ответственность и соберёт их выводы в единый результат.</p>
+        <div class="hero-actions"><button class="primary" id="begin">Поставить задачу команде</button><button class="ghost" id="show-coffee-example">Посмотреть пример</button></div>
+        <div class="promise-line"><span>Не нужно искать специалистов</span><span>Не нужно распределять работу</span><span>Не нужно соединять отдельные ответы</span></div>
+        <p class="note">Сейчас открыт интерактивный прототип. Полная обработка задач командой ещё не подключена.</p>
       </div>
       <div class="video-window">
         <div class="particle-cloud" aria-hidden="true"></div>
         <button class="play" id="play-demo" aria-label="Показать процесс">▶</button>
-        <div><span>КАК ЭТО РАБОТАЕТ · 01:18</span><b>От размытой идеи до проверенного результата</b></div>
+        <div><span>КАК ЭТО РАБОТАЕТ · 01:18</span><b>Задача → команда → единый результат</b></div>
       </div>
     </section>
 
@@ -72,8 +73,8 @@
       <h2>Идеи людей, ставшие первыми версиями</h2>
       <p class="lead">Автор сам решает, публиковать ли результат и отзыв.</p>
       <div class="case-grid">
-        <article><span>ОБРАЗОВАНИЕ</span><h3>Портфолио для студентов</h3><p>Команда превратила идею в понятный первый пользовательский путь.</p><small>Демонстрационный пример</small></article>
-        <article><span>ГОРОДСКОЙ СЕРВИС</span><h3>Помощь соседям</h3><p>Из проблемы получилась структура сервиса и первая версия лендинга.</p><small>Демонстрационный пример</small></article>
+        <article class="coffee-case-card"><span>МАЛЫЙ БИЗНЕС</span><h3>Кофейня у университета</h3><p>Команда проверила спрос, экономику, операционную модель, требования и риски запуска.</p><button class="ghost" id="start-coffee-case">Повторить этот путь</button></article>
+        <article><span>НОВОЕ НАПРАВЛЕНИЕ</span><h3>Онлайн-курс эксперта</h3><p>Команда объединила исследование аудитории, программу, экономику и план запуска.</p><small>Демонстрационный пример</small></article>
         <article class="book-case-card"><span>ИЗДАТЕЛЬСКИЙ ПРОЕКТ</span><h3>«Город между строк»</h3><p>Рукопись превратилась в редакционный план, книжный разворот и макет для печати.</p><button class="ghost" data-page="book-case">Открыть кейс</button></article>
       </div>
     </section>
@@ -92,11 +93,11 @@
 
     <section class="page hidden" id="about">
       <p class="eyebrow">Как это работает</p>
-      <h2>Один диалог — целая команда</h2>
+      <h2>Вы ставите задачу. CoreTeams организует команду.</h2>
       <div class="steps">
-        <article><b>01</b><h3>Фасилитатор уточняет</h3><p>Задаёт короткие вопросы, предлагает варианты и фиксирует допущения.</p></article>
-        <article><b>02</b><h3>Подключает специалистов</h3><p>Вы видите, кого привлекли, зачем и над чем сейчас работает роль.</p></article>
-        <article><b>03</b><h3>Собирает общий результат</h3><p>Промежуточный шум остаётся внутри. Вы получаете один проверенный артефакт.</p></article>
+        <article><b>01</b><h3>Понимает задачу</h3><p>Фасилитатор задаёт вопросы, помогает увидеть слепые зоны и фиксирует границы.</p></article>
+        <article><b>02</b><h3>Собирает команду</h3><p>Framework сам выбирает специалистов, распределяет ответственность и задаёт порядок работы.</p></article>
+        <article><b>03</b><h3>Объединяет результат</h3><p>Специалисты передают выводы друг другу, а вы получаете один согласованный результат.</p></article>
       </div>
     </section>
 
@@ -125,33 +126,34 @@
     </section>
 
     <section class="page flow hidden" id="onboarding">
-      <p class="eyebrow">Онбординг · 3 минуты</p><h2>Вы задаёте цель. Команда берёт работу на себя.</h2>
+      <p class="eyebrow">Онбординг · 3 минуты</p><h2>Принесите задачу. Команду организует CoreTeams.</h2>
       <div class="onboarding-steps">
         <article><b>01</b><h3>Дайте контекст</h3><p>Опишите задачу своими словами и приложите исходные материалы.</p></article>
         <article><b>02</b><h3>Ответьте на уточнения</h3><p>Фасилитатор спросит только то, без чего нельзя получить надёжный результат.</p></article>
-        <article><b>03</b><h3>Следите за работой</h3><p>В рабочем пространстве видны решения, прогресс, команда и общий артефакт.</p></article>
+        <article><b>03</b><h3>Получите общий результат</h3><p>Вы увидите состав команды, ход совместной работы и один собранный результат.</p></article>
       </div>
       <p class="lead">Не знаете ответ — выберите «Предложите вариант». Все предположения команда покажет перед запуском.</p>
-      <button class="primary" id="onboarding-next">Создать первый проект</button>
+      <button class="primary" id="onboarding-next">Передать первую задачу</button>
     </section>
 
     <section class="page flow hidden" id="project-setup">
-      <p class="eyebrow">Новый проект</p><h2>Что команда должна сделать?</h2>
+      <p class="eyebrow">Новая задача</p><h2>Что вы хотите сделать?</h2>
       <form id="project-form" class="form project-form">
-        <label>Название проекта<input id="project-name" value="Пересмотр учебной программы" required></label>
-        <label>Тип результата</label>
+        <label>Название проекта<input id="project-name" value="Кофейня у университета" required></label>
+        <label>Что ближе всего к вашей задаче?</label>
         <div class="choice-list compact" id="project-type">
-          <button type="button" class="selected" data-type="curriculum">Пересмотреть учебную программу</button>
+          <button type="button" class="selected" data-type="business">Запустить бизнес или новое направление</button>
+          <button type="button" data-type="custom">Запустить продукт или сервис</button>
+          <button type="button" data-type="curriculum">Пересмотреть учебную программу</button>
           <button type="button" data-type="book">Подготовить книгу</button>
-          <button type="button" data-type="custom">Другая задача</button>
         </div>
-        <label>Желаемый результат<textarea id="project-goal" required>Найти проблемы в программе курса и подготовить обновлённую версию с понятными рекомендациями.</textarea></label>
-        <label>Контекст проекта<textarea id="project-context" placeholder="Для кого курс, что уже известно, сроки, ограничения, важные требования"></textarea></label>
+        <label>Опишите цель своими словами<textarea id="project-goal" required>Хочу открыть небольшую кофейню рядом с университетом и понять, насколько идея жизнеспособна и что потребуется для запуска.</textarea></label>
+        <label>Что уже известно<textarea id="project-context" placeholder="Например: город, бюджет, сроки, помещение, аудитория, ограничения и важные требования"></textarea></label>
         <label class="upload">Добавить исходные материалы
           <input id="project-files" type="file" multiple accept=".pdf,.doc,.docx,.txt,.md,.png,.jpg,.jpeg">
         </label>
         <p class="context-hint">Контекст и материалы автоматически попадут в задачу фасилитатора и всех подключённых ролей.</p>
-        <button class="primary" type="submit">Сохранить проект и продолжить</button>
+        <button class="primary" type="submit">Передать задачу фасилитатору</button>
       </form>
     </section>
 
@@ -170,46 +172,57 @@
     </section>
 
     <section class="page flow hidden" id="summary">
-      <p class="eyebrow">Данных достаточно</p><h2>Проверьте, правильно ли мы поняли задачу</h2>
+      <p class="eyebrow">Задача понята</p><h2>Проверьте, правильно ли команда поняла ситуацию</h2>
       <div class="summary-grid">
-        <article><span>Что создаём</span><b id="summary-result"></b></article>
-        <article><span>Для кого</span><b id="summary-audience"></b></article>
-        <article><span>Что должно измениться</span><b id="summary-outcome"></b></article>
+        <article><span>Задача</span><b id="summary-result"></b></article>
+        <article><span>Исходная ситуация</span><b id="summary-audience"></b></article>
+        <article><span>Критерий результата</span><b id="summary-outcome"></b></article>
+        <article><span>Что важно проверить</span><b id="summary-directions"></b></article>
         <article><span>Предположения команды</span><b id="summary-assumption"></b></article>
         <article><span>Материалы</span><b id="summary-files">Не добавлены</b></article>
         <article><span>Контекст проекта</span><b id="summary-context">Не добавлен</b></article>
-        <article><span>Первая версия</span><b>Один лендинг идеи</b></article>
+        <article><span>Первый результат</span><b>Концепция проекта, согласованная командой</b></article>
       </div>
-      <div class="action-row"><button class="ghost" id="summary-edit">Добавить детали</button><button class="primary" id="make-landing">Сформировать лендинг идеи</button></div>
+      <div class="action-row"><button class="ghost" id="summary-edit">Добавить детали</button><button class="primary" id="make-team">Сформировать команду</button></div>
+    </section>
+
+    <section class="page flow hidden" id="team-plan">
+      <p class="eyebrow">Core Team Framework</p><h2>Команда для вашей задачи сформирована</h2>
+      <p class="lead">Состав выбран автоматически: каждый специалист отвечает за свою часть, использует выводы предыдущих ролей и передаёт работу дальше.</p>
+      <div class="team-principle"><span>Задача пользователя</span><i></i><span>Распределённая ответственность</span><i></i><span>Единый результат</span></div>
+      <div class="team-plan-list" id="team-plan-list"></div>
+      <details class="team-why"><summary>Почему выбран именно такой состав?</summary><p id="team-why-copy"></p></details>
+      <div class="action-row"><button class="ghost" id="team-back">Уточнить задачу</button><button class="primary" id="team-approve">Согласовать команду</button></div>
+      <p class="note">В первой версии состав предлагает CoreTeams. Пользователю не нужно создавать агентов, писать им инструкции или выстраивать связи вручную.</p>
     </section>
 
     <section class="page flow hidden" id="landing">
-      <p class="eyebrow">Этап 1 · лендинг идеи</p><h2>Первый общий артефакт</h2>
+      <p class="eyebrow">Этап 1 · общее понимание</p><h2>Команда собрала концепцию задачи</h2>
       <div class="artifact">
-        <span>АРТЕФАКТ 01 · ЛЕНДИНГ ИДЕИ</span>
+        <span>РЕЗУЛЬТАТ 01 · КОНЦЕПЦИЯ ПРОЕКТА</span>
         <h3 id="landing-title">Идея проекта</h3>
         <p id="landing-copy"></p>
         <div class="tags"><i id="landing-audience"></i><i>Первая версия</i></div>
       </div>
-      <div class="action-row"><button class="ghost" id="landing-revise">Исправить суть</button><button class="primary" id="landing-approve">Перейти к разработке</button></div>
+      <div class="action-row"><button class="ghost" id="landing-revise">Уточнить задачу</button><button class="primary" id="landing-approve">Передать команде в работу</button></div>
     </section>
 
     <section class="page flow hidden" id="estimate">
-      <p class="eyebrow">Перед разработкой</p><h2>Команда оценила первый запуск</h2>
+      <p class="eyebrow">Перед совместной работой</p><h2>Команда готова начать</h2>
       <div class="estimate-card"><div><span>Доступно</span><b>1 000 кредитов</b></div><div><span>Резерв запуска</span><b>до 300 кредитов</b></div><div><span>После запуска</span><b>не менее 700</b></div></div>
-      <p class="lead">В резерв входят планирование, работа ролей и независимая проверка. Неиспользованные кредиты вернутся.</p>
+      <p class="lead">В резерв входят работа всех специалистов, передача выводов между ними, сборка результата и независимая проверка.</p>
       <p class="estimate-time"><b>Примерное время: 4–7 минут.</b> Если команде понадобится уточнение, отсчёт приостановится до вашего ответа.</p>
-      <div class="action-row"><button class="ghost" id="estimate-back">Вернуться к идее</button><button class="primary" id="development-start">Начать разработку</button></div>
+      <div class="action-row"><button class="ghost" id="estimate-back">Вернуться к концепции</button><button class="primary" id="development-start">Начать работу команды</button></div>
       <details class="demo-scenarios"><summary>Сценарии для проверки демо</summary><p>Показывают безопасные сообщения без технических логов и внутренних деталей.</p><div class="action-row"><button class="ghost" id="simulate-failed">Ошибка выполнения</button><button class="ghost" id="simulate-unknown">Связь прервалась</button><button class="ghost" id="simulate-limit">Недостаточно лимита</button></div></details>
     </section>
 
     <section class="page flow hidden" id="development">
-      <div class="development-head"><div><p class="eyebrow">Этап 2 · разработка</p><h2 id="development-title">Команда начинает работу</h2></div><div class="run-progress"><span>Статус запуска</span><b id="run-status" data-status="queued">В очереди</b><strong id="progress-percent">0%</strong><small id="run-eta">Осталось примерно 5 минут</small></div></div>
+      <div class="development-head"><div><p class="eyebrow">Этап 2 · совместная работа</p><h2 id="development-title">Команда начинает работу</h2></div><div class="run-progress"><span>Состояние работы</span><b id="run-status" data-status="queued">В очереди</b><strong id="progress-percent">0%</strong><small id="run-eta">Осталось примерно 5 минут</small></div></div>
       <div class="progress"><i id="progress-bar"></i></div>
       <div class="workspace">
         <aside class="workspace-sidebar">
           <span>ПРОЕКТ</span><h3 id="workspace-project">Пересмотр учебной программы</h3>
-          <nav><button class="active" data-workspace-tab="activity">Ход работы</button><button data-workspace-tab="context">Контекст</button><button data-workspace-tab="artifacts">Артефакты</button></nav>
+          <nav><button class="active" data-workspace-tab="activity">Работа команды</button><button data-workspace-tab="context">Контекст</button><button data-workspace-tab="artifacts">Результаты</button></nav>
           <div class="workspace-context-mini"><small>Материалы</small><b id="workspace-files">0</b><small>Контекст</small><b id="workspace-context-status">Добавлен</b></div>
         </aside>
         <section class="workspace-main">
@@ -221,7 +234,7 @@
             <label>Свой вариант<input id="development-answer-custom" placeholder="Напишите, что ещё важно учесть"></label>
             <button class="primary" id="development-answer-submit" disabled>Передать ответ команде</button>
           </section>
-          <div class="workspace-panel" data-panel="activity"><p class="eyebrow">Журнал работы</p><div id="activity-feed" class="activity-feed"><p>Проект сохранён. Контекст передан фасилитатору.</p></div></div>
+          <div class="workspace-panel" data-panel="activity"><p class="eyebrow">Как команда движется к результату</p><div id="activity-feed" class="activity-feed"><p>Проект сохранён. Контекст передан фасилитатору.</p></div></div>
           <div class="workspace-panel hidden" data-panel="context"><p class="eyebrow">Контекст проекта</p><p id="workspace-context-text"></p><button class="ghost" id="workspace-add-context">Добавить контекст или файл</button></div>
           <div class="workspace-panel hidden" data-panel="artifacts"><p class="eyebrow">Артефакты</p><article class="artifact-row"><span>01</span><div><b>Лендинг идеи</b><p>Одобрен пользователем</p></div><i>Готов</i></article><article class="artifact-row"><span>02</span><div><b>Итоговый результат</b><p>Собирается командой</p></div><i>В работе</i></article></div>
         </section>
@@ -243,9 +256,9 @@
     </section>
 
     <section class="page flow hidden" id="result">
-      <p class="eyebrow">Общий результат готов</p><h2>Команда собрала и проверила артефакт</h2>
-      <div class="artifact result-artifact"><span>АРТЕФАКТ 02 · ВЕРСИЯ 1</span><h3 id="result-title"></h3><p id="result-copy"></p></div>
-      <div class="action-row"><button class="ghost" id="download-artifact">Скачать артефакт</button><button class="ghost" id="request-revision">Попросить доработку</button><button class="primary" id="finish-project">Завершить разработку и сохранить в профиле</button></div>
+      <p class="eyebrow">Единый результат готов</p><h2>Команда объединила выводы и проверила результат</h2>
+      <div class="artifact result-artifact"><span>ОБЩИЙ РЕЗУЛЬТАТ · ВЕРСИЯ 1</span><h3 id="result-title"></h3><p id="result-copy"></p></div>
+      <div class="action-row"><button class="ghost" id="download-artifact">Скачать результат</button><button class="ghost" id="request-revision">Попросить доработку</button><button class="primary" id="finish-project">Завершить работу и сохранить в профиле</button></div>
       <p class="context-state" id="save-result-state">Результат ещё не сохранён в профиле.</p>
     </section>
 

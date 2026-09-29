@@ -13,9 +13,9 @@ const state = {
   customAnswers: [],
   materials: JSON.parse(localStorage.getItem("ct-materials") || "[]"),
   context: localStorage.getItem("ct-context") || "",
-  projectType: localStorage.getItem("ct-project-type") || "curriculum",
-  projectName: localStorage.getItem("ct-project-name") || "Пересмотр учебной программы",
-  projectGoal: localStorage.getItem("ct-project-goal") || "Найти проблемы в программе курса и подготовить обновлённую версию с понятными рекомендациями.",
+  projectType: localStorage.getItem("ct-project-type") || "business",
+  projectName: localStorage.getItem("ct-project-name") || "Кофейня у университета",
+  projectGoal: localStorage.getItem("ct-project-goal") || "Хочу открыть небольшую кофейню рядом с университетом и понять, насколько идея жизнеспособна и что потребуется для запуска.",
   projects: JSON.parse(localStorage.getItem("ct-projects") || "[]"),
   currentProjectId: localStorage.getItem("ct-current-project") || "",
   revision: false,
@@ -38,6 +38,34 @@ const genericQuestions = [
     title: "Что должно измениться после результата?",
     help: "Так команда поймёт, по какому признаку проверять работу.",
     options: ["Люди смогут выполнить задачу", "Появится материал для обсуждения", "Можно будет проверить спрос", "Пока не знаю — сделайте предположение"]
+  }
+];
+
+const businessQuestions = [
+  {
+    title: "На каком этапе находится идея?",
+    help: "Так команда поймёт, что нужно проверить сначала: саму возможность запуска или уже конкретную модель.",
+    options: ["Пока только идея", "Уже ищу помещение", "Есть предварительные расчёты", "Бизнес уже работает"]
+  },
+  {
+    title: "Что вызывает больше всего сомнений?",
+    help: "Ответ определит первый участок работы и последовательность передачи выводов между специалистами.",
+    options: ["Будут ли клиенты", "Хватит ли бюджета", "Как выбрать место", "Как организовать работу", "Пока не знаю — найдите слабые места"]
+  },
+  {
+    title: "Что уже определено?",
+    help: "Команда не будет заново решать то, что вы уже зафиксировали.",
+    options: ["Город или район", "Формат и ассортимент", "Примерный бюджет", "Срок запуска", "Пока ничего"]
+  },
+  {
+    title: "Какие ограничения нельзя нарушать?",
+    help: "Ограничения станут общими рамками для финансовой, операционной и маркетинговой частей.",
+    options: ["Ограниченный бюджет", "Жёсткий срок", "Небольшая площадь", "Минимальная команда", "Пока не знаю — предложите рамки"]
+  },
+  {
+    title: "Какой результат поможет принять решение?",
+    help: "По этому критерию независимый проверяющий оценит общий результат команды.",
+    options: ["Понять, стоит ли запускаться", "Получить предварительную экономику", "Получить пошаговый план запуска", "Сравнить несколько сценариев"]
   }
 ];
 
@@ -76,12 +104,21 @@ const bookQuestions = [
 ];
 
 function activeQuestions() {
+  if (state.projectType === "business") return businessQuestions;
   if (state.projectType === "curriculum") return curriculumQuestions;
   if (state.projectType === "book") return bookQuestions;
   return genericQuestions;
 }
 
 const teams = {
+  business: [
+    ["Исследователь рынка", "Проверяет аудиторию, спрос, место и конкурентов"],
+    ["Финансовый аналитик", "Считает вложения, расходы, выручку и точку безубыточности"],
+    ["Операционный специалист", "Определяет процессы, оборудование, поставщиков и загрузку команды"],
+    ["Маркетолог", "Собирает способ привлечения и удержания первых клиентов"],
+    ["Специалист по требованиям", "Проверяет обязательные разрешения и ограничения запуска"],
+    ["Риск-аналитик", "Сверяет модель, допущения и критические риски перед итогом"]
+  ],
   curriculum: [
     ["Методист", "Проверяет цели, темы, задания и оценивание"],
     ["Предметный эксперт", "Ищет устаревшие и спорные положения"],
@@ -151,7 +188,7 @@ function renderProfile() {
   $("#new-project").disabled = remaining === 0;
   $("#project-limit-error").textContent = remaining ? "" : "Чтобы создать новый проект, завершите или удалите один из существующих.";
   $("#profile-projects").innerHTML = used
-    ? state.projects.map((project) => `<article class="profile-project"><div><span class="eyebrow">${escapeHtml(project.type === "curriculum" ? "Учебная программа" : project.type === "book" ? "Книга" : "Проект")}</span><h3>${escapeHtml(project.name)}</h3><p>${escapeHtml(project.goal)}</p></div><div><span class="profile-status">${escapeHtml(project.status)}</span><button class="ghost" data-open-project="${escapeHtml(project.id)}">Открыть</button></div></article>`).join("")
+    ? state.projects.map((project) => `<article class="profile-project"><div><span class="eyebrow">${escapeHtml(project.type === "business" ? "Бизнес-задача" : project.type === "curriculum" ? "Учебная программа" : project.type === "book" ? "Книга" : "Продукт или сервис")}</span><h3>${escapeHtml(project.name)}</h3><p>${escapeHtml(project.goal)}</p></div><div><span class="profile-status">${escapeHtml(project.status)}</span><button class="ghost" data-open-project="${escapeHtml(project.id)}">Открыть</button></div></article>`).join("")
     : '<div class="profile-empty">Проектов пока нет. Создайте первый — его прогресс и результат появятся здесь.</div>';
   document.querySelectorAll("[data-open-project]").forEach((button) => button.addEventListener("click", () => {
     const project = state.projects.find((item) => item.id === button.dataset.openProject);
@@ -176,7 +213,7 @@ function showPage(id, remember = true) {
   if (id === "profile") renderProfile();
   if (id === "result") {
     $("#result-title").textContent = state.projectName;
-    $("#result-copy").textContent = "Команда объединила анализ, согласованные решения и независимую проверку в один общий артефакт.";
+    $("#result-copy").textContent = "Core Team Framework объединил выводы специалистов, согласованные решения и независимую проверку в один общий результат.";
     $("#save-result-state").textContent = state.projects.find((project) => project.id === state.currentProjectId)?.status === "Завершён"
       ? "Результат сохранён в профиле."
       : "Результат ещё не сохранён в профиле.";
@@ -235,7 +272,16 @@ function fillSummary() {
   $("#summary-audience").textContent = answerText(0, "Команда предложит аудиторию");
   $("#summary-outcome").textContent = state.projectType === "curriculum"
     ? `${answerText(1, "Формат пересмотра уточняется")}; проверка: ${answerText(activeQuestions().length - 1, "критерий уточняется")}`
-    : answerText(1, "Критерий уточнит фасилитатор");
+    : state.projectType === "business"
+      ? answerText(activeQuestions().length - 1, "Критерий уточнит фасилитатор")
+      : answerText(1, "Критерий уточнит фасилитатор");
+  $("#summary-directions").textContent = state.projectType === "business"
+    ? "Спрос, экономика, операции, привлечение клиентов, требования и риски"
+    : state.projectType === "book"
+      ? "Структура, редактура, визуальная система, макет и комплектность"
+      : state.projectType === "curriculum"
+        ? "Цели, содержание, нагрузка, оценивание и актуальность"
+        : "Потребность, пользовательский путь, границы решения и проверка качества";
   const unknown = state.answers.flatMap((answer) => Array.isArray(answer) ? answer : [answer]).filter((answer) => /не знаю|предполож/i.test(answer || "")).length;
   $("#summary-assumption").textContent = unknown
     ? unknown === 1
@@ -245,17 +291,36 @@ function fillSummary() {
   renderMaterials();
 }
 
+function renderTeamPlan() {
+  const selectedTeam = teams[state.projectType] || teams.custom;
+  $("#team-plan-list").innerHTML = selectedTeam.map(([role, responsibility], index) => `
+    <article class="team-plan-card">
+      <span>${String(index + 1).padStart(2, "0")}</span>
+      <div><h3>${escapeHtml(role)}</h3><p>${escapeHtml(responsibility)}</p></div>
+      <b>${index === 0 ? "Начинает" : index === selectedTeam.length - 1 ? "Проверяет итог" : "Получает выводы выше"}</b>
+    </article>`).join("");
+  $("#team-why-copy").textContent = state.projectType === "business"
+    ? "Для проверки бизнес-идеи недостаточно одной точки зрения: данные о спросе влияют на финансовую модель, экономика — на операционный формат, а ограничения и риски проверяются до итоговой рекомендации."
+    : "Состав отражает разные части задачи. Роли работают не параллельными чатами: их ответственность разделена, а выводы передаются по общей последовательности.";
+}
+
 function fillLanding() {
   const audience = answerText(0, "Аудитория уточняется");
-  const outcome = answerText(1, "Проверить ценность решения");
+  const outcome = state.projectType === "business"
+    ? answerText(activeQuestions().length - 1, "Проверить жизнеспособность идеи")
+    : answerText(1, "Проверить ценность решения");
   const proposedTitle = state.projectType === "curriculum"
     ? "Курс, в котором цели ведут к результату"
     : state.projectType === "book"
       ? "Книга, готовая к редактуре и выпуску"
+      : state.projectType === "business"
+        ? "Кофейня, решение о которой основано на расчётах"
       : state.projectName;
   $("#landing-title").textContent = proposedTitle;
-  $("#landing-copy").textContent = `${state.projectGoal} Аудитория: ${audience}. Первый фокус: ${outcome.toLowerCase()}.`;
-  $("#landing-audience").textContent = audience;
+  $("#landing-copy").textContent = state.projectType === "business"
+    ? `${state.projectGoal} Исходная ситуация: ${audience.toLowerCase()}. Критерий результата: ${outcome.toLowerCase()}.`
+    : `${state.projectGoal} Аудитория: ${audience}. Первый фокус: ${outcome.toLowerCase()}.`;
+  $("#landing-audience").textContent = state.projectType === "business" ? `Этап: ${audience}` : audience;
 }
 
 function updateCredits(value) {
@@ -295,7 +360,7 @@ function runDevelopment(isRevision = false) {
   $("#development-question").classList.add("hidden");
   $("#development-answer-custom").value = "";
   setRunStatus("queued");
-  $("#development-title").textContent = isRevision ? "Команда дорабатывает результат" : "Команда начинает работу";
+  $("#development-title").textContent = isRevision ? "Команда дорабатывает результат" : "Команда работает над общей задачей";
   $("#workspace-project").textContent = state.projectName;
   $("#workspace-files").textContent = state.materials.length;
   $("#workspace-context-status").textContent = state.context ? "Добавлен" : "Не добавлен";
@@ -308,10 +373,15 @@ function runDevelopment(isRevision = false) {
     ? [["Фасилитатор", "Уточняет запрос на изменение"], ["Дизайнер", "Обновляет структуру результата"], ["Разработчик", "Вносит согласованные изменения"], ["Тестировщик", "Сравнивает новую версию с запросом"]]
     : teams[state.projectType] || teams.custom;
 
-  const initialMinutes = isRevision ? 4 : ({ curriculum: 5, book: 7, custom: 6 }[state.projectType] || 6);
+  const initialMinutes = isRevision ? 4 : ({ business: 7, curriculum: 5, book: 7, custom: 6 }[state.projectType] || 6);
   const questionIndex = Math.min(2, Math.max(1, selectedTeam.length - 1));
   let questionResolved = false;
   const questions = {
+    business: {
+      title: "Какой сценарий запуска рассчитать первым?",
+      help: "Исследователь рынка закончил первичную проверку. Выбор формата повлияет на аренду, оборудование, штат и финансовую модель.",
+      options: ["Небольшая точка навынос", "Кофейня с посадочными местами", "Сравнить оба сценария"]
+    },
     curriculum: {
       title: "Что важнее, если программа не помещается в заданное число часов?",
       help: "Аналитик обнаружил конфликт между объёмом тем и доступной нагрузкой. Выберите приоритет — команда учтёт его в результате.",
@@ -423,7 +493,7 @@ function runDevelopment(isRevision = false) {
       $("#result-title").textContent = isRevision ? "Обновлённая версия результата" : "Первая версия результата";
       $("#result-copy").textContent = isRevision
         ? "Фасилитатор собрал запрос, нужные роли внесли изменения, тестировщик проверил новую версию. Предыдущая версия сохранена."
-        : "Команда объединила анализ, пользовательский путь, архитектурные границы и проверку в один общий артефакт.";
+        : "Специалисты завершили свои зоны ответственности, передали выводы по общей последовательности, а фасилитатор собрал их в один согласованный результат.";
       showPage("result");
     }, 600);
   };
@@ -450,8 +520,27 @@ $("#save-context").addEventListener("click", () => {
   renderMaterials();
 });
 $("#play-demo").addEventListener("click", () => showPage("about"));
+$("#show-coffee-example").addEventListener("click", () => showPage("catalog"));
 $("#begin").addEventListener("click", () => {
   showPage(state.projects.length ? "profile" : "signup", false);
+});
+
+function setCoffeeExample() {
+  state.projectType = "business";
+  state.projectName = "Кофейня у университета";
+  state.projectGoal = "Хочу открыть небольшую кофейню рядом с университетом и понять, насколько идея жизнеспособна и что потребуется для запуска.";
+  state.context = "";
+  state.answers = [];
+  state.customAnswers = [];
+  $("#project-name").value = state.projectName;
+  $("#project-goal").value = state.projectGoal;
+  $("#project-context").value = "";
+  document.querySelectorAll("#project-type button").forEach((item) => item.classList.toggle("selected", item.dataset.type === "business"));
+}
+
+$("#start-coffee-case").addEventListener("click", () => {
+  setCoffeeExample();
+  showPage(state.projects.length ? "project-setup" : "signup", false);
 });
 
 $("#signup-form").addEventListener("submit", (event) => {
@@ -470,15 +559,18 @@ document.querySelectorAll("#project-type button").forEach((button) => button.add
   document.querySelectorAll("#project-type button").forEach((item) => item.classList.remove("selected"));
   button.classList.add("selected");
   state.projectType = button.dataset.type;
-  if (state.projectType === "book") {
+  if (state.projectType === "business") {
+    $("#project-name").value = "Кофейня у университета";
+    $("#project-goal").value = "Хочу открыть небольшую кофейню рядом с университетом и понять, насколько идея жизнеспособна и что потребуется для запуска.";
+  } else if (state.projectType === "book") {
     $("#project-name").value = "Создание книги";
     $("#project-goal").value = "Подготовить рукопись к редактуре, собрать демонстрационный разворот и план печатного макета.";
   } else if (state.projectType === "curriculum") {
     $("#project-name").value = "Пересмотр учебной программы";
     $("#project-goal").value = "Найти проблемы в программе курса и подготовить обновлённую версию с понятными рекомендациями.";
   } else {
-    $("#project-name").value = "Новый проект";
-    $("#project-goal").value = "";
+    $("#project-name").value = "Новый продукт или сервис";
+    $("#project-goal").value = "Хочу проверить идею, определить первую версию и понять, что потребуется для запуска.";
   }
 }));
 $("#project-form").addEventListener("submit", (event) => {
@@ -525,7 +617,12 @@ $("#summary-edit").addEventListener("click", () => {
   renderQuestion();
   showPage("facilitator");
 });
-$("#make-landing").addEventListener("click", () => {
+$("#make-team").addEventListener("click", () => {
+  renderTeamPlan();
+  showPage("team-plan");
+});
+$("#team-back").addEventListener("click", () => showPage("summary"));
+$("#team-approve").addEventListener("click", () => {
   fillLanding();
   showPage("landing");
 });
@@ -556,7 +653,7 @@ $("#revision-text").addEventListener("input", updateRevisionButton);
 $("#revision-start").addEventListener("click", () => runDevelopment(true));
 $("#download-artifact").addEventListener("click", () => {
   const answers = activeQuestions().map((question, index) => `### ${question.title}\n\n${answerText(index)}`).join("\n\n");
-  const content = `# ${state.projectName}\n\n## Цель\n\n${state.projectGoal}\n\n## Контекст\n\n${state.context || "Контекст не добавлен."}\n\n## Ответы фасилитатору\n\n${answers}\n\n## Итог\n\nКоманда объединила анализ, согласованные решения и независимую проверку в один общий артефакт.\n`;
+  const content = `# ${state.projectName}\n\n## Цель\n\n${state.projectGoal}\n\n## Контекст\n\n${state.context || "Контекст не добавлен."}\n\n## Ответы фасилитатору\n\n${answers}\n\n## Состав команды\n\n${(teams[state.projectType] || teams.custom).map(([role, responsibility]) => `- **${role}:** ${responsibility}`).join("\n")}\n\n## Итог\n\nCore Team Framework распределил ответственность между специалистами и объединил их выводы в один общий результат.\n`;
   const link = document.createElement("a");
   link.href = URL.createObjectURL(new Blob([content], { type: "text/markdown;charset=utf-8" }));
   link.download = `${state.projectName.replace(/[\\/:*?"<>|]/g, "-") || "артефакт"}.md`;
@@ -575,9 +672,9 @@ $("#new-project").addEventListener("click", () => {
     return;
   }
   state.currentProjectId = "";
-  state.projectType = "curriculum";
-  state.projectName = "Пересмотр учебной программы";
-  state.projectGoal = "Найти проблемы в программе курса и подготовить обновлённую версию с понятными рекомендациями.";
+  state.projectType = "business";
+  state.projectName = "Кофейня у университета";
+  state.projectGoal = "Хочу открыть небольшую кофейню рядом с университетом и понять, насколько идея жизнеспособна и что потребуется для запуска.";
   state.context = "";
   state.materials = [];
   state.answers = [];
@@ -588,7 +685,7 @@ $("#new-project").addEventListener("click", () => {
   $("#project-name").value = state.projectName;
   $("#project-goal").value = state.projectGoal;
   $("#project-context").value = "";
-  document.querySelectorAll("#project-type button").forEach((item) => item.classList.toggle("selected", item.dataset.type === "curriculum"));
+  document.querySelectorAll("#project-type button").forEach((item) => item.classList.toggle("selected", item.dataset.type === "business"));
   renderMaterials();
   showPage("project-setup");
 });
