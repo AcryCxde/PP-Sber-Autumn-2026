@@ -19,7 +19,7 @@
 |---|---|---|
 | завершён | `turn_completed` | `HEAD` содержит `Turn-Id` текущего хода: commit успел, не успели state и события. Ход не повторяется, дописываются `checkpoint` и `turn_completed`. |
 | unknown → resumed | `turn_interrupted` → `turn_resumed{attempt, mode}` | `turn_open`, ход не подтверждён. `mode=resume`: SDK-сессия продолжается по `session_id`. `mode=fresh`: новая сессия, прерванный промпт повторяется с пометкой «сначала проверь git status/diff, часть работы уже сделана». |
-| failed | `turn_failed{resume_limit}` | `autoresume_count > 3` подряд: `health=crashed`, runner ждёт человека. |
+| failed | `turn_failed{resume_limit}` | три автопродолжения подряд уже исполнены (`autoresume_count >= 3` при старте): `health=crashed`, runner ждёт человека. |
 
 `turn_interrupted` значит «исход неизвестен» и без commit никогда не становится `completed`. Дерево не откатывается: неподтверждённая работа остаётся. `autoresume_count` сбрасывается на `turn_completed`.
 

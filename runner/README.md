@@ -155,6 +155,6 @@ source ~/.config/brotherhood/env.zsh && uv run pytest evals -m e2e -q
 | `test_start` | старт с тестовым проектом, полный ход до `turn_completed` |
 | `test_isolation` | выход через symlink в `/workspace/.runner` → `access_denied`, содержимое не утекло, чужой том не виден |
 | `test_stall` | `--stall-after 30` + `sleep 200` → `health: stalled` и Docker `unhealthy` |
-| `test_restart` | `docker kill` посреди хода → `turn_interrupted` → `turn_resumed` → `turn_completed`, новый `checkpoint` |
+| `test_restart` | `docker kill` + `docker start` посреди хода → `turn_interrupted` → `turn_resumed` → `turn_completed`, новый `checkpoint` (ручной kill не запускает `on-failure`, поэтому контейнер поднимается вручную) |
 
 Без env шлюза e2e пропускаются.

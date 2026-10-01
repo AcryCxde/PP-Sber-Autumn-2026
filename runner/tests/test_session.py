@@ -555,6 +555,20 @@ async def test_give_up_fails_turn_then_human_command_resumes_work(
     assert await run is Exit.STOPPED
 
 
+async def test_repeated_give_up_does_not_duplicate_events(
+    make_env: Callable[[PersistedState], Env],
+) -> None:
+    env = make_env(open_state(count=3))
+    env.log.append(EventKind.TURN_INTERRUPTED, "t1", {})  # прошлый запуск успел записать события
+    env.log.append(EventKind.TURN_FAILED, "t1", {"reason": "resume_limit"})
+    client = FakeClient([])
+    run = asyncio.create_task(env.session.run(client, GiveUp("t1")))
+    put(env.inbox_dir, {"id": "c9", "kind": "stop"})
+    assert await run is Exit.STOPPED
+    assert env.kinds() == ["turn_interrupted", "turn_failed"]
+    assert load_state(env.state_file).open_turn is None
+
+
 async def test_redelivered_command_is_not_run_twice(
     make_env: Callable[[PersistedState], Env],
 ) -> None:

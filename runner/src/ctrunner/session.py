@@ -229,8 +229,10 @@ class Session:
                 self._log.append(EventKind.TURN_RESUMED, step.turn_id, attempt)
                 await client.query(continuation_prompt(step))
             case GiveUp(turn_id=turn_id):
-                self._log.append(EventKind.TURN_INTERRUPTED, turn_id, {})
-                self._log.append(EventKind.TURN_FAILED, turn_id, {"reason": "resume_limit"})
+                # Падение между событиями и записью state повторит этот путь: журнал не удваивается.
+                if EventKind.TURN_FAILED not in self._turn_kinds(turn_id):
+                    self._log.append(EventKind.TURN_INTERRUPTED, turn_id, {})
+                    self._log.append(EventKind.TURN_FAILED, turn_id, {"reason": "resume_limit"})
                 self._state = Halted(self._state.queue)
                 self._save()
             case _:

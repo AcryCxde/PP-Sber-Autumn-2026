@@ -141,13 +141,14 @@ class Launchable(Protocol):
     def crash(self, error: BaseException | None) -> int: ...
 
 
-async def run_with_resume[S: Launchable](
+async def run_with_resume[S: Launchable](  # noqa: PLR0913 — зависимости передаются явно
     state: PersistedState,
     head: Head,
     resumable: str | None,
     *,
     build_session: Callable[[PersistedState], S],
     open_client: Callable[[S, str | None], AbstractAsyncContextManager[SdkClient]],
+    redact: Callable[[str], str],
 ) -> int:
     """Запускает сессию; если `resume` не подключился, один раз начинает с чистой сессии.
 
@@ -170,7 +171,7 @@ async def run_with_resume[S: Launchable](
         except ProcessError as error:
             if connected or resume is None:
                 return session.crash(error)
-            diag("resume_failed", session_id=resume, detail=str(error))
+            diag("resume_failed", session_id=resume, detail=redact(str(error)))
             resume = None
         except Exception as error:  # процессная граница: запись отказа и выход 1
             return session.crash(error)
@@ -230,6 +231,7 @@ async def run(cfg: RunnerConfig) -> int:
             resumable_session(state, cfg.claude_dir),
             build_session=build_session,
             open_client=open_client,
+            redact=redactor.text,
         )
 
 

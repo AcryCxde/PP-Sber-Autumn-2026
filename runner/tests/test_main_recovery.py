@@ -18,6 +18,7 @@ from ctrunner.state import EMPTY, OpenTurn, PersistedState, StateCorrupt
 
 SID = "749df2fe-1b50-4c46-92f3-e2cdf0ce322d"
 HEAD = Head("a" * 40, None)
+SECRET = "sk-test-0123456789"
 OPEN = PersistedState(SID, OpenTurn("t1", MessageCmd("c1", "go")), None, 0, ())
 
 
@@ -91,7 +92,12 @@ class Harness:
 
 async def drive(harness: Harness, state: PersistedState, *, resumable: str | None) -> int:
     return await run_with_resume(
-        state, HEAD, resumable, build_session=harness.build, open_client=harness.open
+        state,
+        HEAD,
+        resumable,
+        build_session=harness.build,
+        open_client=harness.open,
+        redact=lambda text: text.replace(SECRET, "***"),
     )
 
 
@@ -147,3 +153,12 @@ async def test_clean_state_plans_nothing(state: PersistedState) -> None:
     harness = Harness()
     await drive(harness, state, resumable=None)
     assert harness.built[0].recovery == CLEAN
+
+
+async def test_resume_failure_detail_is_redacted(capsys: pytest.CaptureFixture[str]) -> None:
+    error = ProcessError(f"No conversation found, key {SECRET}", exit_code=1)
+    harness = Harness(connect_fails={SID}, connect_error=error)
+    await drive(harness, OPEN, resumable=SID)
+    err = capsys.readouterr().err
+    assert "resume_failed" in err
+    assert SECRET not in err

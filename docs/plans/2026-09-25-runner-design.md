@@ -50,7 +50,7 @@ runner/
 
 ```
 /workspace/project/              git-репозиторий, cwd агента, внутри .claude/ (CTF)
-/workspace/.runner/state.json    session_id, turn_open, last_sha, autoresume_count, processed_cmd_ids
+/workspace/.runner/state.json    session_id, open_turn, last_sha, autoresume_count, queue (обработанные id — в inbox/processed/)
 /workspace/.runner/events.jsonl  журнал: сначала запись, потом отправка
 /workspace/claude/               CLAUDE_CONFIG_DIR — транскрипты для resume
 ```
@@ -98,8 +98,8 @@ docker run -d --name ct-<id> --restart on-failure:5 \
 3. Загрузить `state.json`, подготовить `project/`.
 4. В фоне подключиться к гейтвею. Если `GATEWAY_URL` не задан, работает только локальный журнал. Работа от соединения не зависит.
 5. `ClaudeSDKClient(resume=state.session_id, include_partial_messages=True, hooks={PreToolUse: guard}, can_use_tool=fork)`.
-6. Если `state.turn_open`: событие `turn_interrupted`, затем автопродолжение. Больше 3 автопродолжений подряд → `health=crashed`, runner ждёт человека.
-7. Цикл: команда → `turn_open=true` (fsync) → `query` → поток до `result` и `pending=∅` → `git commit` → `checkpoint` → `turn_open=false` → `turn_completed`.
+6. Если `state.open_turn`: событие `turn_interrupted`, затем автопродолжение. После 3 автопродолжений подряд ход проваливается (`turn_failed{resume_limit}`), `health=crashed`, runner ждёт человека.
+7. Цикл: команда → `open_turn` в state (fsync) → `query` → поток до `result` и `pending=∅` → `git commit` → `checkpoint` → `turn_completed` → state без открытого хода.
 
 Развилка: `can_use_tool(AskUserQuestion)` → phase `awaiting_answer`, событие `fork_question{fork_id}`, ожидание `fork_answer` без таймаута (это не зависание). Если развилку прервал рестарт, срабатывает общий путь `turn_interrupted` → автопродолжение, и агент задаёт вопрос заново.
 
