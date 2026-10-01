@@ -2,6 +2,7 @@
 
 Контракт для направления 2.1. Версия конверта `v: 1`.
 Пометка **этап 2** — сообщение описано, но в runner этапа 1 не реализовано.
+Исключение: события восстановления (`checkpoint`, `turn_interrupted`, `turn_resumed`, новые `reason` у `turn_failed`) runner уже пишет в `events.jsonl`; по WebSocket их отправит клиент этапа 2.
 
 ## Транспорт
 
@@ -23,7 +24,7 @@
 
 Значения:
 
-- `phase`: `idle` | `working` | `awaiting_answer` | `failed` (SDK завершился с ошибкой).
+- `phase`: `idle` | `working` | `awaiting_answer` | `failed` (SDK завершился с ошибкой или исчерпан `resume_limit`).
 - `health`: `ok` | `stalled` | `crashed`. Правило — `docs/2.4/spec.md`, раздел 3.
 - `ts`, `last_progress_at` — Unix-время в секундах (float).
 
@@ -92,11 +93,28 @@
 | `fork_question` | `{"fork_id", "questions": [...]}` — вопросы AskUserQuestion как есть | 1 |
 | `fork_answered` | `{"fork_id", "answers": {вопрос: ответ}}` | 1 |
 | `turn_completed` | `{}` | 1 |
-| `turn_failed` | `{"reason": "result_error" \| "sdk_crashed" \| "disk_full"}` | 1 |
+| `turn_failed` | `{"reason": "result_error" \| "sdk_crashed" \| "disk_full" \| "checkpoint_failed" \| "resume_limit" \| "state_corrupt"}` | 1 (`checkpoint_failed`, `resume_limit`, `state_corrupt` — 2) |
 | `access_denied` | `{"tool", "path", "agent_id" \| null}` — `path` после `realpath` | 1 |
-| `checkpoint` | `{"sha"}` — git commit в конце хода | 2 |
+| `checkpoint` | `{"sha"}` — git commit с trailer `Turn-Id` в конце хода | 2 |
 | `turn_interrupted` | `{}` — рестарт посреди хода, исход неизвестен | 2 |
-| `turn_resumed` | `{"attempt"}` — автопродолжение после рестарта | 2 |
+| `turn_resumed` | `{"attempt": 1..3, "mode": "resume" \| "fresh"}` — автопродолжение после рестарта: `resume` продолжает SDK-сессию, `fresh` — новая сессия (транскрипта нет или `resume` не подключился) | 2 |
+
+`turn_failed.reason`:
+
+| `reason` | Когда |
+|---|---|
+| `result_error` | SDK вернул `result` с ошибкой |
+| `sdk_crashed` | runner упал (выход 1) |
+| `disk_full` | ENOSPC при commit (runner работает дальше) или при записи `state.json`/журнала (runner падает) |
+| `checkpoint_failed` | commit упал по другой причине; дерево не тронуто |
+| `resume_limit` | 3 автопродолжения подряд не завершили ход; `turn_id` — провалившийся ход, runner жив с `health=crashed` до новой команды |
+| `state_corrupt` | `state.json` не разобран; `turn_id: null`, выход 65 |
+
+Восстановление после рестарта (`turn_id` во всех событиях — прерванный ход, повторно он не открывается):
+
+- `turn_interrupted` → `turn_resumed{attempt, mode}` → дальше обычный ход, `turn_started` второй раз не пишется;
+- `turn_interrupted` → `turn_failed{resume_limit}` — лимит исчерпан;
+- `checkpoint` → `turn_completed` без `turn_interrupted` — commit успел до рестарта; дописываются только события, которых нет в журнале.
 
 Примеры:
 
@@ -107,6 +125,9 @@
 {"seq": 12, "ts": 1790336530.0, "turn_id": "4448…", "kind": "fork_question", "payload": {"fork_id": "9f1c…", "questions": [{"question": "Какой вариант?", "options": [{"label": "Первый"}, {"label": "Второй"}]}]}}
 {"seq": 13, "ts": 1790336561.0, "turn_id": "4448…", "kind": "fork_answered", "payload": {"fork_id": "9f1c…", "answers": {"Какой вариант?": "Первый"}}}
 {"seq": 20, "ts": 1790336600.0, "turn_id": "ae5c…", "kind": "turn_failed", "payload": {"reason": "sdk_crashed"}}
+{"seq": 31, "ts": 1790336640.0, "turn_id": "4448…", "kind": "turn_interrupted", "payload": {}}
+{"seq": 32, "ts": 1790336640.0, "turn_id": "4448…", "kind": "turn_resumed", "payload": {"attempt": 1, "mode": "resume"}}
+{"seq": 40, "ts": 1790336702.0, "turn_id": "4448…", "kind": "checkpoint", "payload": {"sha": "3f9a1c7e0b52d84a6c1e9f03b7a5d2c48e6f1a09"}}
 {"seq": 29, "ts": 1790336606.1, "turn_id": "bdee…", "kind": "access_denied", "payload": {"tool": "Read", "path": "/workspace/.runner/events.jsonl", "agent_id": null}}
 ```
 
@@ -119,6 +140,11 @@
   Недописанная последняя строка после обрыва отрезается при старте; её `seq` используется заново.
 - События — at-least-once: после переподключения runner повторяет всё после `welcome.acked_seq`;
   гейтвей убирает дубли по `seq` (**этап 2**).
-- Команды идемпотентны по `id`. Этап 1: inbox помнит обработанные `id` (каталог `processed/`) и между рестартами;
-  доставка команды — at-most-once: файл переносится в `processed/` до исполнения.
+- Команды идемпотентны по `id`. Этап 1: inbox помнит обработанные `id` (каталог `processed/`) и между рестартами.
+  Для `message` доставка — at-least-once до `ack`, исполнение идемпотентно по `id`: команда сначала записывается в `state.json`
+  (очередь или открытый ход), и только затем файл переносится в `processed/`. Падение между записью и переносом
+  не теряет команду и не исполняет её дважды: при старте она подтверждается без повторного исполнения.
+  `fork_answer` и `stop` подтверждаются до исполнения (at-most-once): развилку рестарт всё равно прерывает.
+- Порядок записи в конце хода: commit → `checkpoint` → `turn_completed` → `state.json` (события раньше state, чтобы падение
+  между ними не потеряло их навсегда); в начале хода: `state.json` → `query`.
 - Порядок событий внутри сессии совпадает с порядком `seq`.
