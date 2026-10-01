@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>CoreTeams — ваша задача, нужная команда</title>
+    <meta
+      name="description"
+      content="Принесите задачу. CoreTeams организует AI-команду, задаст нужные вопросы и соберёт единый результат."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%232a2338'/%3E%3Ccircle cx='22' cy='32' r='8' fill='%238052ff'/%3E%3Ccircle cx='42' cy='22' r='6' fill='%23ffb829'/%3E%3Ccircle cx='42' cy='42' r='6' fill='%2355d7a5'/%3E%3Cpath d='M28 29 36 24M28 35l8 5' stroke='white' stroke-width='3'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/v9/style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Перейти к содержимому</a>
+    <header class="site-header">
+      <a class="brand" href="#home" aria-label="CoreTeams — главная"
+        ><svg viewBox="0 0 64 64" aria-hidden="true">
+          <rect width="64" height="64" rx="17" fill="#2a2338" />
+          <path d="M28 29 36 24M28 35l8 5" stroke="white" stroke-width="3" />
+          <circle cx="22" cy="32" r="8" fill="#a487ff" />
+          <circle cx="42" cy="22" r="6" fill="#ffb829" />
+          <circle cx="42" cy="42" r="6" fill="#55d7a5" /></svg
+        ><span>core<b>teams</b></span></a
+      >
+      <nav aria-label="Основная навигация">
+        <a href="#home" data-nav="home">Главная</a
+        ><a href="#catalog" data-nav="catalog">Примеры</a
+        ><a href="#profile" data-nav="profile">Мои проекты</a>
+      </nav>
+      <span class="demo-label">Прототип · v9</span>
+    </header>
+    <main id="main" tabindex="-1"></main>
+    <footer class="site-footer">
+      <span>CoreTeams · команда вокруг вашей задачи</span
+      ><button class="text-button" data-action="about-demo">
+        Как работает это демо
+      </button>
+    </footer>
+    <dialog id="dialog" aria-labelledby="dialog-title">
+      <div id="dialog-body"></div>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <template id="media-assets">
+      <img id="media-team" src="/assets/v9/team.png" alt="" />
+      <img id="media-guide" src="/assets/v9/guide.png" alt="" />
+      <img id="media-result" src="/assets/v9/result.png" alt="" />
+      <img id="media-book" src="/assets/book-spread.png" alt="" />
+      <video id="media-video" src="/assets/CoreTeams-v1-720p.mp4"></video>
+    </template>
+    <script src="/v9/app.js"></script>
+  </body>
+</html>

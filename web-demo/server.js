@@ -64,17 +64,39 @@ function completeRun(runId, outcome = "completed") {
 }
 function serveStatic(res, file) {
   const content = fs.readFileSync(path.join(publicDir, file));
-  res.writeHead(200, { "content-type": file.endsWith(".css") ? "text/css; charset=utf-8" : "text/html; charset=utf-8" }); res.end(content);
+  const types = { ".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".html": "text/html; charset=utf-8", ".png": "image/png", ".woff2": "font/woff2" };
+  res.writeHead(200, { "content-type": types[path.extname(file)] || "application/octet-stream" }); res.end(content);
 }
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost"); const segments = url.pathname.split("/").filter(Boolean); const state = load();
-  if (req.method === "GET" && url.pathname === "/") return serveStatic(res, "index.html");
+  if (req.method === "GET" && ["/", "/v9", "/v9/"].includes(url.pathname)) return serveStatic(res, "v9/index.html");
+  if (req.method === "GET" && url.pathname === "/v8") return serveStatic(res, "index.html");
+  const v9Files = ["/v9/app.js", "/v9/style.css", "/assets/v9/team.png", "/assets/v9/guide.png", "/assets/v9/result.png", "/assets/v9/inter-cyrillic-400-normal.woff2", "/assets/v9/inter-cyrillic-600-normal.woff2", "/assets/v9/inter-latin-400-normal.woff2", "/assets/v9/inter-latin-600-normal.woff2"];
+  if (req.method === "GET" && v9Files.includes(url.pathname)) return serveStatic(res, url.pathname.slice(1));
   if (req.method === "GET" && url.pathname === "/app.css") return serveStatic(res, "app.css");
   if (req.method === "GET" && url.pathname === "/extra.css") return serveStatic(res, "extra.css");
   if (req.method === "GET" && url.pathname === "/assets/book-spread.png") {
     const content = fs.readFileSync(path.join(publicDir, "assets", "book-spread.png"));
     res.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=3600" });
     return res.end(content);
+  }
+  if (req.method === "GET" && url.pathname === "/assets/CoreTeams-v1-720p.mp4") {
+    const videoPath = path.join(publicDir, "assets", "CoreTeams-v1-720p.mp4");
+    const size = fs.statSync(videoPath).size;
+    const headers = { "content-type": "video/mp4", "accept-ranges": "bytes", "cache-control": "public, max-age=3600" };
+    if (req.headers.range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+      const start = match?.[1] ? Number(match[1]) : Math.max(0, size - Number(match?.[2] || 0));
+      const end = match?.[1] && match?.[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
+      if (!match || start >= size || start > end) {
+        res.writeHead(416, { "content-range": `bytes */${size}` });
+        return res.end();
+      }
+      res.writeHead(206, { ...headers, "content-range": `bytes ${start}-${end}/${size}`, "content-length": end - start + 1 });
+      return fs.createReadStream(videoPath, { start, end }).pipe(res);
+    }
+    res.writeHead(200, { ...headers, "content-length": size });
+    return fs.createReadStream(videoPath).pipe(res);
   }
   if (req.method === "GET" && url.pathname === "/app.js") {
     const content = fs.readFileSync(path.join(publicDir, "app.js"));
