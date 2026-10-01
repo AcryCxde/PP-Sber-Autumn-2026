@@ -1,0 +1,12 @@
+{
+  "name": "coreteams-web-demo",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build:standalone": "node build-v9.mjs",
+    "build:v9": "node build-v9.mjs",
+    "verify:v9": "node verify-v9.mjs",
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
+  }
+}
