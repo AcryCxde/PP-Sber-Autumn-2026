@@ -4,7 +4,6 @@ import asyncio
 import os
 import shutil
 import signal
-import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -14,6 +13,7 @@ from typing import Final, Protocol, assert_never
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
 from ctrunner import __version__
+from ctrunner.checkpoint import run_git
 from ctrunner.config import HEALTH_FILE, TOKEN_FILE, ConfigError, RunnerConfig, load_config
 from ctrunner.diag import diag
 from ctrunner.eventlog import EventLog
@@ -30,7 +30,6 @@ PROBE_TIMEOUT_S: Final = 30.0
 # Docker перезапускает on-failure с задержкой от 100 мс: 5 рестартов проходят за секунды,
 # поэтому кратковременную недоступность cliproxy переживаем внутри процесса.
 PROBE_RETRY_DELAYS_S: Final = (5.0, 10.0, 20.0, 40.0, 60.0)
-GIT_TIMEOUT_S: Final = 600.0  # git add большого проекта при первом старте
 SECRETS_DIR: Final = Path("/run/secrets")
 SEED_DIR: Final = Path("/seed")
 CTF_DIR: Final = Path("/opt/ctf/.claude")
@@ -95,10 +94,10 @@ def seed_project(project: Path, *, seed: Path, ctf: Path) -> None:
     if not (project / ".claude").exists() and ctf.is_dir():
         _copy_into_place(ctf, project / ".claude")
     if not (project / ".git").exists():
-        _git(project, "init", "-q")
-    if _git(project, "rev-parse", "--verify", "-q", "HEAD", check=False).returncode != 0:
-        _git(project, "add", "-A")
-        _git(project, "commit", "-q", "--allow-empty", "-m", "init")
+        run_git(project, "init", "-q")
+    if run_git(project, "rev-parse", "--verify", "-q", "HEAD", check=False).returncode != 0:
+        run_git(project, "add", "-A")
+        run_git(project, "commit", "-q", "--allow-empty", "-m", "init")
 
 
 def _copy_into_place(source: Path | None, target: Path) -> None:
@@ -111,15 +110,6 @@ def _copy_into_place(source: Path | None, target: Path) -> None:
         staging.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, staging, symlinks=True)
     os.replace(staging, target)
-
-
-def _git(project: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(  # noqa: S603 — аргументы фиксированы, без shell
-        ["git", "-C", str(project), *args],  # noqa: S607 — git из PATH образа
-        check=check,
-        capture_output=True,
-        timeout=GIT_TIMEOUT_S,
-    )
 
 
 async def run(cfg: RunnerConfig) -> int:
