@@ -23,6 +23,7 @@ class Idle:
 @dataclass(frozen=True, slots=True)
 class Working:
     turn_id: str
+    cmd: MessageCmd  # команда, открывшая ход: нужна, чтобы повторить его после рестарта
     pending: frozenset[str]  # фоновые задачи: пока они есть, `result` не завершает ход
     forks: int  # открытые развилки AskUserQuestion
     queue: tuple[MessageCmd, ...]
@@ -36,7 +37,33 @@ class Working:
         return Phase.AWAITING_ANSWER if self.forks else Phase.WORKING
 
 
-type TurnState = Idle | Working
+@final
+@dataclass(frozen=True, slots=True)
+class Committing:
+    """Результат получен, идёт git commit. Новые команды ждут в очереди."""
+
+    turn_id: str
+    cmd: MessageCmd
+    queue: tuple[MessageCmd, ...]
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.WORKING
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class Halted:
+    """Автопродолжения исчерпаны: runner жив, `health=crashed`, ждёт команду человека."""
+
+    queue: tuple[MessageCmd, ...]
+
+    @property
+    def phase(self) -> Phase:
+        return Phase.FAILED
+
+
+type TurnState = Idle | Working | Committing | Halted
 
 
 @final
@@ -44,6 +71,12 @@ type TurnState = Idle | Working
 class SendPrompt:
     turn_id: str
     text: str
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class Commit:
+    turn_id: str
 
 
 @final
@@ -59,7 +92,7 @@ class TurnFailedFx:
     reason: str
 
 
-type Effect = SendPrompt | TurnDone | TurnFailedFx
+type Effect = SendPrompt | Commit | TurnDone | TurnFailedFx
 type Step = tuple[TurnState, tuple[Effect, ...]]
 
 
@@ -67,7 +100,9 @@ def on_command(s: TurnState, cmd: MessageCmd, *, turn_id: str) -> Step:
     match s:
         case Idle():
             return next_queued(Idle((*s.queue, cmd)), turn_id=turn_id)
-        case Working():
+        case Halted():  # команда человека возвращает runner в работу
+            return next_queued(Idle((*s.queue, cmd)), turn_id=turn_id)
+        case Working() | Committing():
             return replace(s, queue=(*s.queue, cmd)), ()
         case _:
             assert_never(s)
@@ -77,13 +112,16 @@ def next_queued(s: Idle, *, turn_id: str) -> Step:
     if not s.queue:
         return s, ()
     first, *rest = s.queue
-    return Working(turn_id, frozenset(), 0, tuple(rest)), (SendPrompt(turn_id, first.text),)
+    return (
+        Working(turn_id, first, frozenset(), 0, tuple(rest)),
+        (SendPrompt(turn_id, first.text),),
+    )
 
 
 def on_message(s: TurnState, msg: Message) -> Step:
     match s:
-        case Idle():
-            # `result` фоновой доработки после хода: его событие уже записал reader.
+        case Idle() | Halted() | Committing():
+            # `result` фоновой доработки после хода или запоздавшее сообщение: журнал уже записан.
             return s, ()
         case Working():
             return _working_on_message(s, msg)
@@ -100,7 +138,15 @@ def _working_on_message(s: Working, msg: Message) -> Step:
         return Idle(s.queue), (TurnFailedFx(s.turn_id, "result_error"),)
     if s.pending:
         return s, ()
+    return Committing(s.turn_id, s.cmd, s.queue), (Commit(s.turn_id),)
+
+
+def on_committed(s: Committing) -> Step:
     return Idle(s.queue), (TurnDone(s.turn_id),)
+
+
+def on_commit_failed(s: Committing, reason: str) -> Step:
+    return Idle(s.queue), (TurnFailedFx(s.turn_id, reason),)
 
 
 def _track_background(pending: frozenset[str], msg: SystemMessage) -> frozenset[str]:

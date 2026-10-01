@@ -7,22 +7,24 @@ import signal
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
+from functools import partial
 from pathlib import Path
 from typing import Final, Protocol, assert_never
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
 from ctrunner import __version__
-from ctrunner.checkpoint import run_git
+from ctrunner.checkpoint import commit_turn, run_git
 from ctrunner.config import HEALTH_FILE, TOKEN_FILE, ConfigError, RunnerConfig, load_config
 from ctrunner.diag import diag
-from ctrunner.eventlog import EventLog
+from ctrunner.eventlog import EventLog, kinds_of_turn
 from ctrunner.guard import Policy
 from ctrunner.inbox import Inbox
 from ctrunner.probe import ProbeResult, probe
 from ctrunner.protocol import EventKind
 from ctrunner.redact import Redactor
 from ctrunner.session import Session
+from ctrunner.state import load_state, save_state
 
 EX_CONFIG: Final = 78  # sysexits: ошибка конфигурации, рестарт не поможет
 EX_UNAVAILABLE: Final = 1  # сеть или SDK: Docker перезапустит
@@ -117,12 +119,15 @@ async def run(cfg: RunnerConfig) -> int:
     for directory in (cfg.runner_dir, cfg.claude_dir):
         directory.mkdir(parents=True, exist_ok=True)
     redactor = Redactor.of([cfg.anthropic_token])
-    with EventLog.open(cfg.runner_dir / "events.jsonl", redactor, time.time) as log:
+    events = cfg.runner_dir / "events.jsonl"
+    state_file = cfg.runner_dir / "state.json"
+    with EventLog.open(events, redactor, time.time) as log:
         log.append(
             EventKind.SESSION_STARTED,
             None,
             {"project_id": cfg.project_id, "runner_version": __version__},
         )
+        # Временная сборка (Task 7): план восстановления и повреждённый state — в Task 8.
         session = Session(
             log=log,
             redactor=redactor,
@@ -130,6 +135,10 @@ async def run(cfg: RunnerConfig) -> int:
             policy=Policy(roots=(cfg.project_dir, TMP_DIR), bash_system=BASH_SYSTEM),
             health_file=HEALTH_FILE,
             stall_after_s=cfg.stall_after_s,
+            state=load_state(state_file),
+            save_state=partial(save_state, state_file),
+            commit=partial(commit_turn, cfg.project_dir),
+            turn_kinds=partial(kinds_of_turn, events),
         )
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, session.request_stop)
         options = ClaudeAgentOptions(

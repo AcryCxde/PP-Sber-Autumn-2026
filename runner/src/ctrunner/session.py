@@ -2,7 +2,11 @@
 сторож PreToolUse и развилки AskUserQuestion. Решения принимает чистый `turn`.
 
 Всё выполняется в одном цикле событий; состояние меняется без `await` между чтением и записью,
-поэтому блокировки не нужны.
+поэтому блокировки не нужны. `to_thread` для git commit допустим, потому что на это время
+состояние `Committing` не принимает новых ходов.
+
+Порядок записи: при закрытии хода commit → события → `state.json`, при открытии хода —
+`state.json` → `query`; команда подтверждается в inbox после записи `state.json`.
 """
 
 import asyncio
@@ -27,6 +31,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import SyncHookJSONOutput
 
+from ctrunner.checkpoint import CheckpointError
 from ctrunner.diag import diag
 from ctrunner.eventlog import Event
 from ctrunner.guard import Allow, Deny, Policy, Verdict, check
@@ -34,10 +39,23 @@ from ctrunner.health import write_health
 from ctrunner.inbox import Inbox
 from ctrunner.liveness import Health, Phase, assess
 from ctrunner.protocol import EventKind, ForkAnswerCmd, JsonValue, MessageCmd, StopCmd
+from ctrunner.recovery import (
+    CLEAN,
+    Clean,
+    Continue,
+    Finalize,
+    GiveUp,
+    Recovery,
+    continuation_prompt,
+)
 from ctrunner.redact import Redactor
-from ctrunner.sdkevents import normalize, to_json
+from ctrunner.sdkevents import normalize, session_id_of, to_json
+from ctrunner.state import OpenTurn, PersistedState, is_session_id
 from ctrunner.turn import (
+    Commit,
+    Committing,
     Effect,
+    Halted,
     Idle,
     SendPrompt,
     TurnDone,
@@ -46,6 +64,8 @@ from ctrunner.turn import (
     Working,
     next_queued,
     on_command,
+    on_commit_failed,
+    on_committed,
     on_fork_closed,
     on_fork_open,
     on_message,
@@ -86,6 +106,10 @@ class Session:
         policy: Policy,
         health_file: Path,
         stall_after_s: float,
+        state: PersistedState,
+        save_state: Callable[[PersistedState], None],
+        commit: Callable[[str], str],
+        turn_kinds: Callable[[str], frozenset[EventKind]],
         poll_s: float = 1.0,
         heartbeat_s: float = 10.0,
         resolve: Callable[[Path], Path] = _realpath,
@@ -99,7 +123,17 @@ class Session:
         self._poll_s = poll_s
         self._heartbeat_s = heartbeat_s
         self._resolve = resolve
-        self._state: TurnState = Idle(queue=())
+        self._saved = state
+        self._save_state = save_state
+        self._commit_turn = commit
+        self._turn_kinds = turn_kinds
+        self._session_id = state.session_id
+        self._last_sha = state.last_sha
+        # Попытка автопродолжения относится к конкретному ходу: у нового хода счёт с нуля.
+        self._resumed: tuple[str, int] | None = (
+            (state.open_turn.turn_id, state.autoresume_count) if state.open_turn else None
+        )
+        self._state: TurnState = Idle(queue=state.queue)
         self._forks: dict[str, asyncio.Future[dict[str, str]]] = {}
         self._progress_mono = time.monotonic()
         self._progress_wall = time.time()
@@ -109,7 +143,9 @@ class Session:
 
     # --- жизненный цикл -------------------------------------------------------------------
 
-    async def run(self, client: SdkClient) -> Exit:
+    async def run(self, client: SdkClient, recovery: Recovery = CLEAN) -> Exit:
+        await self._ack_redelivered()
+        await self._recover(client, recovery)
         tasks = [
             asyncio.create_task(self._read(client)),
             asyncio.create_task(self._commands(client)),
@@ -157,6 +193,49 @@ class Session:
     def sdk_stderr(self, line: str) -> None:
         print(self._redactor.text(line), file=sys.stderr)
 
+    # --- восстановление -------------------------------------------------------------------
+
+    async def _ack_redelivered(self) -> None:
+        """Команды, попавшие в state до рестарта, но не подтверждённые в inbox, подтверждаются
+        до старта хода: иначе уже завершившийся ход вернул бы их в обработку как новые."""
+        persisted = {c.id for c in self._saved.queue}
+        if self._saved.open_turn is not None:
+            persisted.add(self._saved.open_turn.cmd.id)
+        for delivery in await asyncio.to_thread(self._inbox.peek):
+            if delivery.command.id in persisted:
+                self._inbox.ack(delivery)
+
+    async def _recover(self, client: SdkClient, recovery: Recovery) -> None:
+        """Исключение уходит процессной границе `main.run` и превращается в `crash`."""
+        match recovery:
+            case Clean():
+                await self._start_queued(client)
+            case Finalize(turn_id=turn_id, sha=sha):
+                logged = self._turn_kinds(turn_id)
+                if EventKind.CHECKPOINT not in logged:
+                    self._log.append(EventKind.CHECKPOINT, turn_id, {"sha": sha})
+                if EventKind.TURN_COMPLETED not in logged:
+                    self._log.append(EventKind.TURN_COMPLETED, turn_id, {})
+                self._last_sha = sha
+                self._save()  # state закрывается после событий
+                await self._start_queued(client)
+            case Continue() as step:
+                self._touch()
+                self._resumed = (step.turn_id, step.attempt)
+                self._state = Working(step.turn_id, step.cmd, frozenset(), 0, self._state.queue)
+                self._save()  # открытый ход и счётчик попыток durable до query
+                self._log.append(EventKind.TURN_INTERRUPTED, step.turn_id, {})
+                attempt: dict[str, JsonValue] = {"attempt": step.attempt, "mode": step.mode.value}
+                self._log.append(EventKind.TURN_RESUMED, step.turn_id, attempt)
+                await client.query(continuation_prompt(step))
+            case GiveUp(turn_id=turn_id):
+                self._log.append(EventKind.TURN_INTERRUPTED, turn_id, {})
+                self._log.append(EventKind.TURN_FAILED, turn_id, {"reason": "resume_limit"})
+                self._state = Halted(self._state.queue)
+                self._save()
+            case _:
+                assert_never(recovery)
+
     # --- задачи ---------------------------------------------------------------------------
 
     async def _read(self, client: SdkClient) -> Exit:
@@ -165,20 +244,29 @@ class Session:
             payload = normalize(msg)
             if payload is not None:
                 self._log.append(EventKind.SDK, self._turn_id(), payload)
+            sid = session_id_of(msg)
+            if sid is not None and is_session_id(sid):
+                self._session_id = sid
             self._state, effects = on_message(self._state, msg)
             await self._apply(client, effects)
+            self._save()
         return Exit.CRASHED  # поток SDK не заканчивается, пока жив процесс CLI
 
     async def _commands(self, client: SdkClient) -> Exit:
         while True:
-            for cmd in await asyncio.to_thread(self._inbox.take):
+            for delivery in await asyncio.to_thread(self._inbox.peek):
+                cmd = delivery.command
                 match cmd:
                     case MessageCmd():
                         self._state, effects = on_command(self._state, cmd, turn_id=_new_id())
+                        self._save()  # команда durable (в очереди или как открытый ход) до ack
+                        self._inbox.ack(delivery)
                         await self._apply(client, effects)
                     case ForkAnswerCmd():
+                        self._inbox.ack(delivery)
                         self._answer(cmd)
                     case StopCmd():
+                        self._inbox.ack(delivery)
                         return Exit.STOPPED
                     case _:
                         assert_never(cmd)
@@ -206,13 +294,18 @@ class Session:
             match effect:
                 case SendPrompt(turn_id=turn_id, text=text):
                     self._touch()
+                    self._save()  # открытый ход durable до query
                     self._log.append(EventKind.TURN_STARTED, turn_id, {"prompt": text})
                     await client.query(text)
+                case Commit(turn_id=turn_id):
+                    await self._commit(client, turn_id)
                 case TurnDone(turn_id=turn_id):
                     self._log.append(EventKind.TURN_COMPLETED, turn_id, {})
+                    self._save()  # state закрывается после событий
                     await self._start_queued(client)
                 case TurnFailedFx(turn_id=turn_id, reason=reason):
                     self._log.append(EventKind.TURN_FAILED, turn_id, {"reason": reason})
+                    self._save()
                     await self._start_queued(client)
                 case _:
                     assert_never(effect)
@@ -221,6 +314,48 @@ class Session:
         if isinstance(self._state, Idle):
             self._state, effects = next_queued(self._state, turn_id=_new_id())
             await self._apply(client, effects)
+
+    async def _commit(self, client: SdkClient, turn_id: str) -> None:
+        self._touch()
+        try:
+            sha = await asyncio.to_thread(self._commit_turn, turn_id)
+        except CheckpointError as error:
+            detail = self._redactor.text(error.detail)
+            diag("checkpoint_failed", reason=error.failure.value, detail=detail)
+            self._state, effects = on_commit_failed(self._committing(), error.failure.value)
+        else:
+            self._log.append(EventKind.CHECKPOINT, turn_id, {"sha": sha})
+            self._last_sha = sha
+            self._state, effects = on_committed(self._committing())
+        await self._apply(client, effects)
+
+    def _committing(self) -> Committing:
+        # Пока идёт commit, состояние меняют только очередь команд и ничего больше.
+        if not isinstance(self._state, Committing):
+            raise RuntimeError(f"expected Committing, got {type(self._state).__name__}")
+        return self._state
+
+    def _snapshot(self) -> PersistedState:
+        open_turn = _open_turn(self._state)
+        return PersistedState(
+            session_id=self._session_id,
+            open_turn=open_turn,
+            last_sha=self._last_sha,
+            autoresume_count=self._attempt_of(open_turn),
+            queue=self._state.queue,
+        )
+
+    def _attempt_of(self, open_turn: OpenTurn | None) -> int:
+        if open_turn is None or self._resumed is None or self._resumed[0] != open_turn.turn_id:
+            return 0
+        return self._resumed[1]
+
+    def _save(self) -> None:
+        """Пишет только изменившееся: потоковые сообщения не должны давать fsync на каждый токен."""
+        snapshot = self._snapshot()
+        if snapshot != self._saved:
+            self._save_state(snapshot)
+            self._saved = snapshot
 
     def _answer(self, cmd: ForkAnswerCmd) -> None:
         fork = self._forks.get(cmd.fork_id)
@@ -309,7 +444,8 @@ class Session:
             self._state = on_fork_closed(self._state)
 
     def _turn_id(self) -> str | None:
-        return self._state.turn_id if isinstance(self._state, Working) else None
+        state = self._state
+        return state.turn_id if isinstance(state, Working | Committing) else None
 
     def _touch(self) -> None:
         self._progress_mono = time.monotonic()
@@ -324,3 +460,13 @@ class Session:
             stall_after_s=self._stall_after_s,
         )
         write_health(self._health_file, phase, health, self._progress_wall)
+
+
+def _open_turn(state: TurnState) -> OpenTurn | None:
+    match state:
+        case Working() | Committing():
+            return OpenTurn(state.turn_id, state.cmd)
+        case Idle() | Halted():
+            return None
+        case _:
+            assert_never(state)
