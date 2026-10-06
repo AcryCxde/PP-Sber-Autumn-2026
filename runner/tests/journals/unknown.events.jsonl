@@ -1,0 +1,4 @@
+{"seq": 1, "ts": 1791280800.0, "turn_id": null, "kind": "session_started", "payload": {"project_id": "demo-curriculum", "runner_version": "0.1.0"}}
+{"seq": 2, "ts": 1791280801.0, "turn_id": "0aa1bb2cc3dd4ee5ff6a7b8c9d0e1f2a", "kind": "turn_started", "payload": {"prompt": "Подготовь силлабус"}}
+{"seq": 3, "ts": 1791280810.0, "turn_id": "0aa1bb2cc3dd4ee5ff6a7b8c9d0e1f2a", "kind": "sdk", "payload": {"type": "assistant", "parent_tool_use_id": null, "message": {"model": "claude-sonnet-5-5", "content": [{"id": "toolu_m", "name": "Agent", "input": {"subagent_type": "methodologist", "description": "Собрать силлабус"}}]}}}
+{"seq": 4, "ts": 1791280820.0, "turn_id": "0aa1bb2cc3dd4ee5ff6a7b8c9d0e1f2a", "kind": "turn_failed", "payload": {"reason": "sdk_crashed", "fatal": true}}

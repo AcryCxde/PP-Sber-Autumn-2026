@@ -1,0 +1,9 @@
+{"seq": 1, "ts": 1791277200.0, "turn_id": null, "kind": "session_started", "payload": {"project_id": "demo-curriculum", "runner_version": "0.1.0"}}
+{"seq": 2, "ts": 1791277201.0, "turn_id": "d41f0c3a9e8b47a6b2c1d0e9f8a7b6c5", "kind": "turn_started", "payload": {"prompt": "Сверь программу с ФГОС"}}
+{"seq": 3, "ts": 1791277210.0, "turn_id": "d41f0c3a9e8b47a6b2c1d0e9f8a7b6c5", "kind": "sdk", "payload": {"type": "assistant", "parent_tool_use_id": null, "message": {"model": "claude-sonnet-5-5", "content": [{"text": "Начинаю сверку."}]}}}
+{"seq": 4, "ts": 1791277215.0, "turn_id": "d41f0c3a9e8b47a6b2c1d0e9f8a7b6c5", "kind": "turn_failed", "payload": {"reason": "sdk_crashed", "fatal": true}}
+{"seq": 5, "ts": 1791277230.0, "turn_id": null, "kind": "session_started", "payload": {"project_id": "demo-curriculum", "runner_version": "0.1.0"}}
+{"seq": 6, "ts": 1791277230.1, "turn_id": "d41f0c3a9e8b47a6b2c1d0e9f8a7b6c5", "kind": "turn_interrupted", "payload": {}}
+{"seq": 7, "ts": 1791277230.2, "turn_id": "d41f0c3a9e8b47a6b2c1d0e9f8a7b6c5", "kind": "turn_resumed", "payload": {"attempt": 1, "mode": "resume"}}
+{"seq": 8, "ts": 1791277250.0, "turn_id": "d41f0c3a9e8b47a6b2c1d0e9f8a7b6c5", "kind": "sdk", "payload": {"type": "assistant", "parent_tool_use_id": null, "message": {"model": "claude-sonnet-5-5", "content": [{"text": "Продолжаю с последнего подтверждённого шага."}]}}}
+{"seq": 9, "ts": 1791277260.0, "turn_id": "d41f0c3a9e8b47a6b2c1d0e9f8a7b6c5", "kind": "turn_failed", "payload": {"reason": "result_error"}}
