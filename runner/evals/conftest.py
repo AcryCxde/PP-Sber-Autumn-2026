@@ -61,10 +61,23 @@ class Project:
         fmt = "{{.State.Health.Status}}"
         return docker("inspect", "--format", fmt, self.container).strip()
 
+    def head(self) -> str:
+        return docker(
+            "exec", self.container, "git", "-C", "/workspace/project", "rev-parse", "HEAD"
+        ).strip()
+
     def wait(self, what: str, ready: Callable[[], bool], timeout_s: float) -> None:
         """Опрос внешней системы с дедлайном: другого сигнала у контейнера нет."""
+
+        def ready_or_down() -> bool:
+            # Между kill и рестартом контейнер не отвечает на `docker exec`: «ещё не готово».
+            try:
+                return ready()
+            except subprocess.CalledProcessError:
+                return False
+
         deadline = time.monotonic() + timeout_s
-        while not ready():
+        while not ready_or_down():
             if time.monotonic() > deadline:
                 pytest.fail(f"{self.id}: {what} not reached in {timeout_s:g}s")
             time.sleep(POLL_S)
