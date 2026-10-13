@@ -619,3 +619,16 @@ async def test_redelivered_queued_command_is_acked_without_requeue(
     put(env.inbox_dir, {"id": "c9", "kind": "stop"})
     assert await run is Exit.STOPPED
     assert client.prompts == ["потом"]  # один раз: из очереди, не из повторной доставки
+
+
+async def test_turn_id_is_command_id_and_queued_turn_keeps_its_own(env: Env) -> None:
+    client = FakeClient([result()])
+    put(env.inbox_dir, {"id": "run-1", "kind": "message", "text": "a"})
+    put(env.inbox_dir, {"id": "run-2", "kind": "message", "text": "b"})
+    run = asyncio.create_task(env.session.run(client))
+    await env.wait_count(EventKind.TURN_COMPLETED, 2)
+    put(env.inbox_dir, {"id": "c3", "kind": "stop"})
+    assert await run is Exit.STOPPED
+    started = [r["turn_id"] for r in env.events_of("turn_started")]
+    assert started == ["run-1", "run-2"]
+    assert env.commit.turns == ["run-1", "run-2"]

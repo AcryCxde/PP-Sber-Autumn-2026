@@ -262,7 +262,7 @@ class Session:
                 cmd = delivery.command
                 match cmd:
                     case MessageCmd():
-                        self._state, effects = on_command(self._state, cmd, turn_id=_new_id())
+                        self._state, effects = on_command(self._state, cmd)
                         self._save()  # команда durable (в очереди или как открытый ход) до ack
                         self._inbox.ack(delivery)
                         await self._apply(client, effects)
@@ -316,7 +316,7 @@ class Session:
 
     async def _start_queued(self, client: SdkClient) -> None:
         if isinstance(self._state, Idle):
-            self._state, effects = next_queued(self._state, turn_id=_new_id())
+            self._state, effects = next_queued(self._state)
             await self._apply(client, effects)
 
     async def _commit(self, client: SdkClient, turn_id: str) -> None:

@@ -41,14 +41,14 @@ def sysmsg(subtype: str, **data: object) -> SystemMessage:
 
 
 def test_idle_command_starts_turn() -> None:
-    state, fx = on_command(Idle(queue=()), MessageCmd("c1", "go"), turn_id="t1")
-    assert state == Working(turn_id="t1", cmd=CMD, pending=frozenset(), forks=0, queue=())
-    assert fx == (SendPrompt("t1", "go"),)
+    state, fx = on_command(Idle(queue=()), MessageCmd("c1", "go"))
+    assert state == Working(turn_id="c1", cmd=CMD, pending=frozenset(), forks=0, queue=())
+    assert fx == (SendPrompt("c1", "go"),)
 
 
 def test_command_while_working_is_queued() -> None:
     w = Working("t1", CMD, frozenset(), 0, ())
-    state, fx = on_command(w, MessageCmd("c2", "next"), turn_id="t2")
+    state, fx = on_command(w, MessageCmd("c2", "next"))
     assert state == Working("t1", CMD, frozenset(), 0, (MessageCmd("c2", "next"),))
     assert fx == ()
 
@@ -96,13 +96,13 @@ def test_queued_command_starts_after_commit() -> None:
     assert s == Idle(queue=(queued,))
     assert fx == (TurnDone("t1"),)
     assert isinstance(s, Idle)
-    s2, fx2 = next_queued(s, turn_id="t2")
-    assert s2 == Working("t2", queued, frozenset(), 0, ())
-    assert fx2 == (SendPrompt("t2", "next"),)
+    s2, fx2 = next_queued(s)
+    assert s2 == Working("c2", queued, frozenset(), 0, ())
+    assert fx2 == (SendPrompt("c2", "next"),)
 
 
 def test_next_queued_on_empty_queue_is_noop() -> None:
-    assert next_queued(Idle(queue=()), turn_id="t2") == (Idle(queue=()), ())
+    assert next_queued(Idle(queue=())) == (Idle(queue=()), ())
 
 
 def test_phase() -> None:
@@ -127,7 +127,7 @@ def test_commit_failure_fails_turn_without_completion() -> None:
 
 
 def test_command_during_commit_is_queued() -> None:
-    s, fx = on_command(Committing("t1", CMD, ()), MessageCmd("c2", "next"), turn_id="t2")
+    s, fx = on_command(Committing("t1", CMD, ()), MessageCmd("c2", "next"))
     assert s == Committing("t1", CMD, (MessageCmd("c2", "next"),))
     assert fx == ()
 
@@ -141,9 +141,9 @@ def test_halted_waits_for_human_then_runs_oldest_queued_first() -> None:
     older = MessageCmd("c0", "old")
     halted = Halted(queue=(older,))
     assert on_message(halted, res()) == (halted, ())
-    s, fx = on_command(halted, MessageCmd("c2", "new"), turn_id="t9")
-    assert s == Working("t9", older, frozenset(), 0, (MessageCmd("c2", "new"),))
-    assert fx == (SendPrompt("t9", "old"),)
+    s, fx = on_command(halted, MessageCmd("c2", "new"))
+    assert s == Working("c0", older, frozenset(), 0, (MessageCmd("c2", "new"),))
+    assert fx == (SendPrompt("c0", "old"),)
 
 
 def test_phases() -> None:

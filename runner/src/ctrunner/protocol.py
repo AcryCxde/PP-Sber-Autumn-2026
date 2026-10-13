@@ -1,9 +1,10 @@
 """Общие типы протокола: JSON, команды к runner и виды событий журнала."""
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import final
+from typing import Final, final
 
 type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
 
@@ -57,6 +58,17 @@ def _text(raw: Mapping[object, object], key: str) -> str:
     return value
 
 
+COMMAND_ID_RE: Final = re.compile(r"[0-9A-Za-z_-]{1,64}")
+
+
+def _command_id(raw: Mapping[object, object]) -> str:
+    value = _text(raw, "id")
+    if COMMAND_ID_RE.fullmatch(value) is None:
+        # id попадает в trailer `Turn-Id` и в `run_id`: перевод строки или пробел его ломает.
+        raise ProtocolError("field 'id' must match [0-9A-Za-z_-]{1,64}")
+    return value
+
+
 def _answers(raw: Mapping[object, object]) -> dict[str, str]:
     value = raw.get("answers")
     if not isinstance(value, dict):
@@ -72,7 +84,7 @@ def _answers(raw: Mapping[object, object]) -> dict[str, str]:
 def parse_command(raw: object) -> Command:
     if not isinstance(raw, dict):
         raise ProtocolError("command must be an object")
-    command_id = _text(raw, "id")
+    command_id = _command_id(raw)
     match raw.get("kind"):
         case "message":
             return MessageCmd(command_id, _text(raw, "text"))
