@@ -2,7 +2,8 @@
 
 import asyncio
 import json
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Coroutine
 from typing import Any, Self, final
 
 from websockets.asyncio.server import Server, ServerConnection, serve
@@ -98,3 +99,40 @@ class FakeGateway:
         finally:
             if self._ws is ws:
                 self._ws = None
+
+
+@final
+class ThreadedGateway:
+    """FakeGateway в фоновом потоке: синхронный интерфейс для e2e-тестов."""
+
+    def __init__(self, *, host: str = "127.0.0.1", token: str = "gw-secret-token") -> None:  # noqa: S107
+        self._loop = asyncio.new_event_loop()
+        threading.Thread(target=self._loop.run_forever, daemon=True).start()
+        self._gw: FakeGateway = self._call(self._create(host, token))
+
+    async def _create(self, host: str, token: str) -> FakeGateway:
+        gw = FakeGateway(host=host, token=token)
+        await gw.__aenter__()
+        return gw
+
+    def _call[T](self, coro: Coroutine[Any, Any, T], timeout: float = 30.0) -> T:
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result(timeout)
+
+    @property
+    def url(self) -> str:
+        return self._gw.url
+
+    def send(self, message: dict[str, Any]) -> None:
+        self._call(self._gw.send(message))
+
+    def wait_for(
+        self, predicate: Callable[[dict[str, Any]], bool], timeout: float = 120.0
+    ) -> dict[str, Any]:
+        return self._call(self._gw.wait_for(predicate, timeout), timeout + 5)
+
+    def events(self, run_id: str) -> list[dict[str, Any]]:
+        return [m["event"] for m in self._gw.unique_events() if m["event"]["run_id"] == run_id]
+
+    def close(self) -> None:
+        self._call(self._gw.__aexit__(None, None, None))
+        self._loop.call_soon_threadsafe(self._loop.stop)
