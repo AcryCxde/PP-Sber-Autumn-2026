@@ -1,0 +1,190 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
+from uuid import uuid4
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from backend.db import Base
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def new_id() -> str:
+    return str(uuid4())
+
+
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    title: Mapped[str] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), default="active", index=True)
+    claude_session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    context_state: Mapped[str] = mapped_column(String(20), default="new")
+    next_message_seq: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        index=True,
+    )
+
+    runs: Mapped[list[Run]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
+    messages: Mapped[list[Message]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        order_by="Message.sequence",
+    )
+
+
+class Run(Base):
+    __tablename__ = "runs"
+    __table_args__ = (
+        Index(
+            "uq_runs_one_active_per_conversation",
+            "conversation_id",
+            unique=True,
+            sqlite_where=text("status IN ('pending', 'running')"),
+            postgresql_where=text("status IN ('pending', 'running')"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    client_request_id: Mapped[str] = mapped_column(
+        String(36),
+        unique=True,
+        index=True,
+    )
+    context_mode: Mapped[str] = mapped_column(String(20), default="new")
+    resume_session_id: Mapped[str | None] = mapped_column(String(100))
+    claude_session_id: Mapped[str | None] = mapped_column(String(100))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    next_event_seq: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    turns: Mapped[int | None] = mapped_column(Integer)
+    exit_code: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    conversation: Mapped[Conversation] = relationship(back_populates="runs")
+    messages: Mapped[list[Message]] = relationship(back_populates="run")
+    events: Mapped[list[Event]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="Event.seq",
+    )
+    artifacts: Mapped[list[Artifact]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+
+
+class Message(Base):
+    __tablename__ = "messages"
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "sequence",
+            name="uq_messages_conversation_sequence",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(String(20))
+    kind: Mapped[str] = mapped_column(String(32), default="text")
+    sequence: Mapped[int] = mapped_column(Integer)
+    content: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+
+    conversation: Mapped[Conversation] = relationship(back_populates="messages")
+    run: Mapped[Run | None] = relationship(back_populates="messages")
+
+
+class Event(Base):
+    __tablename__ = "events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "seq", name="uq_events_run_sequence"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    seq: Mapped[int] = mapped_column(Integer)
+    type: Mapped[str] = mapped_column(String(50))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+
+    run: Mapped[Run] = relationship(back_populates="events")
+
+
+class Artifact(Base):
+    __tablename__ = "artifacts"
+    __table_args__ = (
+        UniqueConstraint("run_id", "event_seq", name="uq_artifacts_run_event"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    event_seq: Mapped[int] = mapped_column(Integer)
+    path: Mapped[str] = mapped_column(Text)
+    content: Mapped[str | None] = mapped_column(Text)
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+
+    run: Mapped[Run] = relationship(back_populates="artifacts")

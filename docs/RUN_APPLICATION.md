@@ -1,0 +1,193 @@
+# Запуск Claude Web
+
+Приложение состоит из двух процессов:
+
+- FastAPI backend на `http://localhost:8000`;
+- Vite/React frontend на `http://localhost:5173`.
+
+Команды ниже выполняются из корня репозитория, если не указано иначе.
+
+## 1. Предварительные требования
+
+Необходимо установить:
+
+- Python 3.11 или новее;
+- Node.js 20 или новее;
+- npm;
+- Claude Code CLI.
+
+Проверка:
+
+```bash
+python --version
+node --version
+npm --version
+claude --version
+```
+
+Claude Code CLI должен быть авторизован. Backend запускает его не в репозитории gateway, а в отдельном workspace диалога. При необходимости сначала запустите `claude` в отдельном терминале и выполните интерактивную авторизацию.
+
+## 2. Подготовка backend
+
+Создайте виртуальное окружение:
+
+```bash
+python -m venv .venv
+```
+
+Активация в PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Активация в Git Bash:
+
+```bash
+source .venv/Scripts/activate
+```
+
+Установите backend с зависимостями разработки:
+
+```bash
+python -m pip install -e ".[test]"
+```
+
+При необходимости создайте локальную конфигурацию:
+
+```bash
+cp backend/.env.example .env
+```
+
+По умолчанию используется SQLite-база `backend/data/history.db`. Каталог и база создаются автоматически и игнорируются Git.
+
+Для Claude Code CLI используется безопасный режим:
+
+```dotenv
+CLAUDE_PERMISSION_MODE=acceptEdits
+```
+
+Он автоматически разрешает встроенные операции `Write`/`Edit`, но не включает `--dangerously-skip-permissions` и не даёт безусловный доступ произвольным shell-командам. Текущий web-интерфейс не реализует интерактивный permission prompt; операции, которые требуют отдельного подтверждения даже в `acceptEdits`, будут отклонены до появления специального approval flow.
+
+Укажите постоянный каталог workspace вне репозитория gateway и вне каталога SQLite:
+
+```dotenv
+WORKSPACE_ROOT=~/.claude-web/workspaces
+SUBSCRIPTION_WINDOW_SECONDS=15
+SUBSCRIPTION_POLL_INTERVAL_SECONDS=0.25
+MAX_CONCURRENT_RUNS=4
+```
+
+Каждый conversation использует подкаталог `<WORKSPACE_ROOT>/<conversation_id>`. Backend откажется стартовать, если workspace пересекается с gateway или каталогом БД.
+
+## 3. Подготовка frontend
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+## 4. Запуск backend
+
+Откройте первый терминал, активируйте `.venv` и выполните из корня репозитория:
+
+```bash
+python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Используйте один worker. Backend удерживает OS file lock рядом с SQLite и не запускает второй process на той же БД: startup reconciliation активных run безопасен только при единственном владельце executor.
+
+При старте backend автоматически применяет Alembic migrations.
+
+Ручное применение migrations, если потребуется:
+
+```bash
+python -m alembic -c backend/alembic.ini upgrade head
+```
+
+Перед первым применением security migration `20261012_0006`:
+
+1. остановите старый backend;
+2. сделайте backup `history.db`;
+3. обновите backend и frontend одновременно;
+4. примените migration и запустите backend;
+5. не подключайте приложение к небезопасной backup-копии.
+
+Миграция необратимо удаляет старые snapshots артефактов, редактирует tool/session/raw payload, очищает старые session IDs и требует явного context reset для существующих диалогов. При startup незавершённые `pending/running` запуски переводятся в `outcome_unknown`.
+
+## 5. Запуск frontend
+
+Откройте второй терминал:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Vite выводит адрес приложения, обычно:
+
+```text
+http://localhost:5173
+```
+
+Откройте его в браузере. Dev server проксирует `/api` и `/ws` на backend `localhost:8000`.
+
+## 6. Быстрая проверка
+
+Backend history API:
+
+```bash
+curl http://localhost:8000/api/conversations
+```
+
+Ожидаемый ответ для новой базы:
+
+```json
+[]
+```
+
+После отправки запроса через frontend должны появиться записи в списке conversations и сообщения выбранного диалога.
+
+## 7. Запуск тестов
+
+Backend:
+
+```bash
+python -m pytest
+```
+
+Frontend lint и production build:
+
+```bash
+cd frontend
+npm run test
+npm run lint
+npm run build
+```
+
+## 8. Остановка
+
+В каждом терминале нажмите `Ctrl+C`.
+
+## 9. Частые проблемы
+
+### `claude` не найден
+
+Убедитесь, что Claude Code CLI установлен и доступен в `PATH`:
+
+```bash
+claude --version
+```
+
+### Frontend открылся, но запросы не выполняются
+
+Проверьте, что backend запущен на порту `8000`, а в терминале Vite нет ошибок proxy.
+
+### Ошибка открытия SQLite
+
+Проверьте права на запись в `backend/data`. Обычно каталог создаётся автоматически при применении migrations.
+
+### Порт уже используется
+
+Остановите процесс, занимающий `8000` или `5173`. Если изменить backend-порт, также обновите target proxy в `frontend/vite.config.ts`.
