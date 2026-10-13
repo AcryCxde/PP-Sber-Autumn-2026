@@ -1,0 +1,3 @@
+# Review application sources; keep downloadable historical/generated HTML available.
+web-demo/CoreTeams-*.html linguist-generated=true
+web-demo/archive/html/*.html linguist-generated=true
