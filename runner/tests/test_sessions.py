@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from ctrunner import sessions
 from ctrunner.sessions import RunSpec, _write_secret, container_env, run_args
 
 
@@ -91,3 +92,33 @@ def test_write_secret_is_private(tmp_path: Path) -> None:
     assert path.read_text() == "gw-secret-token\n"
     assert path.stat().st_mode & 0o777 == 0o600
     assert path.parent.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.fixture
+def secrets_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(sessions, "SECRETS_ROOT", tmp_path)
+    (tmp_path / "demo-a").mkdir()
+    (tmp_path / "demo-a" / "anthropic_token").write_text("sk-test-0123456789\n")
+    return tmp_path
+
+
+def test_start_requires_gateway_token_when_gateway_url_is_set(
+    secrets_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GATEWAY_URL", "ws://localhost:8000/runner")
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(sessions, "_docker", lambda *args, **_: calls.append(args))
+    with pytest.raises(SystemExit, match="sessions secrets init demo-a"):
+        sessions._start("demo-a", None, 720.0, "img")
+    assert calls == []  # контейнер не создан
+
+
+def test_start_with_gateway_token_runs_docker(
+    secrets_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GATEWAY_URL", "ws://localhost:8000/runner")
+    (secrets_root / "demo-a" / "gateway_token").write_text("gw-secret-token\n")
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(sessions, "_docker", lambda *args, **_: calls.append(args))
+    sessions._start("demo-a", None, 720.0, "img")
+    assert [c[0] for c in calls] == ["volume", "run"]

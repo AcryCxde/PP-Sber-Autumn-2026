@@ -110,12 +110,18 @@ def _start(project_id: str, data: Path | None, stall_after_s: float, image: str)
     secrets = SECRETS_ROOT / project_id
     if not (secrets / TOKEN_FILE).is_file():
         sys.exit(f"sessions: run `sessions secrets init {project_id}` first")
+    env = container_env(os.environ)
+    if "GATEWAY_URL" in env and not (secrets / GATEWAY_TOKEN_FILE).is_file():
+        sys.exit(
+            f"sessions: GATEWAY_URL is set but secret {GATEWAY_TOKEN_FILE} is missing: "
+            f"export GATEWAY_AUTH_TOKEN and run `sessions secrets init {project_id}`"
+        )
     spec = RunSpec(
         project_id=project_id,
         image=image,
         secrets_dir=secrets,
         data_dir=data.resolve() if data is not None else None,
-        env=container_env(os.environ),
+        env=env,
         stall_after_s=stall_after_s,
     )
     _docker("volume", "create", "--label", f"coreteams.project={project_id}", f"proj-{project_id}")
