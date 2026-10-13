@@ -7,6 +7,7 @@ from collections.abc import Callable, Coroutine
 from typing import Any, Self, final
 
 from websockets.asyncio.server import Server, ServerConnection, serve
+from websockets.exceptions import ConnectionClosed
 
 
 @final
@@ -96,6 +97,8 @@ class FakeGateway:
                 if message.get("type") == "hello":
                     welcome = {"v": 1, "type": "welcome", "acked_seq": self.acked_seq}
                     await ws.send(json.dumps(welcome))
+        except ConnectionClosed:
+            pass  # runner убит или переподключается: для фейка это штатный обрыв
         finally:
             if self._ws is ws:
                 self._ws = None
@@ -107,7 +110,8 @@ class ThreadedGateway:
 
     def __init__(self, *, host: str = "127.0.0.1", token: str = "gw-secret-token") -> None:  # noqa: S107
         self._loop = asyncio.new_event_loop()
-        threading.Thread(target=self._loop.run_forever, daemon=True).start()
+        self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._thread.start()
         self._gw: FakeGateway = self._call(self._create(host, token))
 
     async def _create(self, host: str, token: str) -> FakeGateway:
@@ -136,3 +140,5 @@ class ThreadedGateway:
     def close(self) -> None:
         self._call(self._gw.__aexit__(None, None, None))
         self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join(timeout=10)
+        self._loop.close()  # иначе ResourceWarning соседнего теста под `-W error`
