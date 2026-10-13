@@ -45,6 +45,10 @@ class EventLog:
         last_seq = _recover(path) if path.exists() else 0
         return cls(path.open("a", encoding="utf-8"), last_seq, redactor, clock)
 
+    @property
+    def last_seq(self) -> int:
+        return self._seq
+
     def append(self, kind: EventKind, turn_id: str | None, payload: JsonValue) -> Event:
         event = Event(self._seq + 1, self._clock(), turn_id, kind, self._redactor.apply(payload))
         self._file.write(json.dumps(event.to_json(), ensure_ascii=False) + "\n")

@@ -129,3 +129,10 @@ def test_turn_interrupted_clears_forks_already_handled_by_previous_recovery(
 
 def test_open_forks_without_log_is_empty(tmp_path: Path) -> None:
     assert open_forks(tmp_path / "missing.jsonl", "t1") == ()
+
+
+def test_last_seq_follows_appends(tmp_path: Path) -> None:
+    with EventLog.open(tmp_path / "events.jsonl", R, clock=lambda: 1.0) as log:
+        assert log.last_seq == 0
+        log.append(EventKind.SESSION_STARTED, None, {})
+        assert log.last_seq == 1
