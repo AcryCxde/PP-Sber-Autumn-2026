@@ -16,7 +16,7 @@ import sys
 import time
 import traceback
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from enum import IntEnum
 from pathlib import Path
 from typing import Any, Protocol, assert_never, final
@@ -95,6 +95,10 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
+def _no_questions(turn_id: str) -> Sequence[str]:
+    return ()
+
+
 @final
 class Session:
     def __init__(  # noqa: PLR0913 — зависимости оболочки передаются явно
@@ -110,6 +114,7 @@ class Session:
         save_state: Callable[[PersistedState], None],
         commit: Callable[[str], str],
         turn_kinds: Callable[[str], frozenset[EventKind]],
+        open_questions: Callable[[str], Sequence[str]] = _no_questions,
         poll_s: float = 1.0,
         heartbeat_s: float = 10.0,
         resolve: Callable[[Path], Path] = _realpath,
@@ -127,6 +132,7 @@ class Session:
         self._save_state = save_state
         self._commit_turn = commit
         self._turn_kinds = turn_kinds
+        self._open_questions = open_questions
         self._session_id = state.session_id
         self._last_sha = state.last_sha
         # Попытка автопродолжения относится к конкретному ходу: у нового хода счёт с нуля.
@@ -222,6 +228,7 @@ class Session:
                 self._save()  # state закрывается после событий
                 await self._start_queued(client)
             case Continue() as step:
+                asked = self._open_questions(step.turn_id)  # до turn_interrupted: он обнуляет набор
                 self._touch()
                 self._resumed = (step.turn_id, step.attempt)
                 self._state = Working(step.turn_id, step.cmd, frozenset(), 0, self._state.queue)
@@ -229,7 +236,7 @@ class Session:
                 self._log.append(EventKind.TURN_INTERRUPTED, step.turn_id, {})
                 attempt: dict[str, JsonValue] = {"attempt": step.attempt, "mode": step.mode.value}
                 self._log.append(EventKind.TURN_RESUMED, step.turn_id, attempt)
-                await client.query(continuation_prompt(step))
+                await client.query(continuation_prompt(step, asked))
             case GiveUp(turn_id=turn_id):
                 # Падение между событиями и записью state повторит этот путь: журнал не удваивается.
                 if EventKind.TURN_FAILED not in self._turn_kinds(turn_id):

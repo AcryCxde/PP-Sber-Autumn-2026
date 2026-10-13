@@ -19,7 +19,7 @@ from ctrunner import __version__
 from ctrunner.checkpoint import Head, clear_stale_lock, commit_turn, read_head, run_git
 from ctrunner.config import HEALTH_FILE, TOKEN_FILE, ConfigError, RunnerConfig, load_config
 from ctrunner.diag import diag
-from ctrunner.eventlog import EventLog, kinds_of_turn
+from ctrunner.eventlog import EventLog, kinds_of_turn, open_questions
 from ctrunner.guard import Policy
 from ctrunner.inbox import Inbox
 from ctrunner.probe import ProbeResult, probe
@@ -208,6 +208,7 @@ async def run(cfg: RunnerConfig) -> int:
                 save_state=partial(save_state, state_file),
                 commit=partial(commit_turn, cfg.project_dir),
                 turn_kinds=partial(kinds_of_turn, events),
+                open_questions=partial(open_questions, events),
             )
             asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, session.request_stop)
             return session

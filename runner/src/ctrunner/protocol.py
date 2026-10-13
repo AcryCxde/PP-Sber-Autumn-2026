@@ -94,3 +94,15 @@ def parse_command(raw: object) -> Command:
             return StopCmd(command_id)
         case kind:
             raise ProtocolError(f"unknown command kind: {kind!r}")
+
+
+def question_texts(raw: JsonValue) -> tuple[str, ...]:
+    """Тексты вопросов AskUserQuestion. Ввод от модели: элементы без текста пропускаются."""
+    if not isinstance(raw, list):
+        return ()
+    texts: list[str] = []
+    for item in raw:
+        text = item.get("question") if isinstance(item, dict) else None
+        if isinstance(text, str):
+            texts.append(text)
+    return tuple(texts)

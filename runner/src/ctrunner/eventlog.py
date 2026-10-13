@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Self, final
 
-from ctrunner.protocol import EventKind, JsonValue
+from ctrunner.protocol import EventKind, JsonValue, question_texts
 from ctrunner.redact import Redactor
 
 
@@ -98,6 +98,45 @@ def kinds_of_turn(path: Path, turn_id: str) -> frozenset[EventKind]:
     except FileNotFoundError:
         return frozenset()
     return frozenset(kinds)
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class OpenFork:
+    fork_id: str
+    questions: tuple[str, ...]
+
+
+def open_forks(path: Path, turn_id: str) -> tuple[OpenFork, ...]:
+    """Развилки хода без ответа. `turn_interrupted` обнуляет набор: предыдущее восстановление
+    уже обработало их, поэтому при старте процесса остаются ровно вопросы, висевшие при падении."""
+    opened: dict[str, OpenFork] = {}
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                row = json.loads(line)
+                if row.get("turn_id") != turn_id:
+                    continue
+                kind, payload = row.get("kind"), row.get("payload")
+                if kind == EventKind.TURN_INTERRUPTED:
+                    opened.clear()
+                elif isinstance(payload, dict) and isinstance(
+                    fork_id := payload.get("fork_id"), str
+                ):
+                    if kind == EventKind.FORK_QUESTION:
+                        opened[fork_id] = OpenFork(
+                            fork_id, question_texts(payload.get("questions"))
+                        )
+                    elif kind == EventKind.FORK_ANSWERED:
+                        opened.pop(fork_id, None)
+    except FileNotFoundError:
+        return ()
+    return tuple(opened.values())
+
+
+def open_questions(path: Path, turn_id: str) -> tuple[str, ...]:
+    """Тексты неотвеченных вопросов хода без повторов, в порядке появления."""
+    return tuple(dict.fromkeys(q for fork in open_forks(path, turn_id) for q in fork.questions))
 
 
 def _is_process_crash(row: dict[str, object]) -> bool:

@@ -21,7 +21,7 @@ from claude_agent_sdk import (
 )
 
 from ctrunner.checkpoint import CheckpointError, CheckpointFailure
-from ctrunner.eventlog import Event, EventLog, kinds_of_turn
+from ctrunner.eventlog import Event, EventLog, kinds_of_turn, open_questions
 from ctrunner.guard import Policy
 from ctrunner.inbox import Inbox, put
 from ctrunner.protocol import EventKind, JsonValue, MessageCmd
@@ -124,6 +124,7 @@ class Env:
             save_state=self._save,
             commit=commit or self.commit,
             turn_kinds=lambda turn_id: kinds_of_turn(self.events, turn_id),
+            open_questions=lambda turn_id: open_questions(self.events, turn_id),
         )
 
     def _save(self, state: PersistedState) -> None:
@@ -632,3 +633,44 @@ async def test_turn_id_is_command_id_and_queued_turn_keeps_its_own(env: Env) -> 
     started = [r["turn_id"] for r in env.events_of("turn_started")]
     assert started == ["run-1", "run-2"]
     assert env.commit.turns == ["run-1", "run-2"]
+
+
+async def test_restart_during_question_reasks_and_finishes_same_turn(
+    make_env: Callable[[PersistedState], Env],
+) -> None:
+    env = make_env(open_state(count=1))
+    env.log.append(EventKind.TURN_STARTED, "t1", {"prompt": "собери отчёт"})
+    env.log.append(  # прошлый процесс успел спросить и упал, не дождавшись ответа
+        EventKind.FORK_QUESTION, "t1", {"fork_id": "old", "questions": [{"question": "Формат?"}]}
+    )
+    client = FakeClient([])
+    step = Continue("t1", MessageCmd("c1", "собери отчёт"), 2, ResumeMode.RESUME)
+    run = asyncio.create_task(env.session.run(client, step))
+    await env.wait_kind(EventKind.TURN_RESUMED)
+    assert "Формат?" in client.prompts[0]
+    assert "AskUserQuestion" in client.prompts[0]
+    questions = [{"question": "Формат?", "options": [{"label": "md"}]}]
+    ask = asyncio.create_task(
+        env.session.can_use_tool(
+            "AskUserQuestion", {"questions": questions}, ToolPermissionContext()
+        )
+    )
+    await env.wait_count(EventKind.FORK_QUESTION, 2)
+    new_fork = env.events_of("fork_question")[-1]["payload"]
+    assert isinstance(new_fork, dict)
+    assert new_fork["fork_id"] != "old"
+    put(
+        env.inbox_dir,
+        {"id": "a1", "kind": "fork_answer", "fork_id": new_fork["fork_id"],
+         "answers": {"Формат?": "md"}},
+    )  # fmt: skip
+    assert isinstance(await ask, PermissionResultAllow)
+    client.queue.put_nowait(result())
+    await env.wait_kind(EventKind.TURN_COMPLETED)
+    put(env.inbox_dir, {"id": "c9", "kind": "stop"})
+    assert await run is Exit.STOPPED
+    assert env.kinds() == [  # "sdk" — журнал `result`, как в других тестах хода
+        "turn_started", "fork_question", "turn_interrupted", "turn_resumed",
+        "fork_question", "fork_answered", "sdk", "checkpoint", "turn_completed",
+    ]  # fmt: skip
+    assert env.commit.turns == ["t1"]
