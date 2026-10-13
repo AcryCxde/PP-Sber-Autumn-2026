@@ -15,6 +15,7 @@ from backend.repository import (
     finalize_run,
     list_run_events,
     mark_run_running,
+    reconcile_orphaned_runs,
 )
 
 
@@ -67,7 +68,7 @@ async def test_request_lifecycle_is_persisted(tmp_path) -> None:
         assert run.turns == 2
         assert float(run.cost_usd) == 0.5
         assert finalization.assistant_message is not None
-        assert finalization.terminal_event.type == "result"
+        assert finalization.terminal_event.type == "run.completed"
         assert finalization.terminal_event.payload["assistant_message"]["content"] == "Persisted response"
         assert [(message.sequence, message.role, message.content) for message in messages] == [
             (1, "user", "Persist me"),
@@ -294,14 +295,14 @@ async def test_events_are_append_only_and_paginated_by_sequence(tmp_path) -> Non
             first = await append_event(
                 session,
                 created.run_id,
-                {"type": "message", "schema_version": 1, "content": "one"},
+                {"type": "message.created", "schema_version": 1, "content": "one"},
             )
 
         async with database.session() as session:
             second = await append_event(
                 session,
                 created.run_id,
-                {"type": "message", "schema_version": 1, "content": "two"},
+                {"type": "message.created", "schema_version": 1, "content": "two"},
             )
 
         assert (first.seq, second.seq) == (2, 3)
@@ -349,7 +350,7 @@ async def test_concurrent_event_appends_allocate_unique_sequences(tmp_path) -> N
                     session,
                     created.run_id,
                     {
-                        "type": "message",
+                        "type": "message.created",
                         "schema_version": 1,
                         "content": str(index),
                     },
@@ -357,6 +358,88 @@ async def test_concurrent_event_appends_allocate_unique_sequences(tmp_path) -> N
 
         events = await asyncio.gather(*(append(index) for index in range(20)))
         assert sorted(event.seq for event in events) == list(range(2, 22))
+    finally:
+        await database.dispose()
+
+
+async def test_terminal_event_is_last_and_rejects_late_append(tmp_path) -> None:
+    database = Database(
+        f"sqlite+aiosqlite:///{(tmp_path / 'terminal.db').as_posix()}"
+    )
+    await database.create_schema()
+
+    try:
+        async with database.session() as session:
+            created = await create_request(session, "Finish once")
+        async with database.session() as session:
+            await mark_run_running(session, created.run_id)
+            finalization = await finalize_run(
+                session,
+                created.run_id,
+                assistant_content="Done",
+                status="completed",
+                exit_code=0,
+                session_id="session-1",
+            )
+        async with database.session() as session:
+            with pytest.raises(ValueError, match="already terminal"):
+                await append_event(
+                    session,
+                    created.run_id,
+                    {
+                        "type": "message.created",
+                        "schema_version": 1,
+                        "content": "late",
+                    },
+                )
+        async with database.session() as session:
+            events = list(
+                await session.scalars(
+                    select(Event)
+                    .where(Event.run_id == created.run_id)
+                    .order_by(Event.seq)
+                )
+            )
+        assert events[-1].id == finalization.terminal_event.id
+        assert events[-1].type == "run.completed"
+    finally:
+        await database.dispose()
+
+
+async def test_reconcile_orphaned_runs_is_idempotent(tmp_path) -> None:
+    database = Database(
+        f"sqlite+aiosqlite:///{(tmp_path / 'orphaned.db').as_posix()}"
+    )
+    await database.create_schema()
+
+    try:
+        async with database.session() as session:
+            created = await create_request(session, "Interrupted")
+        async with database.session() as session:
+            await mark_run_running(session, created.run_id)
+        async with database.session() as session:
+            first = await reconcile_orphaned_runs(session)
+        async with database.session() as session:
+            second = await reconcile_orphaned_runs(session)
+            run = await session.get(Run, created.run_id)
+            conversation = await session.get(Conversation, created.conversation_id)
+            terminal_events = list(
+                await session.scalars(
+                    select(Event).where(
+                        Event.run_id == created.run_id,
+                        Event.type == "run.outcome_unknown",
+                    )
+                )
+            )
+
+        assert len(first) == 1
+        assert second == []
+        assert run is not None and run.status == "outcome_unknown"
+        assert conversation is not None
+        assert conversation.context_state == "unavailable"
+        assert conversation.claude_session_id is None
+        assert len(terminal_events) == 1
+        assert terminal_events[0].payload["error_code"] == "backend_restarted"
     finally:
         await database.dispose()
 
@@ -374,7 +457,7 @@ async def test_sqlite_foreign_keys_cascade_history(tmp_path) -> None:
             stored_event = await append_event(
                 session,
                 created.run_id,
-                {"type": "message", "schema_version": 1, "content": "delete"},
+                {"type": "message.created", "schema_version": 1, "content": "delete"},
             )
 
         async with database.session() as session:

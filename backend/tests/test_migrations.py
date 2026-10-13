@@ -173,7 +173,7 @@ def test_multiturn_migration_backfills_legacy_history(tmp_path) -> None:
         )
         connection.commit()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20260929_0005")
 
     with sqlite3.connect(database_path) as connection:
         conversation = connection.execute(
@@ -224,3 +224,143 @@ def test_multiturn_migration_backfills_legacy_history(tmp_path) -> None:
     assert write_tool_payload["input"]["content_redacted"] is True
     assert write_result_payload["file"]["path"] == "written.txt"
     assert write_result_payload["file"]["content_size_bytes"] == 16
+
+
+def test_security_migration_redacts_legacy_history(tmp_path) -> None:
+    database_path = tmp_path / "sensitive-legacy.db"
+    config = migration_config(database_path)
+    command.upgrade(config, "20260929_0005")
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO conversations "
+            "(id, title, status, claude_session_id, context_state, next_message_seq, "
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "conversation-1",
+                "Sensitive",
+                "active",
+                "secret-session",
+                "active",
+                1,
+                "2026-10-12 00:00:00",
+                "2026-10-12 00:00:00",
+            ),
+        )
+        for run_id, status, request_id in (
+            ("run-completed", "completed", "00000000-0000-0000-0000-000000000001"),
+            ("run-failed", "failed", "00000000-0000-0000-0000-000000000002"),
+        ):
+            connection.execute(
+                "INSERT INTO runs "
+                "(id, conversation_id, status, client_request_id, context_mode, "
+                "resume_session_id, claude_session_id, error_code, next_event_seq, error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    "conversation-1",
+                    status,
+                    request_id,
+                    "resume",
+                    "secret-resume",
+                    "secret-run-session",
+                    "claude_cli_failed",
+                    8 if status == "completed" else 1,
+                    "secret stderr",
+                ),
+            )
+
+        legacy_events = [
+            (1, "run.accepted", {"client_request_id": "request", "secret": "accepted-secret"}),
+            (2, "session", {"session_id": "session-secret", "cwd": "/host/private"}),
+            (3, "tool", {"input": {"content": "tool-secret"}}),
+            (4, "tool_result", {"content": "result-secret"}),
+            (5, "thinking", {"content": "thinking-secret"}),
+            (6, "raw", {"content": "stderr-secret"}),
+            (7, "unknown.future", {"secret": "unknown-secret"}),
+            (8, "result", {"session_id": "terminal-secret", "cost_usd": 10}),
+        ]
+        for seq, event_type, payload in legacy_events:
+            connection.execute(
+                "INSERT INTO events (run_id, seq, type, payload, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    "run-completed",
+                    seq,
+                    event_type,
+                    json.dumps(payload),
+                    "2026-10-12 00:00:00",
+                ),
+            )
+        connection.execute(
+            "INSERT INTO events (run_id, seq, type, payload, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                "run-failed",
+                1,
+                "run.failed",
+                json.dumps({"message": "failure-secret"}),
+                "2026-10-12 00:00:00",
+            ),
+        )
+        connection.execute(
+            "INSERT INTO artifacts "
+            "(run_id, event_seq, path, content, size_bytes, truncated, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                "run-completed",
+                4,
+                "/host/private/.env",
+                "artifact-secret",
+                15,
+                0,
+                "2026-10-12 00:00:00",
+            ),
+        )
+        connection.commit()
+
+    command.upgrade(config, "head")
+
+    with sqlite3.connect(database_path) as connection:
+        version = connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone()
+        conversation = connection.execute(
+            "SELECT claude_session_id, context_state FROM conversations"
+        ).fetchone()
+        runs = connection.execute(
+            "SELECT resume_session_id, claude_session_id, error FROM runs ORDER BY id"
+        ).fetchall()
+        artifacts = connection.execute("SELECT COUNT(*) FROM artifacts").fetchone()
+        events = connection.execute(
+            "SELECT seq, type, payload FROM events WHERE run_id = 'run-completed' "
+            "ORDER BY seq"
+        ).fetchall()
+        failed = connection.execute(
+            "SELECT type, payload FROM events WHERE run_id = 'run-failed'"
+        ).fetchone()
+
+    assert version == ("20261012_0006",)
+    assert conversation == (None, "unavailable")
+    assert runs == [(None, None, None), (None, None, None)]
+    assert artifacts == (0,)
+    assert [row[0] for row in events] == list(range(1, 9))
+    assert events[-1][1] == "run.completed"
+    for _, event_type, raw_payload in events[1:7]:
+        assert event_type == "legacy.redacted"
+        assert json.loads(raw_payload) == {"schema_version": 1, "redacted": True}
+    serialized = json.dumps(events) + json.dumps(failed)
+    for secret in (
+        "accepted-secret",
+        "session-secret",
+        "tool-secret",
+        "result-secret",
+        "thinking-secret",
+        "stderr-secret",
+        "unknown-secret",
+        "terminal-secret",
+        "failure-secret",
+        "artifact-secret",
+        "/host/private",
+    ):
+        assert secret not in serialized

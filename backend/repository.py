@@ -1,5 +1,4 @@
 from collections.abc import Mapping
-from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -11,10 +10,25 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Artifact, Conversation, Event, Message, Run
+from backend.public_events import (
+    SAFE_FAILURE_CODES,
+    SAFE_UNKNOWN_CODES,
+    TERMINAL_EVENT_TYPES,
+    artifact_saved_event,
+    context_reset_event,
+    run_accepted_event,
+    run_started_event,
+    validate_public_event_data,
+)
 
 
 ACTIVE_RUN_STATUSES = {"pending", "running"}
-TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled"}
+TERMINAL_RUN_STATUSES = {
+    "completed",
+    "failed",
+    "cancelled",
+    "outcome_unknown",
+}
 
 
 class RunAcceptanceError(Exception):
@@ -98,47 +112,27 @@ async def _append_event_in_transaction(
     session: AsyncSession,
     run_id: str,
     event_data: Mapping[str, Any],
+    *,
+    allow_terminal: bool = False,
 ) -> Event:
+    safe_event = validate_public_event_data(event_data)
+    statement = update(Run).where(Run.id == run_id)
+    if not allow_terminal:
+        statement = statement.where(Run.status.not_in(TERMINAL_RUN_STATUSES))
+
     next_seq = await session.scalar(
-        update(Run)
-        .where(Run.id == run_id)
+        statement
         .values(next_event_seq=Run.next_event_seq + 1)
         .returning(Run.next_event_seq)
     )
     if next_seq is None:
-        raise LookupError(f"Run {run_id} was not found")
+        run_status = await session.scalar(select(Run.status).where(Run.id == run_id))
+        if run_status is None:
+            raise LookupError(f"Run {run_id} was not found")
+        raise ValueError(f"Run {run_id} is already terminal")
 
-    event_type = str(event_data["type"])
-    payload = deepcopy(
-        {key: value for key, value in event_data.items() if key != "type"}
-    )
-    if event_type == "tool" and payload.get("name") == "Write":
-        tool_input = payload.get("input")
-        if isinstance(tool_input, dict):
-            input_content = tool_input.pop("content", None)
-            if isinstance(input_content, str):
-                tool_input["content_size_bytes"] = len(input_content.encode("utf-8"))
-                tool_input["content_redacted"] = True
-
-    artifact: Artifact | None = None
-    file_payload = payload.get("file")
-    if event_type == "tool_result" and isinstance(file_payload, dict):
-        file_content = file_payload.pop("content", None)
-        file_path = file_payload.get("path")
-        if isinstance(file_path, str) and file_path:
-            artifact = Artifact(
-                run_id=run_id,
-                event_seq=next_seq,
-                path=file_path,
-                content=file_content if isinstance(file_content, str) else None,
-                size_bytes=(
-                    file_payload.get("content_size_bytes")
-                    if isinstance(file_payload.get("content_size_bytes"), int)
-                    else None
-                ),
-                truncated=file_payload.get("content_truncated") is True,
-            )
-
+    event_type = str(safe_event["type"])
+    payload = {key: value for key, value in safe_event.items() if key != "type"}
     event = Event(
         run_id=run_id,
         seq=next_seq,
@@ -146,8 +140,6 @@ async def _append_event_in_transaction(
         payload=payload,
     )
     session.add(event)
-    if artifact is not None:
-        session.add(artifact)
     await session.flush()
     return event
 
@@ -310,11 +302,7 @@ async def _accept_run_once(
         reset_event = await _append_event_in_transaction(
             session,
             run.id,
-            {
-                "type": "context.reset",
-                "schema_version": 1,
-                "message": message_payload(reset_message),
-            },
+            context_reset_event(message_payload(reset_message)),
         )
 
     user_message = Message(
@@ -331,13 +319,11 @@ async def _accept_run_once(
     accepted_event = await _append_event_in_transaction(
         session,
         run.id,
-        {
-            "type": "run.accepted",
-            "schema_version": 1,
-            "client_request_id": client_request_id,
-            "context_mode": context_mode,
-            "message": message_payload(user_message),
-        },
+        run_accepted_event(
+            client_request_id=client_request_id,
+            context_mode=context_mode,
+            message=message_payload(user_message),
+        ),
     )
     conversation.updated_at = datetime.now(UTC)
     await session.commit()
@@ -353,6 +339,16 @@ async def _accept_run_once(
         reset_event=reset_event,
         idempotent_replay=False,
     )
+
+
+async def client_request_exists(
+    session: AsyncSession,
+    client_request_id: str,
+) -> bool:
+    run_id = await session.scalar(
+        select(Run.id).where(Run.client_request_id == client_request_id)
+    )
+    return run_id is not None
 
 
 async def accept_run(
@@ -418,16 +414,73 @@ async def create_request(
     )
 
 
-async def mark_run_running(session: AsyncSession, run_id: str) -> None:
+async def mark_run_running(session: AsyncSession, run_id: str) -> Event | None:
     run = await session.get(Run, run_id)
     if run is None:
         raise LookupError(f"Run {run_id} was not found")
     if run.status != "pending":
-        return
+        return None
 
     run.status = "running"
     run.started_at = datetime.now(UTC)
+    event = await _append_event_in_transaction(
+        session,
+        run_id,
+        run_started_event(),
+    )
     await session.commit()
+    return event
+
+
+def _terminal_event_data(
+    run: Run,
+    conversation: Conversation,
+    assistant_message: Message | None,
+) -> dict[str, Any]:
+    if run.status == "completed":
+        return {
+            "type": "run.completed",
+            "schema_version": 1,
+            "status": "completed",
+            "client_request_id": run.client_request_id,
+            "session_state": conversation.context_state,
+            "assistant_message": (
+                message_payload(assistant_message) if assistant_message else None
+            ),
+        }
+
+    if run.status == "outcome_unknown":
+        code = (
+            run.error_code
+            if run.error_code in SAFE_UNKNOWN_CODES
+            else "heartbeat_lost"
+        )
+        return {
+            "type": "run.outcome_unknown",
+            "schema_version": 1,
+            "status": "outcome_unknown",
+            "error_code": code,
+            "message": "Не удалось определить результат запуска.",
+            "session_state": conversation.context_state,
+            "retryable": False,
+            "can_reset_context": True,
+        }
+
+    code = (
+        run.error_code
+        if run.error_code in SAFE_FAILURE_CODES
+        else "claude_request_failed"
+    )
+    return {
+        "type": "run.failed",
+        "schema_version": 1,
+        "status": run.status,
+        "error_code": code,
+        "message": "Запрос Claude завершился с ошибкой.",
+        "session_state": conversation.context_state,
+        "retryable": code in {"claude_cli_failed", "result_error"},
+        "can_reset_context": conversation.context_state == "unavailable",
+    }
 
 
 async def finalize_run(
@@ -443,8 +496,11 @@ async def finalize_run(
     turns: int | None = None,
     error: str | None = None,
     error_code: str | None = None,
-    result_event: Mapping[str, Any] | None = None,
 ) -> RunFinalization:
+    del error
+    if status not in TERMINAL_RUN_STATUSES:
+        raise ValueError(f"Unsupported terminal run status: {status}")
+
     run = await session.get(Run, run_id)
     if run is None:
         raise LookupError(f"Run {run_id} was not found")
@@ -453,33 +509,21 @@ async def finalize_run(
     if conversation is None:
         raise LookupError(f"Conversation {run.conversation_id} was not found")
 
+    assistant_message = await session.scalar(
+        select(Message).where(Message.run_id == run.id, Message.role == "assistant")
+    )
     if run.status in TERMINAL_RUN_STATUSES:
-        assistant_message = await session.scalar(
-            select(Message).where(Message.run_id == run.id, Message.role == "assistant")
-        )
         terminal_event = await session.scalar(
             select(Event)
-            .where(Event.run_id == run.id, Event.type.in_({"result", "run.failed"}))
+            .where(Event.run_id == run.id, Event.type.in_(TERMINAL_EVENT_TYPES))
             .order_by(Event.seq.desc())
         )
         if terminal_event is None:
             terminal_event = await _append_event_in_transaction(
                 session,
                 run.id,
-                {
-                    "type": "result" if run.status == "completed" else "run.failed",
-                    "schema_version": 1,
-                    "status": run.status,
-                    "client_request_id": run.client_request_id,
-                    "session_state": conversation.context_state,
-                    "error_code": run.error_code,
-                    "message": run.error,
-                    "assistant_message": (
-                        message_payload(assistant_message)
-                        if assistant_message
-                        else None
-                    ),
-                },
+                _terminal_event_data(run, conversation, assistant_message),
+                allow_terminal=True,
             )
             await session.commit()
         return RunFinalization(
@@ -493,9 +537,7 @@ async def finalize_run(
         if session_id != run.resume_session_id:
             status = "failed"
             error_code = "claude_session_mismatch"
-            error = "Claude вернул неожиданный session ID."
 
-    assistant_message: Message | None = None
     if assistant_content:
         assistant_message = Message(
             conversation_id=conversation.id,
@@ -515,7 +557,7 @@ async def finalize_run(
     run.duration_ms = duration_ms
     run.cost_usd = Decimal(str(cost_usd)) if cost_usd is not None else None
     run.turns = turns
-    run.error = error
+    run.error = None
     run.error_code = error_code
     run.claude_session_id = session_id
     conversation.updated_at = now
@@ -524,44 +566,24 @@ async def finalize_run(
         conversation.claude_session_id = session_id
         conversation.context_state = "active"
     elif status == "completed":
+        conversation.claude_session_id = None
         conversation.context_state = "unavailable"
-    elif error_code in {
+    elif status == "outcome_unknown" or error_code in {
+        "artifact_save_failed",
+        "claude_cli_failed",
+        "claude_request_failed",
         "claude_session_unavailable",
         "claude_session_mismatch",
         "claude_session_state_uncertain",
     }:
+        conversation.claude_session_id = None
         conversation.context_state = "unavailable"
-
-    if status == "completed":
-        terminal_data: dict[str, Any] = {
-            **(dict(result_event) if result_event else {}),
-            "type": "result",
-            "schema_version": 1,
-            "status": "completed",
-            "client_request_id": run.client_request_id,
-            "session_state": conversation.context_state,
-            "assistant_message": (
-                message_payload(assistant_message)
-                if assistant_message
-                else None
-            ),
-        }
-    else:
-        terminal_data = {
-            "type": "run.failed",
-            "schema_version": 1,
-            "status": status,
-            "client_request_id": run.client_request_id,
-            "error_code": error_code or "claude_cli_failed",
-            "message": error or "Запрос Claude завершился с ошибкой.",
-            "session_state": conversation.context_state,
-            "can_reset_context": conversation.context_state == "unavailable",
-        }
 
     terminal_event = await _append_event_in_transaction(
         session,
         run.id,
-        terminal_data,
+        _terminal_event_data(run, conversation, assistant_message),
+        allow_terminal=True,
     )
     await session.commit()
     return RunFinalization(
@@ -580,6 +602,63 @@ async def append_event(
     event = await _append_event_in_transaction(session, run_id, event_data)
     await session.commit()
     return event
+
+
+async def append_artifact(
+    session: AsyncSession,
+    run_id: str,
+    *,
+    path: str,
+    content: str | None,
+    size_bytes: int | None,
+    truncated: bool,
+    num_lines: int | None,
+) -> Event:
+    event = await _append_event_in_transaction(
+        session,
+        run_id,
+        artifact_saved_event(
+            path=path,
+            size_bytes=size_bytes,
+            truncated=truncated,
+            num_lines=num_lines,
+        ),
+    )
+    session.add(
+        Artifact(
+            run_id=run_id,
+            event_seq=event.seq,
+            path=path,
+            content=content,
+            size_bytes=size_bytes,
+            truncated=truncated,
+        )
+    )
+    await session.commit()
+    return event
+
+
+async def reconcile_orphaned_runs(session: AsyncSession) -> list[Event]:
+    active_runs = list(
+        await session.scalars(
+            select(Run)
+            .where(Run.status.in_(ACTIVE_RUN_STATUSES))
+            .order_by(Run.id)
+        )
+    )
+    terminal_events: list[Event] = []
+    for run in active_runs:
+        finalization = await finalize_run(
+            session,
+            run.id,
+            assistant_content=None,
+            status="outcome_unknown",
+            exit_code=run.exit_code,
+            session_id=None,
+            error_code="backend_restarted",
+        )
+        terminal_events.append(finalization.terminal_event)
+    return terminal_events
 
 
 async def list_run_events(
@@ -604,6 +683,28 @@ async def list_run_events(
         run_status=run.status,
         events=list(result),
     )
+
+
+async def list_conversation_events(
+    session: AsyncSession,
+    conversation_id: str,
+    *,
+    offset: int,
+    limit: int,
+) -> list[Event] | None:
+    conversation = await session.get(Conversation, conversation_id)
+    if conversation is None or conversation.status == "deleted":
+        return None
+
+    result = await session.scalars(
+        select(Event)
+        .join(Run, Run.id == Event.run_id)
+        .where(Run.conversation_id == conversation_id)
+        .order_by(Event.id.asc())
+        .offset(offset)
+        .limit(limit)
+    )
+    return list(result)
 
 
 async def list_conversations(

@@ -90,7 +90,7 @@ Run — одна попытка выполнить пользовательск�
 id
 conversation_id
 client_request_id
-status                   # pending | running | completed | failed | cancelled
+status                   # pending | running | completed | failed | cancelled | outcome_unknown
 context_mode             # new | resume | reset
 resume_session_id        # ID, который backend пытался продолжить
 claude_session_id        # ID, фактически полученный от CLI
@@ -172,20 +172,19 @@ artifacts
 - created_at
 ```
 
-Пара `(run_id, event_seq)` уникальна. Public `tool_result` event содержит только metadata:
+Пара `(run_id, event_seq)` уникальна. После успешного коррелированного `Write` backend атомарно сохраняет snapshot и публикует только безопасное событие `artifact.saved`:
 
 ```json
 {
-  "file": {
-    "path": "plans/result.md",
-    "content_size_bytes": 2048,
-    "content_truncated": false,
-    "num_lines": 42
-  }
+  "type": "artifact.saved",
+  "path": "plans/result.md",
+  "size_bytes": 2048,
+  "truncated": false,
+  "num_lines": 42
 }
 ```
 
-Claude Code CLI для `Write` передаёт path/content во входе tool call, а result возвращает только текстовое подтверждение. Backend связывает события по `tool_id`, создаёт Artifact после успешного result и удаляет `content` из публичного tool event.
+`path` всегда относителен к workspace диалога. Пути вне workspace, symlink escape и служебные каталоги `.git`/`.runner` отклоняются. Ввод/вывод `Write` и других инструментов в публичную ленту не попадает. Download endpoint возвращает сохранённый snapshot и не читает live filesystem.
 
 ## 3. Схема передачи данных
 
@@ -260,7 +259,7 @@ claude --print --verbose --output-format stream-json \
   --resume <server-side-session-id>
 ```
 
-Клиент не может передать session ID самостоятельно.
+Клиент не может передать session ID самостоятельно. CLI запускается в стабильном каталоге `<WORKSPACE_ROOT>/<conversation_id>`, расположенном вне репозитория gateway и каталога БД. Resume допускается только при наличии этого workspace.
 
 ## 3.4. Потоковое событие
 
@@ -268,7 +267,7 @@ claude --print --verbose --output-format stream-json \
 
 ```json
 {
-  "type": "message",
+  "type": "message.created",
   "schema_version": 1,
   "conversation_id": "conversation-uuid",
   "run_id": "run-uuid",
@@ -278,24 +277,25 @@ claude --print --verbose --output-format stream-json \
 }
 ```
 
-Основные типы:
+Публичные persisted types текущего gateway:
 
 - `run.accepted`;
-- `session`;
-- `message`;
-- `tool`;
-- `tool_result`;
-- `thinking`;
+- `run.started`;
+- `message.created`;
 - `context.reset`;
-- `result`;
+- `artifact.saved`;
+- `run.completed`;
 - `run.failed`;
-- `raw_event`.
+- `run.outcome_unknown`;
+- `legacy.redacted` только для сохранения последовательности старой истории.
+
+`session`, tool calls/results, thinking, raw stdout/stderr и произвольные поля CLI являются внутренними данными оркестратора и никогда не записываются в публичную ленту. REST и WebSocket дополнительно применяют allowlist-проекцию при чтении.
 
 ## 3.5. Успешное завершение
 
 ```json
 {
-  "type": "result",
+  "type": "run.completed",
   "conversation_id": "conversation-uuid",
   "run_id": "run-uuid",
   "seq": 8,
@@ -308,11 +308,7 @@ claude --print --verbose --output-format stream-json \
     "kind": "text",
     "sequence": 4,
     "content": "Финальный canonical ответ"
-  },
-  "duration_ms": 1250,
-  "cost_usd": 0.0123,
-  "num_turns": 1,
-  "is_error": false
+  }
 }
 ```
 
@@ -328,6 +324,18 @@ claude --print --verbose --output-format stream-json \
   "client_request_id": "client-request-uuid",
   "error_code": "claude_session_unavailable",
   "message": "Сохранённая сессия Claude недоступна.",
+  "session_state": "unavailable",
+  "can_reset_context": true
+}
+```
+
+Если backend перезапущен во время активного run и не может доказать результат, startup reconciliation атомарно переводит его в `outcome_unknown`, делает context недоступным для resume и добавляет последнее событие:
+
+```json
+{
+  "type": "run.outcome_unknown",
+  "status": "outcome_unknown",
+  "error_code": "backend_restarted",
   "session_state": "unavailable",
   "can_reset_context": true
 }
@@ -367,7 +375,7 @@ Frontend подписывается:
 }
 ```
 
-Backend передаёт events с `seq > 5`. Если run ещё выполняется, подписка продолжает polling БД до terminal status.
+Backend передаёт events с `seq > 5`. Одна подписка является конечным long-poll окном: она завершается либо при terminal status, либо по deadline. Обработчик подписки работает отдельной socket-owned задачей и не блокирует другие команды на соединении.
 
 После завершения:
 
@@ -377,9 +385,12 @@ Backend передаёт events с `seq > 5`. Если run ещё выполня
   "run_id": "run-uuid",
   "after_seq": 5,
   "last_seq": 8,
-  "status": "completed"
+  "status": "completed",
+  "terminal": true
 }
 ```
+
+Если окно закончилось при работающем run, backend возвращает `terminal: false`; frontend повторяет подписку от последнего непрерывного `seq`. Событие после sequence gap не применяется до replay пропущенных номеров.
 
 Если соединение потеряно до `run.accepted`, frontend повторяет исходный `run.create` с тем же `client_request_id`. Backend возвращает существующий run как idempotent replay и не запускает второй процесс.
 
@@ -393,11 +404,9 @@ Frontend получает:
 - canonical user/assistant/system messages;
 - run ID и event sequence;
 - текстовые части ответа;
-- названия и безопасные metadata tool events;
-- основную роль Claude Code, доступные agents и фактически привлечённые subagent roles;
-- список файловых артефактов, path/size/line count и download URL;
-- duration, cost и number of turns;
-- typed error codes;
+- основную роль Claude Code;
+- список файловых артефактов с относительным path/size/line count и download URL;
+- безопасные terminal status и typed error codes;
 - возможность explicit context reset.
 
 Frontend не получает:
@@ -407,11 +416,11 @@ Frontend не получает:
 - путь к локальному transcript Claude Code;
 - auth tokens и API credentials;
 - внутренние настройки Claude Code;
-- необработанный chain of thought;
-- скрытый thinking text;
+- необработанный chain of thought и thinking events;
+- tool names, input и result content;
+- init/session metadata, cwd, costs, tokens, permission denials и subagent statistics;
+- raw stdout/stderr и внутренние exception messages;
 - содержимое Artifact через общий events/history API — оно доступно только отдельным download endpoint.
-
-Событие `thinking` передаётся без внутреннего содержимого.
 
 ## 5. Что доступно backend
 
@@ -462,7 +471,15 @@ GET /api/conversations/{conversation_id}/messages
 
 Возвращает canonical messages по возрастанию `sequence`.
 
-### Events
+### Events выбранного диалога
+
+```http
+GET /api/conversations/{conversation_id}/events?offset=0&limit=500
+```
+
+Возвращает безопасную публичную проекцию событий всех run диалога одной пагинированной последовательностью. Frontend использует этот endpoint вместо fan-out запроса на каждый исторический run; при временной ошибке metadata canonical messages всё равно отображаются.
+
+### Events одного run
 
 ```http
 GET /api/runs/{run_id}/events?after_seq=10&limit=100
@@ -474,7 +491,7 @@ GET /api/runs/{run_id}/events?after_seq=10&limit=100
 {
   "run_id": "run-uuid",
   "seq": 11,
-  "type": "message",
+  "type": "message.created",
   "payload": {},
   "created_at": "..."
 }
@@ -486,7 +503,7 @@ GET /api/runs/{run_id}/events?after_seq=10&limit=100
 GET /api/runs/{run_id}/events/{event_seq}/file
 ```
 
-Endpoint доступен только для зарегистрированного файлового артефакта, связанного с persisted `tool_result` event по `(run_id, event_seq)`. Claude Code CLI для `Write` возвращает путь в `tool_result`, но полный snapshot находится во входе предшествующего `tool` event. Backend связывает их по `tool_id`, переносит snapshot в отдельную таблицу `artifacts` и удаляет содержимое из публичного tool input/event payload. Публичный event содержит только path/size/truncated metadata. Backend отдаёт сохранённый snapshot и не перечитывает live filesystem. Это исключает path traversal, symlink TOCTOU, подмену файла и загрузку большого file content через history/replay API. Размер snapshot ограничен `ARTIFACT_MAX_DOWNLOAD_BYTES`; oversized content не сохраняется. Миграции `0004` и `0005` переносят и санитизируют legacy events.
+Endpoint доступен только для зарегистрированного артефакта, связанного с persisted `artifact.saved` по `(run_id, event_seq)`. Backend коррелирует успешный `Write` с его result, проверяет путь относительно workspace и атомарно сохраняет snapshot вместе с metadata-only event. Backend отдаёт snapshot и не перечитывает live filesystem. Размер ограничен `ARTIFACT_MAX_DOWNLOAD_BYTES`; oversized content не сохраняется. Security migration `20261012_0006` удаляет старые snapshots и полностью редактирует legacy tool/session/raw payload, поскольку они могли относиться к репозиторию gateway или содержать секреты.
 
 ## 7. Архитектура backend
 
@@ -499,26 +516,35 @@ Backend — FastAPI-приложение с SQLite/SQLAlchemy/Alembic.
   - WebSocket `/ws`;
   - orchestration lifecycle run;
   - запуск Claude Code CLI;
-  - reconnect/replay;
+  - bounded reconnect/replay и независимые subscription tasks;
   - проверка session ID;
-  - корреляция `Write` tool/tool_result по `tool_id`;
-  - запуск CLI в `acceptEdits` без unsafe bypass;
+  - корреляция успешного `Write` по `tool_id`;
+  - запуск CLI в отдельном workspace в `acceptEdits` без unsafe bypass;
+  - раздельный drain stdout/stderr;
+  - startup reconciliation активных run;
   - WebSocket protocol dispatch.
 
 - `backend/parser.py`
-  - преобразует Claude CLI `stream-json` в нормализованные события;
-  - обрабатывает все content blocks;
-  - скрывает внутренний thinking text;
-  - ограничивает размер file snapshot до записи;
+  - внутренне преобразует Claude CLI `stream-json`;
+  - обрабатывает все content blocks и top-level `tool_use_result`;
+  - не определяет публичный контракт;
   - безопасно нормализует неизвестные JSON shapes.
+
+- `backend/public_events.py`
+  - allowlist публичных event types и payload fields;
+  - единая защитная проекция для persistence, REST и WebSocket.
+
+- `backend/workspace.py`
+  - изоляция каталогов диалогов от gateway/БД;
+  - canonical path и symlink checks для артефактов.
 
 - `backend/repository.py`
   - атомарное создание/повтор run;
   - message/event sequence allocation;
   - idempotency;
   - canonical messages;
-  - terminal transaction;
-  - выделение Artifact из tool result и redaction file content в public event;
+  - terminal-last transaction и `outcome_unknown`;
+  - атомарное сохранение Artifact + `artifact.saved`;
   - чтение conversations/messages/events.
 
 - `backend/models.py`
@@ -549,17 +575,17 @@ repository transaction
     ↓
 run.accepted persisted
     ↓
-Claude Code CLI new/resume
+isolated workspace → Claude Code CLI new/resume
     ↓
-parser → normalized events
+private parser events
     ↓
-Write correlation → Artifact snapshot + metadata-only event
+public allowlist projection / successful Write correlation
     ↓
-event persisted → WebSocket publish
+event or Artifact snapshot persisted → WebSocket publish
     ↓
-terminal transaction
+terminal-last transaction
     ↓
-result/run.failed publish
+run.completed / run.failed / run.outcome_unknown
 ```
 
 Claude process продолжает выполнение при разрыве WebSocket. Новый клиент обнаруживает `active_run_id` через REST и получает события через replay.
@@ -574,13 +600,17 @@ Frontend — React 19 + TypeScript + Vite.
   - conversations/messages state;
   - optimistic/canonical messages;
   - WebSocket lifecycle;
-  - reconnect/replay;
-  - dedupe по `(run_id, seq)` и canonical `event_id`;
-  - context reset flow;
-  - отображение available/used agent roles;
+  - reconnect и bounded replay;
+  - contiguous sequence/gap detection и dedupe по `(run_id, seq)`;
+  - context reset и outcome-unknown flow;
   - восстановление Artifact metadata и download links;
   - selected conversation persistence;
   - theme state.
+
+- `frontend/src/events.ts`
+  - строгий decoder публичных REST/WS событий;
+  - sequence-gap решения и безопасная проекция артефактов;
+  - legacy/internal events превращаются в sequence-consuming no-op без payload.
 
 - `frontend/src/App.css`
   - desktop/mobile layout;
@@ -606,7 +636,7 @@ REST initial load
     ↓
 conversations + selected messages
     ↓
-event metadata → roles + Artifact list
+safe event metadata → Artifact list + contiguous replay cursor
     ↓
 active_run_id? → run.subscribe
     ↓
@@ -616,7 +646,7 @@ run.accepted → canonical replacement
     ↓
 stream events → timeline
     ↓
-result/run.failed → terminal UI state
+run.completed/run.failed/run.outcome_unknown → terminal UI state
 ```
 
 Тема хранится отдельно от chat state:
@@ -657,10 +687,11 @@ REST используется для canonical history и initial recovery. WebS
 - Claude Code sessions локальны машине и workspace;
 - перенос одной SQLite-базы на другой host не переносит Claude session transcript;
 - приложение пока не имеет authentication и ownership model;
-- один uvicorn process использует in-process orchestration;
-- нет глобального timeout/budget/concurrency configuration;
-- file content удаляется из public events, но prompts и другие tool payloads всё ещё требуют универсальной redaction/retention policy;
-- Artifact хранит текстовый UTF-8 snapshot из `Write`; произвольные бинарные файлы пока не поддерживаются;
+- in-process orchestration поддерживает ровно один backend process на SQLite-БД; startup удерживает OS file lock и отклоняет второй worker, а non-SQLite deployment запрещён до появления durable owner lease/heartbeat в runner-архитектуре;
+- нет глобального run timeout/budget; число одновременно исполняемых CLI ограничено `MAX_CONCURRENT_RUNS`, а subscription имеет отдельное bounded long-poll окно;
+- отдельный workspace снижает риск случайного доступа к gateway, но полноценной OS/container sandbox границей станет runner 2.4;
+- текущая публичная схема безопасна, но не является полной реализацией `events.v0`: ещё нет runner `event_id`, project model, heartbeat/recovery и storage confirmation;
+- Artifact хранит текстовый UTF-8 snapshot из успешного `Write`; произвольные бинарные файлы и Edit-family snapshots пока не поддерживаются;
 - встроенный preview содержимого Artifact в браузере пока не реализован — доступен список metadata и скачивание;
 - история БД не восстанавливает полный Claude context при утрате session;
 - session reconstruction из сообщений пока не реализована.

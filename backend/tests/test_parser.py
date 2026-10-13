@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from backend.parser import MAX_RAW_CONTENT_LENGTH, bounded_file_content, parse_event
 
@@ -49,12 +50,14 @@ def test_parser_preserves_multiple_tool_results() -> None:
                         "type": "tool_result",
                         "tool_use_id": "tool-1",
                         "content": "first",
+                        "is_error": False,
                         "tool_use_result": {"type": "text"},
                     },
                     {
                         "type": "tool_result",
                         "tool_use_id": "tool-2",
                         "content": "second",
+                        "is_error": False,
                         "tool_use_result": {
                             "type": "file",
                             "file": {
@@ -72,13 +75,98 @@ def test_parser_preserves_multiple_tool_results() -> None:
     events = parse_event(raw)
 
     assert [event["tool_id"] for event in events] == ["tool-1", "tool-2"]
-    assert events[1]["file"] == {
-        "path": "example.py",
-        "content": "print('ok')",
-        "content_size_bytes": 11,
-        "content_truncated": False,
-        "num_lines": 1,
-    }
+    assert events[0]["result_type"] == "text"
+    assert events[1]["result_type"] == "file"
+    assert "file" not in events[1]
+    assert events[1]["is_error"] is False
+    assert events[1]["result_confirmed"] is True
+
+
+def test_parser_reads_top_level_tool_result_and_error_status() -> None:
+    raw = json.dumps(
+        {
+            "type": "user",
+            "tool_use_result": {"type": "text"},
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "write-tool",
+                        "content": "Write failed",
+                        "is_error": True,
+                    }
+                ]
+            },
+        }
+    )
+
+    events = parse_event(raw)
+
+    assert events == [
+        {
+            "type": "tool_result",
+            "schema_version": 1,
+            "tool_id": "write-tool",
+            "content": "Write failed",
+            "is_error": True,
+            "result_confirmed": True,
+            "result_type": "text",
+        }
+    ]
+
+
+def test_tool_result_without_error_flag_defaults_to_success() -> None:
+    raw = json.dumps(
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "write-tool",
+                        "content": "File created successfully",
+                    }
+                ]
+            },
+        }
+    )
+
+    events = parse_event(raw)
+
+    assert events == [
+        {
+            "type": "tool_result",
+            "schema_version": 1,
+            "tool_id": "write-tool",
+            "content": "File created successfully",
+            "is_error": False,
+            "result_confirmed": True,
+        }
+    ]
+
+
+def test_malformed_tool_result_is_not_confirmed_as_success() -> None:
+    raw = json.dumps(
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "write-tool",
+                        "content": "ambiguous",
+                        "tool_use_result": "malformed",
+                    }
+                ]
+            },
+        }
+    )
+
+    events = parse_event(raw)
+
+    assert [event["type"] for event in events] == ["raw_event", "tool_result"]
+    assert events[1]["result_confirmed"] is False
+    assert events[1]["is_error"] is True
 
 
 def test_parser_normalizes_malformed_and_unknown_events_safely() -> None:
@@ -149,11 +237,8 @@ def test_parser_normalizes_valid_json_with_invalid_shapes() -> None:
         "raw_event",
         "message",
     ]
-    assert [event["type"] for event in file_events] == [
-        "tool_result",
-        "raw_event",
-    ]
-    assert file_events[1]["subtype"] == "user.tool_result.file"
+    assert [event["type"] for event in file_events] == ["tool_result"]
+    assert "file" not in file_events[0]
 
 
 def test_large_file_content_is_not_persisted() -> None:
@@ -162,6 +247,27 @@ def test_large_file_content_is_not_persisted() -> None:
     assert content is None
     assert size_bytes == 8
     assert truncated is True
+
+
+def test_stream_json_write_fixture_uses_top_level_tool_result() -> None:
+    fixture = Path(__file__).with_name("fixtures") / "stream_json_write.jsonl"
+    parsed = [
+        event
+        for line in fixture.read_text(encoding="utf-8").splitlines()
+        for event in parse_event(line)
+    ]
+
+    assert [event["type"] for event in parsed] == [
+        "session",
+        "tool",
+        "tool_result",
+        "result",
+    ]
+    assert parsed[2]["tool_id"] == "toolu_fixture_write"
+    assert parsed[2]["result_type"] == "text"
+    assert parsed[2]["is_error"] is False
+    assert parsed[2]["result_confirmed"] is True
+    assert "file" not in parsed[2]
 
 
 def test_parser_returns_empty_list_for_blank_input() -> None:

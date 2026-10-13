@@ -1,12 +1,9 @@
 import json
 from typing import Any, Required, TypedDict
 
-from backend.config import Settings
-
-
 EVENT_SCHEMA_VERSION = 1
 MAX_RAW_CONTENT_LENGTH = 4_000
-MAX_FILE_CONTENT_BYTES = Settings().artifact_max_download_bytes
+DEFAULT_MAX_FILE_CONTENT_BYTES = 10 * 1024 * 1024
 
 
 class NormalizedEvent(TypedDict, total=False):
@@ -31,6 +28,7 @@ class NormalizedEvent(TypedDict, total=False):
     duration_ms: int | None
     num_turns: int | None
     is_error: bool
+    result_confirmed: bool
     result: Any
     permission_denials: list[Any]
     subagent_stats: dict[str, Any]
@@ -50,7 +48,7 @@ def normalized_event(normalized_type: str, **payload: Any) -> NormalizedEvent:
 
 def bounded_file_content(
     value: Any,
-    max_bytes: int = MAX_FILE_CONTENT_BYTES,
+    max_bytes: int = DEFAULT_MAX_FILE_CONTENT_BYTES,
 ) -> tuple[str | None, int | None, bool]:
     if not isinstance(value, str):
         return None, None, False
@@ -164,6 +162,17 @@ def parse_event(raw: str) -> list[NormalizedEvent]:
         if not isinstance(content_blocks, list):
             return [invalid_shape("user.message.content", content_blocks)]
 
+        top_level_tool_result = event.get("tool_use_result")
+        top_level_result_malformed = False
+        if top_level_tool_result is not None and not isinstance(
+            top_level_tool_result, dict
+        ):
+            events.append(
+                invalid_shape("user.tool_use_result", top_level_tool_result)
+            )
+            top_level_tool_result = None
+            top_level_result_malformed = True
+
         for content in content_blocks:
             if not isinstance(content, dict):
                 events.append(invalid_shape("user.content", content))
@@ -180,45 +189,54 @@ def parse_event(raw: str) -> list[NormalizedEvent]:
                 )
                 continue
 
-            tool_result = content.get("tool_use_result", {})
+            block_tool_result = content.get("tool_use_result")
+            block_result_malformed = (
+                "tool_use_result" in content
+                and block_tool_result is not None
+                and not isinstance(block_tool_result, dict)
+            )
+            if block_result_malformed:
+                events.append(
+                    invalid_shape("user.content.tool_use_result", block_tool_result)
+                )
+                tool_result = None
+            else:
+                tool_result = (
+                    block_tool_result
+                    if isinstance(block_tool_result, dict)
+                    else top_level_tool_result
+                )
+
+            result_malformed = block_result_malformed or (
+                not isinstance(block_tool_result, dict)
+                and top_level_result_malformed
+            )
+            content_error = content.get("is_error")
+            mapped_error = (
+                tool_result.get("is_error")
+                if isinstance(tool_result, dict)
+                else None
+            )
+            explicit_error = (
+                content_error
+                if isinstance(content_error, bool)
+                else mapped_error if isinstance(mapped_error, bool) else None
+            )
             result = normalized_event(
                 "tool_result",
                 tool_id=content.get("tool_use_id"),
                 content=content.get("content"),
+                is_error=(
+                    explicit_error is True
+                    or (explicit_error is None and result_malformed)
+                ),
+                result_confirmed=(
+                    explicit_error is not None or not result_malformed
+                ),
             )
-
-            invalid_tool_shape: NormalizedEvent | None = None
-            if isinstance(tool_result, dict):
-                if tool_result.get("type"):
-                    result["result_type"] = tool_result.get("type")
-
-                if tool_result.get("file"):
-                    file_info = tool_result["file"]
-                    if isinstance(file_info, dict):
-                        file_content, content_size_bytes, content_truncated = (
-                            bounded_file_content(file_info.get("content"))
-                        )
-                        result["file"] = {
-                            "path": file_info.get("filePath"),
-                            "content": file_content,
-                            "content_size_bytes": content_size_bytes,
-                            "content_truncated": content_truncated,
-                            "num_lines": file_info.get("numLines"),
-                        }
-                    else:
-                        invalid_tool_shape = invalid_shape(
-                            "user.tool_result.file",
-                            file_info,
-                        )
-            elif tool_result is not None:
-                invalid_tool_shape = invalid_shape(
-                    "user.tool_use_result",
-                    tool_result,
-                )
-
+            if isinstance(tool_result, dict) and tool_result.get("type"):
+                result["result_type"] = tool_result.get("type")
             events.append(result)
-            if invalid_tool_shape is not None:
-                events.append(invalid_tool_shape)
 
         return events
 

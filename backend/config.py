@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,7 +19,14 @@ class Settings(BaseSettings):
         "manual",
         "plan",
     ] = "acceptEdits"
-    artifact_max_download_bytes: int = 10 * 1024 * 1024
+    artifact_max_download_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        gt=0,
+    )
+    workspace_root: Path = Path.home() / ".claude-web" / "workspaces"
+    subscription_window_seconds: float = Field(default=15.0, gt=0)
+    subscription_poll_interval_seconds: float = Field(default=0.25, gt=0)
+    max_concurrent_runs: int = Field(default=4, gt=0)
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -369,6 +369,12 @@
   font-size: 13px;
 }
 
+.warning-card.outcome-unknown {
+  border-color: var(--border-strong);
+  background: var(--surface-muted);
+  color: var(--text);
+}
+
 .app-error {
   margin: 18px 0;
   padding: 11px 13px;
