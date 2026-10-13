@@ -1,5 +1,7 @@
 # Протокол runner ↔ gateway
 
+Публичная лента для web — `docs/contracts/events-v0.md`; события ниже — внутренний журнал runner, их переводит `ctrunner.v0`.
+
 Контракт для направления 2.1. Версия конверта `v: 1`.
 Пометка **этап 2** — сообщение описано, но в runner этапа 1 не реализовано.
 Исключение: события восстановления (`checkpoint`, `turn_interrupted`, `turn_resumed`, новые `reason` у `turn_failed`) runner уже пишет в `events.jsonl`; по WebSocket их отправит клиент этапа 2.
@@ -93,7 +95,7 @@
 | `fork_question` | `{"fork_id", "questions": [...]}` — вопросы AskUserQuestion как есть | 1 |
 | `fork_answered` | `{"fork_id", "answers": {вопрос: ответ}}` | 1 |
 | `turn_completed` | `{}` | 1 |
-| `turn_failed` | `{"reason": "result_error" \| "sdk_crashed" \| "disk_full" \| "checkpoint_failed" \| "resume_limit" \| "state_corrupt"}` | 1 (`checkpoint_failed`, `resume_limit`, `state_corrupt` — 2) |
+| `turn_failed` | `{"reason": "result_error" \| "sdk_crashed" \| "disk_full" \| "checkpoint_failed" \| "resume_limit" \| "state_corrupt", "fatal"?: true}` — `fatal`: процесс упал, после рестарта ход может продолжиться | 1 (`checkpoint_failed`, `resume_limit`, `state_corrupt` — 2) |
 | `access_denied` | `{"tool", "path", "agent_id" \| null}` — `path` после `realpath` | 1 |
 | `checkpoint` | `{"sha"}` — git commit с trailer `Turn-Id` в конце хода | 2 |
 | `turn_interrupted` | `{}` — рестарт посреди хода, исход неизвестен | 2 |

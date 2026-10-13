@@ -200,7 +200,7 @@ async def test_sdk_stream_end_is_crash(env: Env) -> None:
     client.queue.put_nowait(None)
     assert await env.session.run(client) is Exit.CRASHED
     assert json.loads(env.health.read_text())["health"] == "crashed"
-    assert env.events_of("turn_failed")[0]["payload"] == {"reason": "sdk_crashed"}
+    assert env.events_of("turn_failed")[0]["payload"] == {"reason": "sdk_crashed", "fatal": True}
 
 
 def hook_input(tool: str, tool_input: dict[str, object], cwd: Path) -> PreToolUseHookInput:

@@ -54,6 +54,12 @@ uv run sessions logs demo-a -f
 
 Ожидаемые события: `session_started` → `turn_started` → `sdk`… → `turn_completed`.
 
+Тот же журнал как публичная лента [events v0](../docs/contracts/events-v0.md):
+
+```bash
+docker exec ct-demo-a cat /workspace/.runner/events.jsonl | uv run ctrunner-v0 demo-a
+```
+
 Остановить и удалить вместе с томом проекта:
 
 ```bash

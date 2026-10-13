@@ -185,7 +185,9 @@ class Session:
         except OSError as health_error:
             diag("health_write_failed", error=health_error.strerror)
         try:
-            self._log.append(EventKind.TURN_FAILED, self._turn_id(), {"reason": reason})
+            # `fatal`: процесс падает, и после рестарта ход может продолжиться — исход ещё не итог.
+            payload: dict[str, JsonValue] = {"reason": reason, "fatal": True}
+            self._log.append(EventKind.TURN_FAILED, self._turn_id(), payload)
         except OSError as log_error:
             diag("event_write_failed", kind=EventKind.TURN_FAILED.value, error=log_error.strerror)
         return Exit.CRASHED
