@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ctrunner.sessions import RunSpec, container_env, run_args
+from ctrunner.sessions import RunSpec, _write_secret, container_env, run_args
 
 
 def spec(**overrides: object) -> RunSpec:
@@ -77,3 +77,17 @@ def test_container_env_allowlist_and_localhost_rewrite() -> None:
 def test_container_env_keeps_remote_host() -> None:
     env = container_env({"ANTHROPIC_BASE_URL": "https://proxy.example:443"})
     assert env == {"ANTHROPIC_BASE_URL": "https://proxy.example:443"}
+
+
+def test_container_env_passes_gateway_url_with_localhost_rewrite() -> None:
+    env = container_env(
+        {"GATEWAY_URL": "ws://localhost:8000/runner", "GATEWAY_AUTH_TOKEN": "x" * 12}
+    )
+    assert env == {"GATEWAY_URL": "ws://host.docker.internal:8000/runner"}
+
+
+def test_write_secret_is_private(tmp_path: Path) -> None:
+    path = _write_secret(tmp_path / "p", "gateway_token", "gw-secret-token")
+    assert path.read_text() == "gw-secret-token\n"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.parent.stat().st_mode & 0o777 == 0o700

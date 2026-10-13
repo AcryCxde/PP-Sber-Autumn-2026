@@ -18,6 +18,7 @@ MODEL_ENV: Final = (
 )
 OPTIONAL_MODEL_ENV: Final = ("ANTHROPIC_DEFAULT_FABLE_MODEL",)
 TOKEN_FILE: Final = "anthropic_token"  # noqa: S105 — имя файла, а не значение
+GATEWAY_TOKEN_FILE: Final = "gateway_token"  # noqa: S105 — имя файла, а не значение
 DEFAULT_STALL_AFTER_S: Final = 720.0
 DEFAULT_WORKSPACE: Final = "/workspace"
 # Вне корней сторожа: в /tmp агент мог бы подделать собственный статус живости.
@@ -37,6 +38,8 @@ class RunnerConfig:
     models: Mapping[str, str]
     stall_after_s: float
     workspace: Path
+    gateway_url: str | None = None
+    gateway_token: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not PROJECT_ID_RE.fullmatch(self.project_id):
@@ -44,14 +47,18 @@ class RunnerConfig:
         url = urlsplit(self.anthropic_base_url)
         if url.scheme not in ("http", "https") or not url.hostname:
             raise ConfigError("env ANTHROPIC_BASE_URL must be an http(s) URL")
-        if len(self.anthropic_token) < MIN_SECRET_LEN:
-            raise ConfigError(f"secret {TOKEN_FILE} too short")
-        if any(c.isspace() for c in self.anthropic_token):
-            raise ConfigError(f"secret {TOKEN_FILE} must be a single token without whitespace")
+        _check_token(TOKEN_FILE, self.anthropic_token)
         if not math.isfinite(self.stall_after_s) or self.stall_after_s <= 0:
             raise ConfigError("env STALL_AFTER_S must be a positive finite number")
         if not self.workspace.is_absolute():
             raise ConfigError("env WORKSPACE must be an absolute path")
+        if (self.gateway_url is None) != (self.gateway_token is None):
+            raise ConfigError(f"env GATEWAY_URL and secret {GATEWAY_TOKEN_FILE} go together")
+        if self.gateway_url is not None and self.gateway_token is not None:
+            gateway = urlsplit(self.gateway_url)
+            if gateway.scheme not in ("ws", "wss") or not gateway.hostname:
+                raise ConfigError("env GATEWAY_URL must be a ws(s) URL")
+            _check_token(GATEWAY_TOKEN_FILE, self.gateway_token)
 
     @property
     def project_dir(self) -> Path:
@@ -80,13 +87,16 @@ class RunnerConfig:
 
 def load_config(env: Mapping[str, str], secrets_dir: Path) -> RunnerConfig:
     """Граница: достать и привести значения; инварианты проверяет сам RunnerConfig."""
+    gateway_url = env.get("GATEWAY_URL") or None
     return RunnerConfig(
         project_id=_required(env, "PROJECT_ID"),
         anthropic_base_url=_required(env, "ANTHROPIC_BASE_URL").rstrip("/"),
-        anthropic_token=_token(secrets_dir),
+        anthropic_token=_secret(secrets_dir, TOKEN_FILE),
         models=_models(env),
         stall_after_s=_stall_after_s(env),
         workspace=Path(env.get("WORKSPACE") or DEFAULT_WORKSPACE),
+        gateway_url=gateway_url,
+        gateway_token=_secret(secrets_dir, GATEWAY_TOKEN_FILE) if gateway_url else None,
     )
 
 
@@ -113,13 +123,20 @@ def _stall_after_s(env: Mapping[str, str]) -> float:
         raise ConfigError("env STALL_AFTER_S must be a number") from error
 
 
-def _token(secrets_dir: Path) -> str:
+def _check_token(name: str, value: str) -> None:
+    if len(value) < MIN_SECRET_LEN:
+        raise ConfigError(f"secret {name} too short")
+    if any(c.isspace() for c in value):
+        raise ConfigError(f"secret {name} must be a single token without whitespace")
+
+
+def _secret(secrets_dir: Path, name: str) -> str:
     try:
-        value = (secrets_dir / TOKEN_FILE).read_text(encoding="utf-8").strip()
+        value = (secrets_dir / name).read_text(encoding="utf-8").strip()
     except FileNotFoundError as error:
-        raise ConfigError(f"secret {TOKEN_FILE} missing") from error
+        raise ConfigError(f"secret {name} missing") from error
     except (OSError, UnicodeDecodeError) as error:
-        raise ConfigError(f"secret {TOKEN_FILE} unreadable") from error
+        raise ConfigError(f"secret {name} unreadable") from error
     if not value:
-        raise ConfigError(f"secret {TOKEN_FILE} missing")
+        raise ConfigError(f"secret {name} missing")
     return value

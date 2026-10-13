@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Final, final
 from urllib.parse import urlsplit
 
-from ctrunner.config import PROJECT_ID_RE
+from ctrunner.config import GATEWAY_TOKEN_FILE, PROJECT_ID_RE
 
 DEFAULT_IMAGE: Final = "coreteams-runner:dev"
 SECRETS_ROOT: Final = Path.home() / ".config" / "coreteams" / "secrets"
@@ -20,7 +20,7 @@ EVENTS: Final = "/workspace/.runner/events.jsonl"
 HEALTH: Final = "/run/ctrunner/health.json"
 # Что из окружения хоста уходит в контейнер: адрес шлюза и выбор моделей. Ключи — только файлом.
 ENV_ALLOW: Final = re.compile(
-    r"ANTHROPIC_BASE_URL|ANTHROPIC_DEFAULT_[A-Z]+_MODEL(_NAME)?"
+    r"ANTHROPIC_BASE_URL|GATEWAY_URL|ANTHROPIC_DEFAULT_[A-Z]+_MODEL(_NAME)?"
     r"|CLAUDE_CODE_(SUBAGENT_MODEL|AUTO_COMPACT_WINDOW|ENABLE_GATEWAY_MODEL_DISCOVERY)"
 )
 ENV_DENY: Final = re.compile(r"TOKEN|KEY|SECRET|PASSWORD")
@@ -44,8 +44,9 @@ class RunSpec:
 
 def container_env(host_env: Mapping[str, str]) -> dict[str, str]:
     env = {k: v for k, v in host_env.items() if ENV_ALLOW.fullmatch(k) and not ENV_DENY.search(k)}
-    if "ANTHROPIC_BASE_URL" in env:
-        env["ANTHROPIC_BASE_URL"] = _reachable_from_container(env["ANTHROPIC_BASE_URL"])
+    for key in ("ANTHROPIC_BASE_URL", "GATEWAY_URL"):
+        if key in env:
+            env[key] = _reachable_from_container(env[key])
     return env
 
 
@@ -88,15 +89,21 @@ def _secrets_init(project_id: str) -> None:
     token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "").strip()
     if not token:
         sys.exit("sessions: ANTHROPIC_AUTH_TOKEN is not set (source the gateway env first)")
-    directory = SECRETS_ROOT / project_id
+    print(_write_secret(SECRETS_ROOT / project_id, TOKEN_FILE, token))
+    gateway_token = os.environ.get("GATEWAY_AUTH_TOKEN", "").strip()
+    if gateway_token:
+        print(_write_secret(SECRETS_ROOT / project_id, GATEWAY_TOKEN_FILE, gateway_token))
+
+
+def _write_secret(directory: Path, name: str, value: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     directory.chmod(0o700)
-    path = directory / TOKEN_FILE
+    path = directory / name
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(token + "\n")
+        f.write(value + "\n")
     path.chmod(0o600)
-    print(path)
+    return path
 
 
 def _start(project_id: str, data: Path | None, stall_after_s: float, image: str) -> None:
