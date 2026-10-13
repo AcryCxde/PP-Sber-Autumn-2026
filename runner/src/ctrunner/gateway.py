@@ -5,10 +5,14 @@
 переживают обрыв и рестарт по тем же правилам, что и без gateway.
 """
 
+import asyncio
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Final, assert_never, final
+
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import WebSocketException
 
 from ctrunner.diag import diag
 from ctrunner.inbox import put
@@ -149,3 +153,120 @@ def accept_command(
             return command_ack(cmd.id, "rejected", "answers_mismatch")
     put(inbox_dir, command_to_raw(cmd))
     return command_ack(cmd.id, "accepted")
+
+
+@final
+class GatewayClient:
+    """Соединение с gateway: `hello` → `welcome` → события, heartbeat и команды до обрыва.
+
+    Живёт отдельной задачей и не роняет Session: любой сбой сети — реконнект с задержкой.
+    Токен в журнал и diag не попадает (в diag только тип ошибки).
+    """
+
+    def __init__(  # noqa: PLR0913 — зависимости передаются явно
+        self,
+        *,
+        url: str,
+        token: str,
+        project_id: str,
+        runner_version: str,
+        session_id: str | None,
+        journal: Path,
+        health_file: Path,
+        inbox_dir: Path,
+        project_root: str,
+        last_seq: Callable[[], int],
+        fork_questions: Callable[[str], tuple[str, ...] | None],
+        poll_s: float = 0.5,
+        heartbeat_s: float = 10.0,
+        backoff: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0, 30.0),
+    ) -> None:
+        self._url = url
+        self._token = token
+        self._project_id = project_id
+        self._runner_version = runner_version
+        self._session_id = session_id
+        self._journal = journal
+        self._health_file = health_file
+        self._inbox_dir = inbox_dir
+        self._project_root = project_root
+        self._last_seq = last_seq
+        self._fork_questions = fork_questions
+        self._poll_s = poll_s
+        self._heartbeat_s = heartbeat_s
+        self._backoff = backoff
+        self._failures = 0
+
+    async def run(self) -> None:
+        while True:
+            try:
+                await self._connection()
+            except (OSError, WebSocketException, ValueError) as error:
+                diag("gateway_disconnected", error=type(error).__name__)
+            delay = self._backoff[min(self._failures, len(self._backoff) - 1)]
+            self._failures += 1
+            await asyncio.sleep(delay)
+
+    async def _connection(self) -> None:
+        headers = {"Authorization": f"Bearer {self._token}"}
+        async with connect(self._url, additional_headers=headers, open_timeout=10) as ws:
+            hello = hello_message(
+                project_id=self._project_id, runner_version=self._runner_version,
+                session_id=self._session_id, last_seq=self._last_seq(),
+            )  # fmt: skip
+            await ws.send(json.dumps(hello, ensure_ascii=False))
+            async with asyncio.timeout(10):
+                acked = parse_welcome(json.loads(await ws.recv()))
+            self._failures = 0
+            diag("gateway_connected", acked_seq=acked)
+            translator = Translator(self._project_id, self._project_root)
+            feed = JournalFeed(self._journal, translator, acked)
+            tasks = [
+                asyncio.create_task(self._send_events(ws, feed)),
+                asyncio.create_task(self._send_heartbeats(ws)),
+                asyncio.create_task(self._receive(ws)),
+            ]
+            try:
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            for task in done:
+                task.result()  # обрыв соединения поднимается как исключение и ведёт к реконнекту
+
+    async def _send_events(self, ws: ClientConnection, feed: JournalFeed) -> None:
+        while True:
+            for seq, drafts in await asyncio.to_thread(feed.poll):
+                for draft in drafts:
+                    await ws.send(json.dumps(event_message(seq, draft), ensure_ascii=False))
+            await asyncio.sleep(self._poll_s)
+
+    async def _send_heartbeats(self, ws: ClientConnection) -> None:
+        while True:
+            beat = await asyncio.to_thread(self._read_heartbeat)
+            if beat is not None:
+                await ws.send(json.dumps(beat))
+            await asyncio.sleep(self._heartbeat_s)
+
+    def _read_heartbeat(self) -> dict[str, JsonValue] | None:
+        try:
+            return heartbeat_message(json.loads(self._health_file.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            return None  # файла ещё нет или он пишется: следующий heartbeat через период
+
+    async def _receive(self, ws: ClientConnection) -> None:
+        async for raw in ws:
+            try:
+                frame = json.loads(raw)
+            except ValueError:
+                diag("gateway_bad_frame")
+                continue
+            if not isinstance(frame, dict) or frame.get("type") != "command":
+                continue
+            # Маленький файл в inbox: вызов короткий, а проверка реестра развилок выполняется
+            # в потоке цикла событий, где живёт Session.
+            ack = accept_command(
+                frame, inbox_dir=self._inbox_dir, fork_questions=self._fork_questions
+            )
+            await ws.send(json.dumps(ack, ensure_ascii=False))
