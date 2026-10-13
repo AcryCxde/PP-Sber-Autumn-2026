@@ -107,7 +107,7 @@
 |---|---|
 | `result_error` | SDK вернул `result` с ошибкой |
 | `sdk_crashed` | runner упал (выход 1) |
-| `disk_full` | ENOSPC при commit (runner работает дальше) или при записи `state.json`/журнала (runner падает) |
+| `disk_full` | ENOSPC при commit: ход завершается `run.failed{disk_full}`, runner работает дальше. ENOSPC при записи `state.json`/журнала: runner падает, `turn_failed{disk_full, fatal}` пишется best-effort (на полном диске может не записаться), для потребителя это `interrupted`; исход определит рестарт (`completed` или `resume_limit`) |
 | `checkpoint_failed` | commit упал по другой причине; дерево не тронуто |
 | `resume_limit` | 3 автопродолжения подряд не завершили ход; `turn_id` — провалившийся ход, runner жив с `health=crashed` до новой команды |
 | `state_corrupt` | `state.json` не разобран; `turn_id: null`, выход 65 |

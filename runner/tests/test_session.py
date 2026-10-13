@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import os
 import threading
@@ -567,6 +568,26 @@ async def test_repeated_give_up_does_not_duplicate_events(
     assert await run is Exit.STOPPED
     assert env.kinds() == ["turn_interrupted", "turn_failed"]
     assert load_state(env.state_file).open_turn is None
+
+
+async def test_give_up_after_crash_still_writes_resume_limit(
+    make_env: Callable[[PersistedState], Env],
+) -> None:
+    env = make_env(open_state(count=3))
+    # Прошлый процесс упал посреди хода: crash() оставил в журнале turn_failed{fatal}.
+    env.log.append(EventKind.TURN_FAILED, "t1", {"reason": "sdk_crashed", "fatal": True})
+    client = FakeClient([])
+    run = asyncio.create_task(env.session.run(client, GiveUp("t1")))
+    await env.wait_kind(EventKind.TURN_FAILED)
+    assert env.kinds() == ["turn_failed", "turn_interrupted", "turn_failed"]
+    assert env.events_of("turn_failed")[-1]["payload"] == {"reason": "resume_limit"}
+    put(env.inbox_dir, {"id": "c9", "kind": "stop"})
+    assert await run is Exit.STOPPED
+
+
+async def test_crash_on_enospc_is_recorded_as_fatal_disk_full(env: Env) -> None:
+    assert env.session.crash(OSError(errno.ENOSPC, "No space left on device")) is Exit.CRASHED
+    assert env.events_of("turn_failed")[0]["payload"] == {"reason": "disk_full", "fatal": True}
 
 
 async def test_redelivered_command_is_not_run_twice(

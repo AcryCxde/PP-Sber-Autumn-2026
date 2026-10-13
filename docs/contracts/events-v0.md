@@ -54,6 +54,7 @@
 `message.created` нет в минимальном списке 03-team-spec. Он добавлен, потому что без него не показать ни ответ фасилитатора, ни сообщения ролей (2.1 §2, 2.5 §2).
 
 Коды `run.failed`: `result_error`, `checkpoint_failed`, `resume_limit` (`retryable: true`), `disk_full` (`false`, нужен оператор), `artifact_save_failed` (gateway).
+`run.failed{disk_full}` публикуется только при отказе commit; падение процесса по ENOSPC — `progress.updated{interrupted}`, как любое падение (§4.3).
 Коды `run.outcome_unknown`: `heartbeat_lost`, `artifact_save_unknown` (gateway), `state_corrupt` (runner).
 
 `progress.updated` не содержит процентов и ETA: runner их не знает, а выдумывать их запрещает 2.5 §9. Этап и роли — всё, что есть честного.

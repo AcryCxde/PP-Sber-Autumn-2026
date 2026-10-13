@@ -66,6 +66,24 @@ def test_kinds_of_turn_without_log_is_empty(tmp_path: Path) -> None:
     assert kinds_of_turn(tmp_path / "missing.jsonl", "t1") == frozenset()
 
 
+def test_kinds_of_turn_ignores_fatal_turn_failed(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    rows = [
+        {"seq": 1, "turn_id": "t1", "kind": "turn_failed",
+         "payload": {"reason": "sdk_crashed", "fatal": True}},
+        {"seq": 2, "turn_id": "t1", "kind": "turn_interrupted", "payload": {}},
+    ]  # fmt: skip
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    assert kinds_of_turn(path, "t1") == {EventKind.TURN_INTERRUPTED}
+
+
+def test_kinds_of_turn_counts_final_turn_failed(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    row = {"seq": 1, "turn_id": "t1", "kind": "turn_failed", "payload": {"reason": "resume_limit"}}
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    assert kinds_of_turn(path, "t1") == {EventKind.TURN_FAILED}
+
+
 def test_recovery_event_kinds_are_serialised() -> None:
     assert {EventKind.CHECKPOINT, EventKind.TURN_INTERRUPTED, EventKind.TURN_RESUMED} == {
         EventKind("checkpoint"),
