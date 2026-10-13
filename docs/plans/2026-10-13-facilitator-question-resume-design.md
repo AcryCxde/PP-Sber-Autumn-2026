@@ -1,6 +1,6 @@
 # 2.4. Facilitator question + resume — дизайн
 
-Статус: **на утверждении**, 2026-10-13. Задача YouGile «S2 Runner: facilitator question + resume», срок 15.10.2026 10:00. Смежные: «Регистрация сессии в gateway», «Первый реальный E2E Run». Ветка `facilitator-question-resume`.
+Статус: **утверждён 2026-10-13**; задачи плана 0–11 выполнены (клиент проверен фейковым gateway), итоговая проверка — в отчёте исполнителя. Задача YouGile «S2 Runner: facilitator question + resume», срок 15.10.2026 10:00. Смежные: «Регистрация сессии в gateway», «Первый реальный E2E Run». Ветка `facilitator-question-resume`.
 Основа: [дизайн runner](2026-09-25-runner-design.md), [дизайн восстановления](2026-10-01-runner-recovery-design.md), [events v0](../contracts/events-v0.md), [протокол](../2.4/protocol.md).
 Текст задачи взят из постановки: YouGile MCP в этой сессии не подключился (нет открытой вкладки), саму карточку я не читал.
 

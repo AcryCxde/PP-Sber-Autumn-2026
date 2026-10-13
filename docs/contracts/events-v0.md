@@ -127,10 +127,26 @@
 3. **Арина:** `artifact_id` от runner стабилен (`commit_sha` + путь). Подходит ли он как `artifact_id` ADR-001, или 2.3 выдаёт свой, а `artifact.saved` связывает оба?
 4. **Катя:** хватает ли `role_id` (`subagent_type`) для отображения, или нужен каталог ролей с `display_name` (ADR-001 `actor`)?
 5. **Все:** нужен ли лимит длины `text` в `message.created` (большой ответ модели)?
-6. Регистрация runner в gateway и передача `run_id` от gateway в команду — задача PPS-114. До неё `run_id` = `turn_id` runner.
+6. ~~Передача `run_id` от gateway~~ решено: `run_id` = `turn_id` = `id` команды `message` (формат `[0-9A-Za-z_-]{1,64}`). Gateway выбирает `run_id` при создании запуска и шлёт его как `id`. Остаётся согласовать с PPS-114, что регистрация не делает то же иначе.
 
 ## 10. Фактический статус и следующий результат
 
-- Готово: адаптер runner → v0, CLI, три fixture, тесты (`pytest`, `ruff`, `mypy` чистые).
-- Не сделано: согласование с владельцами; запись fixture с живого прогона (нужны Docker и cliproxy); поддержка v0 в gateway #4 и в web 2.5.
+- Готово: адаптер runner → v0, CLI, три fixture, тесты (`pytest`, `ruff`, `mypy` чистые); WebSocket-клиент runner (`hello`/`welcome`, досылка журнала, heartbeat, команды, `command_ack`), `run_id` = `id` команды, повторный вопрос после рестарта. Проверено фейковым gateway (`runner/tests/test_gateway_client.py`, e2e `runner/evals/test_question.py` с живым Claude в контейнере).
+- Не сделано: серверная часть gateway (раздел 11), проверка настоящим gateway; согласование с владельцами; запись fixture с живого прогона (нужны Docker и cliproxy); поддержка v0 в gateway #4 и в web 2.5.
 - Следующий проверяемый результат (14.10, «S2 Первый реальный E2E Run»): живой запуск runner проходит через gateway и даёт в web ту же последовательность типов, что `happy.v0.jsonl`.
+
+## 11. Что требуется от gateway (Дмитрий)
+
+Сторона runner готова и проверена фейковым gateway. Чтобы вопрос и ответ прошли через настоящий gateway, нужно на его стороне:
+
+1. **Эндпоинт для runner.** WebSocket с проверкой `Authorization: Bearer <gateway_token>` (токен на проект). Формат кадров — `docs/2.4/protocol.md`.
+2. **`hello` и `welcome`.** На `hello{project_id, last_seq}` отвечать `welcome{acked_seq}`; `acked_seq` — наибольший `journal_seq`, который gateway уже записал для проекта (0, если ничего). Хранить его надо по проекту.
+3. **Приём `event`.** Тело — публичное событие v0 без `seq` и `schema`. Дедуплицировать по `event_id`, присваивать `seq` ленты при записи (раздел 4), добавлять `schema: "events.v0"` вместо `schema_version`. Один `journal_seq` может нести несколько событий.
+4. **Статус `waiting_for_input`.** Включить его в число активных запусков (сейчас активны `pending`/`running`, и частичный уникальный индекс «один активный запуск на диалог» пропустил бы второй запуск во время вопроса). Ставить по `facilitator.question`, снимать по `user.answer.accepted`, по `progress.updated` и по новому `facilitator.question`.
+5. **Проекция публичных типов.** Сейчас `facilitator.question`, `user.answer.accepted`, `progress.updated`, `artifact.created`, `role.*` превращаются в `legacy.redacted`. Они входят в контракт v0 и должны проходить.
+6. **Создание запуска.** `command{kind: "message", id: <run_id>, text}`, где `run_id` выбирает gateway, формат `[0-9A-Za-z_-]{1,64}`. Ответ `command_ack`: `accepted` либо `rejected{reason}`.
+7. **Ответ пользователя.** Команда клиента «ответ» превращается в `command{kind: "fork_answer", id: <новый>, fork_id: <question_id>, answers: {текст вопроса: метка или свой текст}}`. Ключи должны точно совпадать с `questions[].text`; multi-select склеивается через `", "`. Разбирать `command_ack`.
+8. **Реакция на `rejected`.** `unknown_fork`: вопрос устарел (после рестарта runner спросит заново с новым `question_id`), ждать новый `facilitator.question`. `answers_mismatch`: ошибка клиента.
+9. **Heartbeat.** Приходит каждые 10 с (`phase`, `health`, `last_progress_at`). Нет heartbeat дольше 30 с: `run.outcome_unknown{heartbeat_lost}`. `phase = awaiting_answer` при `health = ok` — штатное ожидание ответа, не зависание. Ожидание ответа живым прогоном проверено до 15 минут; при `state_corrupt` runner завершается (выход 65) до подключения клиента, `hello` и heartbeat не приходят, остаётся только `heartbeat_lost`.
+10. **`run.completed` держать до `artifact.saved`** (правило 2 раздела 4).
+11. **Открыто.** Канал передачи содержимого артефактов из тома проекта в хранилище 2.3 не определён: `artifact.created` несёт только метаданные. Без него путь до download не замыкается.

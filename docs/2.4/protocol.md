@@ -3,26 +3,27 @@
 Публичная лента для web — `docs/contracts/events-v0.md`; события ниже — внутренний журнал runner, их переводит `ctrunner.v0`.
 
 Контракт для направления 2.1. Версия конверта `v: 1`.
-Пометка **этап 2** — сообщение описано, но в runner этапа 1 не реализовано.
-Исключение: события восстановления (`checkpoint`, `turn_interrupted`, `turn_resumed`, новые `reason` у `turn_failed`) runner уже пишет в `events.jsonl`; по WebSocket их отправит клиент этапа 2.
+WebSocket-клиент runner реализован (`runner/src/ctrunner/gateway.py`) и проверен фейковым gateway (`runner/evals/fake_gateway.py`, e2e `runner/evals/test_question.py`). Настоящий gateway требует серверной части: список требований — `docs/contracts/events-v0.md`, раздел 11.
+Столбец «Этап» в таблице событий журнала: события с пометкой 2 (`checkpoint`, `turn_interrupted`, `turn_resumed`, новые `reason` у `turn_failed`) runner уже пишет и отправляет; пометка означает версию протокола, а не отсутствие реализации. Дедупликацию и присвоение `seq` выполняет сервер gateway.
 
 ## Транспорт
 
 - WebSocket, соединение открывает runner (у контейнера нет входящих портов). Адрес — `GATEWAY_URL`.
-- Авторизация: заголовок `Authorization: Bearer <gateway_token>`; токен — файл в `/run/secrets`.
+- Авторизация: заголовок `Authorization: Bearer <gateway_token>`; токен — файл `/run/secrets/gateway_token`. `sessions secrets init` пишет его из `GATEWAY_AUTH_TOKEN`.
+- Переподключение: при любом обрыве runner ждёт 1, 2, 4, 8, 16, 30 с (дальше 30 с) и повторяет `hello`. Недоступный gateway и неверный токен runner не останавливают.
 - Одно JSON-сообщение на кадр, UTF-8. Конверт: `{"v": 1, "type": "<тип>", ...поля}`.
 - Без `GATEWAY_URL` runner работает автономно: события пишутся только в `events.jsonl`, команды — через inbox.
 
 ## Сообщения
 
-| Направление | `type` | Поля | Этап |
-|---|---|---|---|
-| runner → gw | `hello` | `project_id`, `runner_version`, `session_id` \| null, `last_seq` | 2 |
-| gw → runner | `welcome` | `acked_seq`: runner повторяет всё, что после него | 2 |
-| runner → gw | `heartbeat` | `phase`, `health`, `last_progress_at`, `turn_id` \| null | 2 (этап 1 — `health.json`) |
-| runner → gw | `event` | `seq`, `ts`, `turn_id` \| null, `kind`, `payload` | 1 (журнал), 2 (отправка) |
-| gw → runner | `command` | `id`, `kind` и поля команды | 1 (inbox), 2 (WS) |
-| runner → gw | `command_ack` | `id`, `status`: `accepted` \| `duplicate` \| `rejected`, `reason` | 2 |
+| Направление | `type` | Поля |
+|---|---|---|
+| runner → gw | `hello` | `project_id`, `runner_version`, `session_id` \| null, `last_seq` (номер журнала runner) |
+| gw → runner | `welcome` | `acked_seq`: номер журнала runner, подтверждённый gateway; runner досылает всё после него |
+| runner → gw | `heartbeat` | `phase`, `health`, `last_progress_at`, `turn_id` (в текущей версии всегда `null`) |
+| runner → gw | `event` | `journal_seq`, `event` — публичное событие v0 без `seq` |
+| gw → runner | `command` | `id`, `kind` и поля команды |
+| runner → gw | `command_ack` | `id`, `status`: `accepted` \| `rejected`, `reason` |
 
 Значения:
 
@@ -30,7 +31,7 @@
 - `health`: `ok` | `stalled` | `crashed`. Правило — `docs/2.4/spec.md`, раздел 3.
 - `ts`, `last_progress_at` — Unix-время в секундах (float).
 
-### hello (этап 2)
+### hello
 
 ```json
 {"v": 1, "type": "hello", "project_id": "demo-a", "runner_version": "0.1.0",
@@ -39,11 +40,25 @@
 
 Отправляется после успешного preflight (конфиг, секрет, ключ проверен в cliproxy). Если секрета нет, `hello` не будет.
 
-### welcome (этап 2)
+### welcome
 
 ```json
 {"v": 1, "type": "welcome", "acked_seq": 37}
 ```
+
+`acked_seq` и `hello.last_seq` — номера строк журнала runner (`journal_seq`), не `seq` ленты v0 (его присваивает gateway, `events-v0.md` §4). После `welcome` runner заново переводит журнал в события v0 с первой строки и отправляет только строки с `journal_seq > acked_seq`: перевод зависит от предыдущих строк, поэтому читается весь журнал.
+
+### event
+
+```json
+{"v": 1, "type": "event", "journal_seq": 9,
+ "event": {"event_id": "…", "project_id": "demo-a", "run_id": "7c2e4a90b1d34f6e8a5b0c9d1e2f3a4b",
+           "occurred_at": "2026-10-13T07:16:49Z", "type": "facilitator.question",
+           "payload": {"question_id": "243b1ce9…", "questions": [{"text": "Какой формат?", "header": "Формат",
+             "options": [{"label": "md", "description": "…"}], "multi_select": false, "allow_custom": true}]}}}
+```
+
+Событие — публичный контракт `docs/contracts/events-v0.md` (`schema` и `seq` добавляет gateway). Тело вложено в поле `event`, потому что `type` конверта и `type` события иначе совпали бы по имени. Одна строка журнала может дать несколько событий с одним `journal_seq`; дубли после переподключения схлопываются по `event_id`.
 
 ### heartbeat
 
@@ -54,7 +69,7 @@
  "last_progress_at": 1790336519.43, "turn_id": "4448abd17ad543b9aebb0eaea81df2f7"}
 ```
 
-На этапе 1 то же содержимое (без `v`, `type`, `turn_id`, с `written_at`) лежит в `/run/ctrunner/health.json`.
+Содержимое берётся из `/run/ctrunner/health.json` (там же `written_at`). `turn_id` в текущей версии `null`.
 
 ### command
 
@@ -65,19 +80,25 @@
 ```
 
 - `message` во время хода ставится в очередь и стартует после его завершения.
-- `fork_answer.answers`: текст вопроса → выбранная метка (или свой ответ).
+- `message.id` становится `turn_id` и `run_id` хода: gateway выбирает `run_id` сам и передаёт его как `id` команды. Формат `id` любой команды: `[0-9A-Za-z_-]{1,64}` (он попадает в trailer `Turn-Id` git); иначе `rejected`.
+- `fork_answer.fork_id` — `question_id` из `facilitator.question`. `fork_answer.answers`: ключ — точный текст вопроса, значение — выбранная метка или свой текст; множественный выбор склеивается через `", "` (`"Итоги, Риски"`, проверено живым прогоном).
 - `id` — ключ идемпотентности: повтор с тем же `id` не исполняется.
-- Этап 1: команда — это JSON-файл `/workspace/.runner/inbox/<ns>-<uuid>.json` без `v`/`type`;
+- Runner проверяет `fork_answer` до постановки в inbox: развилка должна быть открыта в этом процессе, набор ключей `answers` должен совпасть с текстами её вопросов. Иначе `rejected` и ничего не пишется.
+- Транспорт WebSocket кладёт принятую команду в тот же inbox. Файловый путь: команда — это JSON-файл `/workspace/.runner/inbox/<ns>-<uuid>.json` без `v`/`type`;
   `ctrunner-inbox` (или `sessions send|answer`) пишет его атомарно (tmp + rename).
   `ctrunner-inbox fork-answer <fork_id> <label>...` сопоставляет метки вопросам развилки по порядку из журнала.
 
-### command_ack (этап 2)
+### command_ack
 
 ```json
 {"v": 1, "type": "command_ack", "id": "c1", "status": "accepted"}
-{"v": 1, "type": "command_ack", "id": "c1", "status": "duplicate"}
+{"v": 1, "type": "command_ack", "id": "a1", "status": "rejected", "reason": "unknown_fork"}
 {"v": 1, "type": "command_ack", "id": "c9", "status": "rejected", "reason": "unknown command kind: 'bogus'"}
 ```
+
+- `accepted`: команда записана в inbox (durable) до ответа.
+- `rejected`, `reason`: `unknown_fork` (развилки нет или она закрыта: например, после рестарта runner спрашивает заново с новым `question_id`), `answers_mismatch` (ключи `answers` не совпадают с вопросами), либо текст ошибки разбора. Неразобранная команда ничего не меняет; `id` в ответе — `null`, если его не было в кадре.
+- `duplicate` не различается: дубль с уже обработанным `id` отсекает inbox, ack приходит `accepted`.
 
 ## События
 
@@ -140,13 +161,14 @@
 
 - `seq` монотонный, хранится на диске: событие сначала пишется в `events.jsonl` (`fsync`), потом отправляется.
   Недописанная последняя строка после обрыва отрезается при старте; её `seq` используется заново.
-- События — at-least-once: после переподключения runner повторяет всё после `welcome.acked_seq`;
-  гейтвей убирает дубли по `seq` (**этап 2**).
+- События — at-least-once: после переподключения runner повторяет всё с `journal_seq > welcome.acked_seq`;
+  gateway убирает дубли по `event_id` и присваивает `seq` ленты.
 - Команды идемпотентны по `id`. Этап 1: inbox помнит обработанные `id` (каталог `processed/`) и между рестартами.
   Для `message` доставка — at-least-once до `ack`, исполнение идемпотентно по `id`: команда сначала записывается в `state.json`
   (очередь или открытый ход), и только затем файл переносится в `processed/`. Падение между записью и переносом
   не теряет команду и не исполняет её дважды: при старте она подтверждается без повторного исполнения.
   `fork_answer` и `stop` подтверждаются до исполнения (at-most-once): развилку рестарт всё равно прерывает.
+  Вопрос, висевший при падении, после рестарта runner задаёт заново (подсказка в промпте автопродолжения): у нового вопроса новый `question_id`, ответ на старый получает `rejected: unknown_fork`.
 - Порядок записи в конце хода: commit → `checkpoint` → `turn_completed` → `state.json` (события раньше state, чтобы падение
   между ними не потеряло их навсегда); в начале хода: `state.json` → `query`.
 - Порядок событий внутри сессии совпадает с порядком `seq`.
