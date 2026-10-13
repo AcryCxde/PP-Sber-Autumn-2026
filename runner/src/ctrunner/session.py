@@ -38,7 +38,14 @@ from ctrunner.guard import Allow, Deny, Policy, Verdict, check
 from ctrunner.health import write_health
 from ctrunner.inbox import Inbox
 from ctrunner.liveness import Health, Phase, assess
-from ctrunner.protocol import EventKind, ForkAnswerCmd, JsonValue, MessageCmd, StopCmd
+from ctrunner.protocol import (
+    EventKind,
+    ForkAnswerCmd,
+    JsonValue,
+    MessageCmd,
+    StopCmd,
+    question_texts,
+)
 from ctrunner.recovery import (
     CLEAN,
     Clean,
@@ -141,6 +148,7 @@ class Session:
         )
         self._state: TurnState = Idle(queue=state.queue)
         self._forks: dict[str, asyncio.Future[dict[str, str]]] = {}
+        self._fork_questions: dict[str, tuple[str, ...]] = {}
         self._progress_mono = time.monotonic()
         self._progress_wall = time.time()
         self._stop = asyncio.Event()
@@ -368,6 +376,13 @@ class Session:
             self._save_state(snapshot)
             self._saved = snapshot
 
+    def fork_questions(self, fork_id: str) -> tuple[str, ...] | None:
+        """Тексты вопросов открытой развилки; `None` — такой развилки нет или она закрыта."""
+        fork = self._forks.get(fork_id)
+        if fork is None or fork.done():
+            return None
+        return self._fork_questions.get(fork_id)
+
     def _answer(self, cmd: ForkAnswerCmd) -> None:
         fork = self._forks.get(cmd.fork_id)
         if fork is None or fork.done():
@@ -420,14 +435,16 @@ class Session:
             return PermissionResultAllow()
         fork_id = _new_id()
         fork: asyncio.Future[dict[str, str]] = asyncio.get_running_loop().create_future()
+        questions = to_json(tool_input.get("questions", []))
         self._forks[fork_id] = fork
+        self._fork_questions[fork_id] = question_texts(questions)  # до записи: ответ не опередит
         self._fork_opened()
         try:
-            questions = to_json(tool_input.get("questions", []))
             self._record(EventKind.FORK_QUESTION, {"fork_id": fork_id, "questions": questions})
             answers = await fork  # без таймаута: человек думает, это не зависание
         finally:
             del self._forks[fork_id]
+            del self._fork_questions[fork_id]
             self._fork_closed()
         self._touch()
         answered: dict[str, JsonValue] = {"fork_id": fork_id, "answers": {**answers}}

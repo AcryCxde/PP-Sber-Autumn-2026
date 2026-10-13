@@ -674,3 +674,31 @@ async def test_restart_during_question_reasks_and_finishes_same_turn(
         "fork_question", "fork_answered", "sdk", "checkpoint", "turn_completed",
     ]  # fmt: skip
     assert env.commit.turns == ["t1"]
+
+
+async def test_fork_questions_visible_only_while_fork_is_open(env: Env) -> None:
+    client = FakeClient([])
+    put(env.inbox_dir, {"id": "c1", "kind": "message", "text": "go"})
+    run = asyncio.create_task(env.session.run(client))
+    await env.wait_kind(EventKind.TURN_STARTED)
+    questions = [{"question": "Q1?"}, {"question": "Q2?"}]
+    ask = asyncio.create_task(
+        env.session.can_use_tool(
+            "AskUserQuestion", {"questions": questions}, ToolPermissionContext()
+        )
+    )
+    await env.wait_kind(EventKind.FORK_QUESTION)
+    payload = env.events_of("fork_question")[0]["payload"]
+    assert isinstance(payload, dict)
+    fork_id = str(payload["fork_id"])
+    assert env.session.fork_questions(fork_id) == ("Q1?", "Q2?")
+    assert env.session.fork_questions("nope") is None
+    put(
+        env.inbox_dir,
+        {"id": "a1", "kind": "fork_answer", "fork_id": fork_id,
+         "answers": {"Q1?": "a", "Q2?": "b"}},
+    )  # fmt: skip
+    await ask
+    assert env.session.fork_questions(fork_id) is None
+    put(env.inbox_dir, {"id": "c2", "kind": "stop"})
+    assert await run is Exit.STOPPED
