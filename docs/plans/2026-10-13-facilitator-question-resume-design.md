@@ -97,7 +97,7 @@ R2 не отбрасываю навсегда: он надстраивается
 
 | Файл | Изменение |
 |---|---|
-| `eventlog.py` | `kinds_of_turn` игнорирует `turn_failed{fatal}` (дефект а). Новая `open_forks(path, turn_id) -> tuple[OpenFork, ...]`: свёртка строк хода — `fork_question` добавляет, `fork_answered` убирает, `turn_interrupted` очищает набор. На момент восстановления это ровно вопросы, висевшие в момент падения |
+| `eventlog.py` | `kinds_of_turn` игнорирует `turn_failed{fatal}` (дефект а). Новая `open_forks(path, turn_id) -> tuple[OpenFork, ...]`: свёртка строк хода — `fork_question` добавляет, `fork_answered` убирает, `turn_interrupted` набор не очищает: вопрос переживает любое число рестартов подряд, пока модель не задаст новый `fork_question` (он вытесняет открытые до прерывания) или не придёт `fork_answered` |
 | `recovery.py` | `continuation_prompt(step, asked)` добавляет блок «Ты задавал пользователю вопросы, ответа нет: … Задай их заново через AskUserQuestion до продолжения работы» (оба режима, `resume` и `fresh`) |
 | `session.py` | в конструктор `open_forks: Callable[[str], Sequence[OpenFork]]` (как `turn_kinds`); в `Continue` подсказка берётся из него. Реестр `_fork_questions: dict[str, tuple[str, ...]]` рядом с `_forks` и публичные `fork_questions(fork_id) -> tuple[str, ...] | None`. `turn_id := cmd.id` вместо `_new_id()` на `session.py:265,319` |
 | `protocol.py` | `parse_command` проверяет `id` по `[0-9A-Za-z_-]{1,64}`: он теперь попадает в trailer `Turn-Id` и в `run_id`, перевод строки в нём ломает `read_head` |

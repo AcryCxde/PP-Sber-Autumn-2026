@@ -236,7 +236,7 @@ class Session:
                 self._save()  # state закрывается после событий
                 await self._start_queued(client)
             case Continue() as step:
-                asked = self._open_questions(step.turn_id)  # до turn_interrupted: он обнуляет набор
+                asked = self._open_questions(step.turn_id)
                 self._touch()
                 self._resumed = (step.turn_id, step.attempt)
                 self._state = Working(step.turn_id, step.cmd, frozenset(), 0, self._state.queue)

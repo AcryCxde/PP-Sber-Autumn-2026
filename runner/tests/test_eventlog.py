@@ -114,17 +114,65 @@ def test_open_forks_returns_unanswered_questions(tmp_path: Path) -> None:
     assert open_questions(path, "t1") == ("Разделы?",)
 
 
-def test_turn_interrupted_clears_forks_already_handled_by_previous_recovery(
-    tmp_path: Path,
-) -> None:
+def interrupted(seq: int) -> dict[str, object]:
+    return {"seq": seq, "turn_id": "t1", "kind": "turn_interrupted", "payload": {}}
+
+
+def test_new_question_after_interrupt_supersedes_forks_from_before_it(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     write_rows(path, [
         question(1, "f1", "Формат?"),
-        {"seq": 2, "turn_id": "t1", "kind": "turn_interrupted", "payload": {}},
+        interrupted(2),
         question(3, "f2", "Формат?"),
     ])  # fmt: skip
     assert [f.fork_id for f in open_forks(path, "t1")] == ["f2"]
     assert open_questions(path, "t1") == ("Формат?",)
+
+
+def test_unanswered_question_survives_consecutive_interrupts(tmp_path: Path) -> None:
+    """Рестарт 1 подставил вопрос в промпт, рестарт 2 случился до того, как модель переспросила."""
+    path = tmp_path / "events.jsonl"
+    write_rows(path, [
+        question(1, "f1", "Формат?"),
+        {"seq": 2, "turn_id": "t1", "kind": "turn_failed",
+         "payload": {"reason": "sdk_crashed", "fatal": True}},
+        interrupted(3),
+        {"seq": 4, "turn_id": "t1", "kind": "turn_resumed", "payload": {}},
+        {"seq": 5, "turn_id": "t1", "kind": "turn_failed",
+         "payload": {"reason": "sdk_crashed", "fatal": True}},
+        interrupted(6),
+        {"seq": 7, "turn_id": "t1", "kind": "turn_resumed", "payload": {}},
+        {"seq": 8, "turn_id": "t1", "kind": "turn_failed",
+         "payload": {"reason": "sdk_crashed", "fatal": True}},
+    ])  # fmt: skip
+    assert [f.fork_id for f in open_forks(path, "t1")] == ["f1"]
+    assert open_questions(path, "t1") == ("Формат?",)
+
+
+def test_answer_to_old_fork_closes_it_after_interrupts(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    write_rows(path, [
+        question(1, "f1", "Формат?"),
+        interrupted(2),
+        interrupted(3),
+        {"seq": 4, "turn_id": "t1", "kind": "fork_answered",
+         "payload": {"fork_id": "f1", "answers": {"Формат?": "md"}}},
+    ])  # fmt: skip
+    assert open_forks(path, "t1") == ()
+
+
+def test_re_asked_question_answered_leaves_nothing_open(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    write_rows(path, [
+        question(1, "f1", "Формат?"),
+        interrupted(2),
+        interrupted(3),
+        question(4, "f2", "Формат?"),
+        {"seq": 5, "turn_id": "t1", "kind": "fork_answered",
+         "payload": {"fork_id": "f2", "answers": {"Формат?": "md"}}},
+        interrupted(6),
+    ])  # fmt: skip
+    assert open_forks(path, "t1") == ()
 
 
 def test_open_forks_without_log_is_empty(tmp_path: Path) -> None:
