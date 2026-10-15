@@ -408,6 +408,11 @@ def _load_object(name: str, text: str) -> tuple[dict[str, JsonValue] | None, Fou
     return value, []
 
 
+def load_json_object(name: str, text: str) -> tuple[dict[str, JsonValue] | None, list[Violation]]:
+    """Строгий разбор JSON-объекта (без дублей ключей и NaN) — тем же кодом, что у валидатора."""
+    return _load_object(name, text)
+
+
 def _nonempty_str(value: JsonValue) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
@@ -486,6 +491,14 @@ def _limitations_text(value: JsonValue) -> str:
     if isinstance(value, list):
         return "\n".join(i for i in value if isinstance(i, str))
     return ""
+
+
+def expected_zip_name(meta: Mapping[str, JsonValue]) -> str | None:
+    """Имя ZIP по metadata или None, если поля имени не строки допустимого вида."""
+    parts = [meta.get(k) for k in ("project_id", "task_id", "run_id", "phase", "build_version")]
+    if not all(isinstance(p, str) and _ID.fullmatch(p) for p in parts) or parts[3] not in PHASES:
+        return None
+    return "coreteams_" + "_".join(str(p) for p in parts) + ".zip"
 
 
 def _check_zip_name(name: str, meta: Mapping[str, JsonValue]) -> Found:
