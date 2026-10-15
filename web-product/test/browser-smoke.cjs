@@ -189,6 +189,41 @@ async function prepare(page, title, withGuide = true) {
         .getByRole("button", { name: "Отметить помощь", exact: true })
         .click();
       await page
+        .getByLabel("Действие привычного пути", { exact: true })
+        .selectOption("find");
+      await page
+        .getByLabel("Инструмент привычного пути", { exact: true })
+        .selectOption("search");
+      await page
+        .getByRole("button", {
+          name: "Начать шаг привычного пути",
+          exact: true,
+        })
+        .click();
+      assert(
+        await page
+          .getByRole("button", {
+            name: "Результат baseline сохранён",
+            exact: true,
+          })
+          .isDisabled(),
+      );
+      await page
+        .getByLabel("Затруднение на шаге", { exact: true })
+        .selectOption("sources");
+      await page
+        .getByLabel("Итог шага", { exact: true })
+        .selectOption("sources");
+      await page
+        .getByRole("button", {
+          name: "Завершить шаг привычного пути",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByLabel("Формат результата привычного способа", { exact: true })
+        .selectOption("document");
+      await page
         .getByRole("button", {
           name: "Результат baseline сохранён",
           exact: true,
@@ -208,6 +243,30 @@ async function prepare(page, title, withGuide = true) {
       );
       assert.equal(baseline.outcome, "completed");
       assert.equal(baseline.ratings.usefulness, 3);
+      assert.equal(baseline.baselineSteps.length, 1);
+      assert.equal(baseline.baselineSteps[0].barrier, "sources");
+      assert.equal(baseline.resultKind, "document");
+      await page.getByText(/^Сохранённые сессии и сравнение/).click();
+      const stepsDownload = page.waitForEvent("download");
+      await page
+        .getByRole("button", {
+          name: "Выгрузить шаги привычного пути (CSV)",
+          exact: true,
+        })
+        .click();
+      const stepsFile = await stepsDownload;
+      await stepsFile.saveAs(path.join(OUT, `baseline-${name}-steps.csv`));
+      const stepsText = fs.readFileSync(
+        path.join(OUT, `baseline-${name}-steps.csv`),
+        "utf8",
+      );
+      assert(stepsText.includes('"action"'));
+      assert(stepsText.includes('"find"'));
+      assert(stepsText.includes('"sources"'));
+      await page.screenshot({
+        path: path.join(OUT, `baseline-${name}-journal.png`),
+        fullPage: true,
+      });
       assert.equal(
         baseline.events.filter((e) => e.name === "help_observed").length,
         1,
@@ -480,7 +539,7 @@ async function prepare(page, title, withGuide = true) {
     await page
       .getByRole("button", { name: "Завершить замер", exact: true })
       .click();
-    await page.getByText(/Сохранённые сессии и сравнение/).click();
+    await page.getByText(/^Сохранённые сессии и сравнение/).click();
     const jsonDownload = page.waitForEvent("download");
     await page
       .getByRole("button", { name: "Выгрузить JSON замеров", exact: true })

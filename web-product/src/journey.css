@@ -108,6 +108,33 @@
   padding: 16px;
   font-size: 13px;
 }
+.journey-instructions {
+  border-left: 3px solid #b4d088;
+  padding: 4px 16px;
+  margin: 16px 0 24px;
+  background: #f7f8f4;
+}
+.journey-instructions h3 {
+  margin: 12px 0;
+}
+.baseline-journal {
+  padding: 20px;
+  margin: 20px 0;
+  background: #f7f8f4;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.baseline-steps {
+  padding-left: 22px;
+}
+.baseline-steps li {
+  padding: 10px 0;
+}
+.baseline-steps span {
+  display: block;
+  font-size: 13px;
+  margin-top: 5px;
+}
 @media (max-width: 620px) {
   .journey-panel {
     padding: 16px;

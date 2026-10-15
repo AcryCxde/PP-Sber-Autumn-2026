@@ -193,6 +193,55 @@ test("actual usage preserves unknown versus zero and partial snapshot fields", (
   assert.equal(values.cost, 0);
   assert.equal(values.compute_seconds, null);
 });
+
+test("baseline has a real structured journal, persisted steps, barriers and result; not external surveillance", () => {
+  const f = fixture(),
+    r = f.create();
+  r.start(input());
+  assert.equal(r.saveBaselineResult("document"), false);
+  assert(r.beginBaselineStep("find", "search"));
+  f.advance(5);
+  assert.equal(r.beginBaselineStep("read", "ai"), false);
+  assert.equal(r.saveBaselineResult("document"), false);
+  r.mode("wait");
+  f.advance(3);
+  assert(r.endBaselineStep("sources", "sources"));
+  assert(r.beginBaselineStep("synthesize", "documents"));
+  f.advance(4);
+  assert(r.endBaselineStep("none", "result"));
+  assert(r.saveBaselineResult("document"));
+  assert.equal(r.beginBaselineStep("find", "search"), false);
+  r.finish("completed", {});
+  const recovered = f.create().getSnapshot().sessions;
+  assert.equal(recovered[0].baselineSteps!.length, 2);
+  assert.equal(summary(recovered[0]).baseline_barriers_n, 1);
+  const exported = exportStudy(recovered);
+  assert.equal(exported.baseline_steps[0].action, "find");
+  assert.equal(exported.baseline_steps[0].active_s, 5);
+  assert.equal(exported.baseline_steps[0].wait_s, 3);
+  assert.equal(summary(recovered[0]).elapsed_to_saved_s, 12);
+});
+test("old journal remains compatible; interrupted steps stay unfinished; free text cannot leak through step schema", () => {
+  const f = fixture(),
+    r = f.create();
+  r.start(input());
+  r.beginBaselineStep("read", "ai");
+  f.advance(2);
+  r.finish("incomplete", {});
+  const data = r.getSnapshot().sessions;
+  assert.equal(data[0].baselineSteps![0].outcome, "unfinished");
+  (data[0].baselineSteps![0] as any).prompt = "SECRET";
+  assert(!JSON.stringify(exportStudy(data)).includes("SECRET"));
+  assert.equal(
+    exportStudy(data.map((s) => ({ ...s, baselineSteps: undefined })))
+      .baseline_steps.length,
+    0,
+  );
+  const g = fixture(),
+    other = g.create();
+  other.start(input("interface"));
+  assert.equal(other.beginBaselineStep("read", "ai"), false);
+});
 test("storage exhaustion stops recording without changing the product or last saved data", () => {
   const f = fixture(),
     r = f.create();

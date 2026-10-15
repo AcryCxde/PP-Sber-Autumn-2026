@@ -1,9 +1,11 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import "./journey.css";
+import { BaselineJournal } from "./BaselineJournal.tsx";
 import {
   JourneyRecorder,
   compare,
   csv,
+  csvBaselineSteps,
   exportStudy,
   summary,
   type Mode,
@@ -31,7 +33,7 @@ const RATING_LABELS = {
 };
 const seconds = (n: number | null | undefined) =>
   n === null || n === undefined ? "Не измерено" : `${n.toFixed(1)} с`;
-function download(content: string, extension: "json" | "csv") {
+function download(content: string, extension: "json" | "csv", suffix = "") {
   const url = URL.createObjectURL(
     new Blob([content], {
       type:
@@ -40,7 +42,7 @@ function download(content: string, extension: "json" | "csv") {
   );
   const link = document.createElement("a");
   link.href = url;
-  link.download = `coreteams-study-${new Date().toISOString().slice(0, 10)}.${extension}`;
+  link.download = `coreteams-study${suffix}-${new Date().toISOString().slice(0, 10)}.${extension}`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -177,6 +179,43 @@ export function JourneyPanel({
       {open ? (
         <div id="journey-panel" className="journey-panel">
           <h2>Замер пользовательского пути</h2>
+          <div className="journey-instructions">
+            <h3>Какой режим выбрать?</h3>
+            <p>
+              <strong>Привычный способ.</strong> Вы решаете реальную задачу в
+              своих инструментах. До первого действия начните замер. В журнале
+              выбирайте действие и инструмент → «Начать шаг» → выполните его →
+              отметьте затруднение и итог → завершите шаг. Повторите для
+              следующих шагов, сохраните результат привычным способом, отметьте
+              его формат, поставьте оценки и завершите замер. Можно провести без
+              подключения AI-команды.
+            </p>
+            <p>
+              <strong>Только интерфейс.</strong> Попробуйте вводные, вопросы,
+              выбор команды, этапы и версии учебного примера. Мы проверяем
+              понятность экранов, а не качество AI-результата. Этот режим не
+              доказывает экономию времени.
+            </p>
+            <p>
+              <strong>Через CoreTeams.</strong> После подключения и проверки
+              сервиса решите ту же задачу с теми же кодами. Выберите сохранённую
+              итоговую версию, оцените её и завершите замер. При сравнении
+              учитываем, что задача уже знакома.
+            </p>
+            <details>
+              <summary>Как передать замеры для анализа?</summary>
+              <p>
+                Сбор локальный: автоматически исследователю ничего не поступает.
+                После завершения откройте «Сохранённые сессии и сравнение»,
+                выгрузите JSON (полный журнал) и CSV (сводку) и передайте
+                исследователю через отдельно согласованный приватный канал. Без
+                передачи файлов исследователь не увидит замер. Не публикуйте
+                выгрузки в GitHub или общей Wiki; сначала согласуйте способ
+                передачи и срок хранения. Обе сессии связываются по одинаковым
+                кодам участника и задачи.
+              </p>
+            </details>
+          </div>
           <p>
             Только добровольное исследование. Данные сохраняются в этом
             браузере, не отправляются в аналитику или AI-команде. Коды — не имя,
@@ -333,22 +372,6 @@ export function JourneyPanel({
                 >
                   Отметить ручную доработку
                 </button>
-                {active.phase === "baseline" ? (
-                  <button
-                    className="secondary"
-                    disabled={disabled}
-                    onClick={() =>
-                      recorder.record(
-                        "baseline_result_saved",
-                        {},
-                        "baseline-save",
-                        true,
-                      )
-                    }
-                  >
-                    Результат baseline сохранён
-                  </button>
-                ) : null}
                 {active.phase === "prototype" ? (
                   <button
                     className="secondary"
@@ -375,6 +398,13 @@ export function JourneyPanel({
                   </button>
                 ) : null}
               </div>
+              {active.phase === "baseline" ? (
+                <BaselineJournal
+                  recorder={recorder}
+                  session={active}
+                  disabled={disabled}
+                />
+              ) : null}
               <p>
                 Отмечено: помощь {summary(active).help_requests_n}; затруднения{" "}
                 {summary(active).errors_n}; доработки {summary(active).rework_n}
@@ -571,6 +601,23 @@ export function JourneyPanel({
                     }}
                   >
                     Выгрузить CSV замеров
+                  </button>
+                  <button
+                    className="secondary"
+                    disabled={
+                      disabled ||
+                      !state.sessions.some((s) => s.baselineSteps?.length)
+                    }
+                    onClick={() => {
+                      recorder.checkpoint();
+                      download(
+                        csvBaselineSteps(recorder.getSnapshot().sessions),
+                        "csv",
+                        "-baseline-steps",
+                      );
+                    }}
+                  >
+                    Выгрузить шаги привычного пути (CSV)
                   </button>
                 </div>
               </>

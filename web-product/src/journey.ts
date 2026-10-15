@@ -1,4 +1,14 @@
 // Local, opt-in study data. Never pass this record to the product API.
+import {
+  BASELINE_ACTIONS,
+  BASELINE_TOOLS,
+  BASELINE_BARRIERS,
+  BASELINE_OUTCOMES,
+  RESULT_KINDS,
+  readBaselineSteps,
+  type BaselineStep,
+  type ResultKind,
+} from "./baseline.ts";
 export const JOURNEY_KEY = "coreteams-journey-study:v1";
 export const CONSENT_VERSION = "journey-local-v1";
 export type Phase = "baseline" | "prototype" | "interface";
@@ -41,6 +51,8 @@ export const EVENT_NAMES = [
   "error_observed",
   "rework_observed",
   "baseline_result_saved",
+  "baseline_step_started",
+  "baseline_step_finished",
   "task_result_selected",
 ] as const;
 export type EventName = (typeof EVENT_NAMES)[number];
@@ -93,6 +105,8 @@ export type Session = {
   ratings: Ratings;
   segments: Segment[];
   events: StudyEvent[];
+  baselineSteps?: BaselineStep[];
+  resultKind?: ResultKind;
 };
 type StoragePort = Pick<Storage, "getItem" | "setItem">;
 export type StudyState = { sessions: Session[]; issue: string };
@@ -202,6 +216,14 @@ function read(raw: string | null): Session[] {
         ...(e.dedupe ? { dedupe: e.dedupe } : {}),
       };
     });
+    if (
+      s.resultKind !== undefined &&
+      !Object.hasOwn(RESULT_KINDS, s.resultKind)
+    )
+      throw Error("result kind");
+    const baselineSteps = readBaselineSteps(s.baselineSteps);
+    if (baselineSteps.length && s.phase !== "baseline")
+      throw Error("baseline phase");
     return {
       id: s.id,
       participantCode: s.participantCode,
@@ -220,6 +242,8 @@ function read(raw: string | null): Session[] {
       ratings: cleanRatings(s.ratings),
       segments,
       events,
+      baselineSteps,
+      resultKind: s.resultKind,
     };
   });
   if (
@@ -403,11 +427,77 @@ export class JourneyRecorder {
       this.append(s, name, fields, dedupe);
     });
   }
+  beginBaselineStep(
+    action: BaselineStep["action"],
+    tool: BaselineStep["tool"],
+  ) {
+    const active = this.active();
+    if (
+      active?.phase !== "baseline" ||
+      active.baselineSteps?.some((s) => !s.endedAt) ||
+      active.resultKind ||
+      !Object.hasOwn(BASELINE_ACTIONS, action) ||
+      !Object.hasOwn(BASELINE_TOOLS, tool)
+    )
+      return false;
+    return this.change((s) => {
+      tick(s, iso(this.now()));
+      s.mode = "active";
+      const step = { id: this.uuid(), action, tool, startedAt: s.cursor };
+      (s.baselineSteps ||= []).push(step);
+      this.append(s, "baseline_step_started", { step: s.baselineSteps.length });
+    });
+  }
+  endBaselineStep(
+    barrier: keyof typeof BASELINE_BARRIERS,
+    outcome: keyof typeof BASELINE_OUTCOMES,
+  ) {
+    if (
+      this.active()?.phase !== "baseline" ||
+      !this.active()?.baselineSteps?.some((s) => !s.endedAt) ||
+      !Object.hasOwn(BASELINE_BARRIERS, barrier) ||
+      !Object.hasOwn(BASELINE_OUTCOMES, outcome)
+    )
+      return false;
+    return this.change((s) => {
+      tick(s, iso(this.now()));
+      Object.assign(
+        s.baselineSteps!.find((x) => !x.endedAt)!,
+        { endedAt: s.cursor, barrier, outcome },
+      );
+      this.append(s, "baseline_step_finished", {
+        step: s.baselineSteps!.length,
+      });
+    });
+  }
+  saveBaselineResult(kind: ResultKind) {
+    const active = this.active();
+    if (
+      active?.phase !== "baseline" ||
+      !Object.hasOwn(RESULT_KINDS, kind) ||
+      active.resultKind ||
+      !active.baselineSteps?.length ||
+      active.baselineSteps.some((s) => !s.endedAt)
+    )
+      return false;
+    return this.change((s) => {
+      tick(s, iso(this.now()));
+      s.resultKind = kind;
+      this.append(s, "baseline_result_saved", {}, "baseline-save");
+    });
+  }
   finish(outcome: Session["outcome"], ratings: Ratings) {
     if (!["completed", "incomplete", "abandoned"].includes(outcome || ""))
       return false;
     return this.change((s) => {
       tick(s, iso(this.now()));
+      const unfinished = s.baselineSteps?.find((x) => !x.endedAt);
+      if (unfinished)
+        Object.assign(unfinished, {
+          endedAt: s.cursor,
+          barrier: "unknown",
+          outcome: "unfinished",
+        });
       s.open = false;
       s.endedAt = s.cursor;
       s.outcome = outcome;
@@ -459,6 +549,15 @@ export function summary(s: Session) {
     participant_code: s.participantCode,
     task_code: s.taskCode,
     phase: s.phase,
+    baseline_steps_n:
+      s.phase === "baseline" ? s.baselineSteps?.length || 0 : null,
+    baseline_barriers_n:
+      s.phase === "baseline"
+        ? s.baselineSteps?.filter(
+            (x) => x.barrier && !["none", "unknown"].includes(x.barrier),
+          ).length || 0
+        : null,
+    result_kind: s.resultKind || null,
     build_version: s.buildVersion,
     environment: s.environment,
     project_id: s.projectId || null,
@@ -586,11 +685,45 @@ export function exportStudy(
       "Client-observed timings; manual activity modes. No server analytics receipt. Repeated-task learning prevents causal attribution. Download handoff is not proof of a disk save. Counts are recorded observations, not proof none were missed.",
     sessions: safe,
     summaries: safe.map(summary),
+    baseline_steps: safe.flatMap((s) =>
+      (s.baselineSteps || []).map((step, index) => {
+        const end = step.endedAt || s.cursor;
+        const time = { active_s: 0, wait_s: 0, pause_s: 0, unobserved_s: 0 };
+        for (const segment of s.segments) {
+          const ms = Math.max(
+            0,
+            Math.min(Date.parse(end), Date.parse(segment.to)) -
+              Math.max(Date.parse(step.startedAt), Date.parse(segment.from)),
+          );
+          time[`${segment.mode}_s` as keyof typeof time] += ms / 1000;
+        }
+        return {
+          session_id: s.id,
+          participant_code: s.participantCode,
+          task_code: s.taskCode,
+          step_n: index + 1,
+          action: step.action,
+          tool: step.tool,
+          started_at: step.startedAt,
+          ended_at: step.endedAt || null,
+          barrier: step.barrier || null,
+          outcome: step.outcome || null,
+          elapsed_s: (Date.parse(end) - Date.parse(step.startedAt)) / 1000,
+          ...time,
+        };
+      }),
+    ),
     comparison: pair || null,
   };
 }
 export function csv(sessions: Session[]) {
   const rows = exportStudy(sessions).summaries;
+  return csvRows(rows);
+}
+export function csvBaselineSteps(sessions: Session[]) {
+  return csvRows(exportStudy(sessions).baseline_steps);
+}
+function csvRows(rows: Record<string, unknown>[]) {
   const keys = [...new Set(rows.flatMap((r) => Object.keys(r)))];
   const cell = (x: unknown) =>
     `"${(x === null || x === undefined ? "" : String(x)).replace(/"/g, '""')}"`;
