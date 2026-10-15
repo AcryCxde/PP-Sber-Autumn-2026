@@ -144,7 +144,10 @@ async function prepare(page, title, withGuide = true) {
   );
 }
 (async () => {
-  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const browser = await chromium.launch({
+    channel: "msedge",
+    headless: process.env.PW_HEADLESS === "true",
+  });
   try {
     for (const [name, width, height] of [
       ["Desktop", 1440, 1000],
@@ -159,6 +162,65 @@ async function prepare(page, title, withGuide = true) {
         if (r.url().includes("/api/")) apiCount++;
       });
       await prepare(page, name + " safe task");
+      assert.equal(
+        await page.evaluate(() =>
+          localStorage.getItem("coreteams-journey-study:v1"),
+        ),
+        null,
+      );
+      await page
+        .getByRole("button", { name: "Замер пути", exact: true })
+        .click();
+      await page.getByLabel("Код участника", { exact: true }).fill("U001");
+      await page.getByLabel("Код задачи", { exact: true }).fill("T001");
+      assert(
+        await page
+          .getByRole("button", { name: "Начать замер", exact: true })
+          .isDisabled(),
+      );
+      await page.getByLabel("Участник согласился", { exact: false }).check();
+      await page
+        .getByRole("button", { name: "Начать замер", exact: true })
+        .click();
+      await page.getByRole("button", { name: "Жду", exact: true }).click();
+      await page.getByRole("button", { name: "Пауза", exact: true }).click();
+      await page.getByRole("button", { name: "Работаю", exact: true }).click();
+      await page
+        .getByRole("button", { name: "Отметить помощь", exact: true })
+        .click();
+      await page
+        .getByRole("button", {
+          name: "Результат baseline сохранён",
+          exact: true,
+        })
+        .click();
+      await page.getByLabel("Полезность", { exact: true }).selectOption("3");
+      await page
+        .getByLabel("Итог задачи", { exact: true })
+        .selectOption("completed");
+      await page
+        .getByRole("button", { name: "Завершить замер", exact: true })
+        .click();
+      const baseline = await page.evaluate(
+        () =>
+          JSON.parse(localStorage.getItem("coreteams-journey-study:v1"))
+            .sessions[0],
+      );
+      assert.equal(baseline.outcome, "completed");
+      assert.equal(baseline.ratings.usefulness, 3);
+      assert.equal(
+        baseline.events.filter((e) => e.name === "help_observed").length,
+        1,
+      );
+      assert(!JSON.stringify(baseline).includes(TEXT));
+      assert(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      );
+      await page
+        .getByRole("button", { name: "Замер пути", exact: true })
+        .click();
       await page
         .getByRole("button", { name: "Запустить работу команды", exact: true })
         .click();
@@ -327,6 +389,17 @@ async function prepare(page, title, withGuide = true) {
         });
       throw Error("Unexpected request " + suffix);
     });
+    await page.goto(FIXTURE_URL);
+    await page.getByRole("button", { name: "Замер пути", exact: true }).click();
+    await page.getByLabel("Код участника", { exact: true }).fill("U002");
+    await page.getByLabel("Код задачи", { exact: true }).fill("T002");
+    await page
+      .getByLabel("Способ решения", { exact: true })
+      .selectOption("prototype");
+    await page.getByLabel("Участник согласился", { exact: false }).check();
+    await page
+      .getByRole("button", { name: "Начать замер", exact: true })
+      .click();
     await prepare(page, "Fixture product workspace", false);
     await page
       .getByRole("button", { name: "Запустить работу команды", exact: true })
@@ -393,6 +466,79 @@ async function prepare(page, title, withGuide = true) {
       .getByRole("button", { name: "Скачать ZIP версии", exact: true })
       .click();
     assert((await zipDownload).suggestedFilename().endsWith("v2.zip"));
+    await page.getByRole("button", { name: /^Замер пути/ }).click();
+    await page
+      .getByRole("button", {
+        name: "Этот артефакт — результат задачи",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByLabel("Итог задачи", { exact: true })
+      .selectOption("completed");
+    await page.getByLabel("Полезность", { exact: true }).selectOption("4");
+    await page
+      .getByRole("button", { name: "Завершить замер", exact: true })
+      .click();
+    await page.getByText(/Сохранённые сессии и сравнение/).click();
+    const jsonDownload = page.waitForEvent("download");
+    await page
+      .getByRole("button", { name: "Выгрузить JSON замеров", exact: true })
+      .click();
+    const exported = await jsonDownload;
+    await exported.saveAs(path.join(OUT, "study-fixture.json"));
+    const study = JSON.parse(
+      fs.readFileSync(path.join(OUT, "study-fixture.json"), "utf8"),
+    );
+    const session = study.sessions[0],
+      names = session.events.map((e) => e.name);
+    for (const event of [
+      "project_created",
+      "file_added",
+      "team_changed",
+      "preparation_step",
+      "workspace_entered",
+      "request_started",
+      "request_failed",
+      "run_received",
+      "clarification_shown",
+      "answer_acknowledged",
+      "result_shown",
+      "artifact_saved",
+      "artifact_accepted",
+      "message_acknowledged",
+      "text_download_handed",
+      "zip_download_handed",
+      "session_recovered",
+      "task_result_selected",
+    ])
+      assert(names.includes(event), "missing event " + event);
+    assert.equal(session.environment, "fixture");
+    assert.equal(
+      session.events.filter(
+        (e) => e.name === "artifact_saved" && e.artifactId === "a-v2",
+      ).length,
+      1,
+    );
+    assert.equal(study.summaries[0].selected_result_artifact_id, "a-v2");
+    assert.equal(study.summaries[0].input_tokens, 120);
+    assert.equal(study.summaries[0].output_tokens, 45);
+    assert.equal(study.summaries[0].failed_operations_n, 1);
+    assert(!JSON.stringify(createBody).includes("U002"));
+    assert(study.summaries[0].elapsed_to_saved_s !== null);
+    assert(study.summaries[0].unobserved_s > 0);
+    for (const secret of [
+      TEXT,
+      "Fixture answer",
+      "Fixture revision request",
+      "Synthetic test",
+    ])
+      assert(!JSON.stringify(study).includes(secret), "private content leaked");
+    const csvDownload = page.waitForEvent("download");
+    await page
+      .getByRole("button", { name: "Выгрузить CSV замеров", exact: true })
+      .click();
+    assert((await csvDownload).suggestedFilename().endsWith(".csv"));
     await page.screenshot({
       path: path.join(OUT, "fixture-versions.png"),
       fullPage: true,
@@ -416,6 +562,31 @@ async function prepare(page, title, withGuide = true) {
     );
     await corrupt.close();
     console.log("PASS corrupt drafts preserved");
+    const damagedStudy = await browser.newContext();
+    await damagedStudy.addInitScript(() =>
+      localStorage.setItem("coreteams-journey-study:v1", "invalid-study"),
+    );
+    const dp = await damagedStudy.newPage();
+    await dp.goto(DEFAULT_URL);
+    await dp.getByRole("button", { name: /^Замер пути/ }).click();
+    await dp
+      .getByRole("alert")
+      .filter({ hasText: "Исходные данные не перезаписаны" })
+      .waitFor();
+    assert.equal(
+      await dp.evaluate(() =>
+        localStorage.getItem("coreteams-journey-study:v1"),
+      ),
+      "invalid-study",
+    );
+    await dp.screenshot({
+      path: path.join(OUT, "study-storage-warning.png"),
+      fullPage: true,
+    });
+    await damagedStudy.close();
+    console.log(
+      "PASS opt-in study: desktop/mobile baseline, recovered fixture lifecycle, privacy-safe JSON/CSV, usage and corrupt journal preservation",
+    );
   } finally {
     await browser.close();
   }

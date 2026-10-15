@@ -1,5 +1,14 @@
 import { parseRun, type Run } from "./domain.ts";
+import type { EventName, Fields } from "./journey.ts";
 export class CtfApi {
+  onMetric?: (name: EventName, fields: Fields) => void;
+  private metric(name: EventName, fields: Fields) {
+    try {
+      this.onMetric?.(name, fields);
+    } catch {
+      /* Research failure must not break product requests. */
+    }
+  }
   constructor(
     public base: string,
     public enabled: boolean,
@@ -31,6 +40,9 @@ export class CtfApi {
       );
     const controller = new AbortController(),
       timer = setTimeout(() => controller.abort(), 30000);
+    const started = performance.now(),
+      requestId = key || crypto.randomUUID();
+    this.metric("request_started", { requestId });
     try {
       const response = await this.fetcher(
         `${this.base.replace(/\/$/, "")}/${route}`,
@@ -53,6 +65,11 @@ export class CtfApi {
         },
       );
       const text = await response.text();
+      this.metric("request_received", {
+        requestId,
+        durationMs: performance.now() - started,
+        status: `http_${response.status}`,
+      });
       if (!response.ok)
         throw new Error(
           response.status === 401 || response.status === 403
@@ -61,6 +78,11 @@ export class CtfApi {
         );
       return JSON.parse(text);
     } catch (e) {
+      this.metric("request_failed", {
+        requestId,
+        durationMs: performance.now() - started,
+        status: "transport_or_response",
+      });
       if (e instanceof Error && e.name === "AbortError")
         throw new Error(
           "Сервис не ответил вовремя. Повтор использует прежний ID и данные.",
@@ -107,6 +129,9 @@ export class CtfApi {
     if (!this.available) throw new Error("CTF не подключён");
     const controller = new AbortController(),
       timer = setTimeout(() => controller.abort(), 30000);
+    const started = performance.now(),
+      requestId = crypto.randomUUID();
+    this.metric("request_started", { requestId });
     try {
       const response = await this.fetcher(
         `${this.base.replace(/\/$/, "")}/${route}`,
@@ -116,6 +141,11 @@ export class CtfApi {
         throw new Error(`Не удалось скачать ZIP: ${response.status}`);
       const blob = await response.blob(),
         head = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+      this.metric("request_received", {
+        requestId,
+        durationMs: performance.now() - started,
+        status: `http_${response.status}`,
+      });
       if (
         !/application\/(zip|octet-stream)/i.test(blob.type) ||
         head[0] !== 80 ||
@@ -128,6 +158,13 @@ export class CtfApi {
       )
         throw new Error("Сервис вернул не ZIP");
       return blob;
+    } catch (e) {
+      this.metric("request_failed", {
+        requestId,
+        durationMs: performance.now() - started,
+        status: "zip_transport_or_format",
+      });
+      throw e;
     } finally {
       clearTimeout(timer);
     }

@@ -19,6 +19,10 @@ From `web-product`, Node22.12+ and pnpm11: `pnpm install --frozen-lockfile`, `pn
 
 Usage shows actual backend input/output tokens, request count, compute seconds and cost+currency when supplied. Unknown values remain “Не измерено”; no product quotas enforced. This does not remove provider rate limits, server safety controls or browser quotas. Different-device recovery/auth/storage require implementation on the backend.
 
+## Opt-in journey measurement
+
+Use **«Замер пути»** for consented baseline, interface-only or CoreTeams sessions. Metadata/intervals persist locally, with JSON/CSV export and explicitly matched comparison; no automatic analytics upload. Read [the operator guide and event/privacy contract](docs/journey-metrics.md) before collecting any user data. Saved task-result selection is separate from intermediate artifacts. Fixture and interrupted sessions cannot establish a time-saving result.
+
 ## Integration and evidence
 
 Read [proposed V2 contract](docs/ctf-v2-contract.md), [acceptance](docs/acceptance.md) and [verification](docs/verification.md). This proposed contract adds file ingestion, chosen team/plan, messages, document/version snapshots, approvals and consumption. It is not the implemented gateway WebSocket contract and must not be enabled without review by Дмитрий/Илья/Арина/Филипп.

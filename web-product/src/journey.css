@@ -1,0 +1,124 @@
+.journey-section {
+  padding: 10px clamp(16px, 4vw, 60px);
+  border-bottom: 1px solid var(--line);
+}
+.journey-toggle {
+  font-size: 14px;
+  padding: 8px 16px;
+}
+.journey-panel {
+  max-width: 1040px;
+  margin: 20px auto;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: #fff;
+}
+.journey-panel h2 {
+  font-size: 26px;
+}
+.journey-panel p,
+.journey-panel li {
+  font-size: 14px;
+  line-height: 1.6;
+}
+.journey-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+  margin: 12px 0;
+  min-width: 0;
+}
+.journey-panel input:not([type="checkbox"]),
+.journey-panel select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff;
+  color: var(--ink);
+}
+.journey-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 20px;
+}
+.journey-grid > p,
+.journey-grid > button,
+.journey-grid > .journey-check {
+  grid-column: 1 / -1;
+}
+.journey-panel .journey-check {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+}
+.journey-check input {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+}
+.journey-totals {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 16px 0;
+  gap: 12px;
+}
+.journey-totals div {
+  padding: 12px;
+  background: #f7f8f4;
+  border-radius: 10px;
+}
+.journey-totals dt {
+  font-size: 12px;
+}
+.journey-totals dd {
+  margin: 8px 0 0;
+  font-size: 18px;
+}
+.journey-panel details {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.journey-panel summary {
+  cursor: pointer;
+  padding: 8px 0;
+}
+.journey-table-wrap {
+  overflow-x: auto;
+  margin: 16px 0;
+}
+.journey-panel table {
+  border-collapse: collapse;
+  font-size: 13px;
+  width: 100%;
+}
+.journey-panel th,
+.journey-panel td {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+.journey-delta {
+  overflow: auto;
+  background: #f7f8f4;
+  padding: 16px;
+  font-size: 13px;
+}
+@media (max-width: 620px) {
+  .journey-panel {
+    padding: 16px;
+  }
+  .journey-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .journey-totals {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .journey-panel .actions {
+    flex-wrap: wrap;
+  }
+}

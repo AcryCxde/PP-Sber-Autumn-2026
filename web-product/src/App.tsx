@@ -17,6 +17,8 @@ import {
   type Artifact,
 } from "./domain.ts";
 import { getFile, keepFile, removeFile } from "./files.ts";
+import { JourneyPanel } from "./JourneyPanel.tsx";
+import { JourneyRecorder, type EventName, type Fields } from "./journey.ts";
 
 const api = new CtfApi(
   import.meta.env.VITE_CTF_API_URL || "",
@@ -111,6 +113,13 @@ function downloadText(a: Artifact) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 export function App() {
+  const [study] = useState(
+    () =>
+      new JourneyRecorder({
+        getItem: (key) => window.localStorage.getItem(key),
+        setItem: (key, value) => window.localStorage.setItem(key, value),
+      }),
+  );
   const [loaded] = useState(initial),
     [projects, setProjects] = useState(loaded.projects),
     [issue, setIssue] = useState(loaded.issue);
@@ -142,6 +151,98 @@ export function App() {
   const p = sample ? example : projects.find((x) => x.id === activeId);
   const block = busy || Boolean(issue);
   const run = p?.run;
+  const studyContext = useRef({ projectId: p?.id, sample });
+  studyContext.current = { projectId: p?.id, sample };
+  function track(name: EventName, fields: Fields = {}, dedupe?: string) {
+    if (!sample) study.record(name, { projectId: p?.id, ...fields }, dedupe);
+  }
+  function observeRun(projectId: string, incoming: Run) {
+    const session = study.active();
+    if (
+      sample ||
+      !session ||
+      session.phase === "baseline" ||
+      (session.projectId && session.projectId !== projectId)
+    )
+      return;
+    study.record(
+      "run_received",
+      { projectId, runId: incoming.id },
+      incoming.id,
+    );
+    study.record(
+      "run_status",
+      { projectId, runId: incoming.id, status: incoming.status },
+      `${incoming.id}:${incoming.revision}`,
+    );
+    if (incoming.usage)
+      study.record(
+        "usage_received",
+        { projectId, runId: incoming.id, ...incoming.usage },
+        `${incoming.id}:${incoming.revision}`,
+      );
+    for (const artifact of incoming.artifacts) {
+      if (artifact.saved)
+        study.record(
+          "artifact_saved",
+          {
+            projectId,
+            runId: incoming.id,
+            artifactId: artifact.id,
+            stageId: artifact.stageId,
+          },
+          artifact.id,
+        );
+      if (artifact.approved)
+        study.record(
+          "artifact_accepted",
+          { projectId, runId: incoming.id, artifactId: artifact.id },
+          artifact.id,
+        );
+    }
+    if (incoming.status === "running" && study.active()?.mode === "active")
+      study.mode("wait");
+    else if (incoming.status !== "running" && study.active()?.mode === "wait")
+      study.mode("active");
+  }
+  useEffect(() => {
+    api.onMetric = (name, fields) => {
+      const context = studyContext.current;
+      if (!context.sample)
+        study.record(name, { projectId: context.projectId, ...fields });
+    };
+    const timer = setInterval(() => study.checkpoint(), 5000);
+    const hidden = () => {
+      if (document.hidden && study.active()?.phase !== "baseline")
+        study.mode("pause");
+    };
+    const leave = () => study.mode("unobserved");
+    document.addEventListener("visibilitychange", hidden);
+    window.addEventListener("pagehide", leave);
+    return () => {
+      api.onMetric = undefined;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", hidden);
+      window.removeEventListener("pagehide", leave);
+    };
+  }, [study]);
+  useEffect(() => {
+    if (sample) {
+      study.record("sample_viewed");
+      return;
+    }
+    if (view === "tour") study.record("guide_viewed", { step: tourStep });
+    if (view === "onboard" && p) track("preparation_step", { step: p.step });
+    if (view === "workspace" && p) {
+      track("workspace_entered", {}, `${p.id}:${run?.id || "draft"}`);
+      if (run?.status === "clarification" && run.question)
+        track(
+          "clarification_shown",
+          { runId: run.id, questionId: run.question.id },
+          run.question.id,
+        );
+    }
+  }, [view, tourStep, p?.id, p?.step, run?.id, run?.question?.id, sample]);
   useEffect(() => {
     setAnswer(
       p?.answerDraft?.questionId === run?.question?.id
@@ -180,11 +281,20 @@ export function App() {
   }
   function patch(changes: Partial<Project>) {
     if (!p || sample) return;
-    update({ ...p, ...changes });
+    if (update({ ...p, ...changes })) {
+      if (changes.team) track("team_changed", { count: changes.team.length });
+      if (changes.stages)
+        track(
+          "plan_changed",
+          { count: changes.stages.length },
+          `${p.id}:plan-${changes.stages.length}`,
+        );
+    }
   }
   function startProject() {
     const next = newProject();
     if (save([next, ...projectsRef.current])) {
+      study.record("project_created", { projectId: next.id });
       setSample(false);
       setActiveId(next.id);
       setView("onboard");
@@ -214,6 +324,7 @@ export function App() {
     startProject();
   }
   function openProject(project: Project) {
+    study.record("project_reopened", { projectId: project.id });
     setActiveId(project.id);
     setSample(false);
     setView(project.step === 4 ? "workspace" : "onboard");
@@ -226,6 +337,7 @@ export function App() {
   }
   function home() {
     if (busy) return;
+    if (view === "workspace") track("workspace_left", { runId: run?.id });
     setSample(false);
     setView("home");
     setError("");
@@ -255,7 +367,7 @@ export function App() {
         kept.push(await keepFile(p.id, file));
       if (!update({ ...p, files: [...p.files, ...kept] })) {
         for (const f of kept) await removeFile(p.id, f.id);
-      }
+      } else track("file_added", { count: kept.length });
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "Не удалось добавить материалы",
@@ -303,8 +415,10 @@ export function App() {
   async function deleteFile(id: string) {
     if (!p || sample || block || p.run || p.pending) return;
     try {
-      if (update({ ...p, files: p.files.filter((f) => f.id !== id) }))
+      if (update({ ...p, files: p.files.filter((f) => f.id !== id) })) {
         await removeFile(p.id, id);
+        track("file_removed", { count: 1 });
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -318,6 +432,7 @@ export function App() {
     setError("");
     setNotice("");
     if (!api.available) {
+      track("request_failed", { status: "unavailable" });
       setError(
         "CTF пока не подключён. Ваши материалы, ответы, команда и план сохранены локально. Это не запуск AI-команды.",
       );
@@ -332,6 +447,24 @@ export function App() {
     };
     next.pending = pending;
     if (!update(next)) return;
+    if (pending.action === "answer")
+      track(
+        "answer_sent",
+        { runId: next.run?.id, requestId: pending.id },
+        pending.id,
+      );
+    if (pending.action === "message")
+      track(
+        "message_submitted",
+        { runId: next.run?.id, requestId: pending.id },
+        pending.id,
+      );
+    if (
+      study.active()?.phase !== "baseline" &&
+      study.active()?.projectId === p.id &&
+      study.active()?.mode === "active"
+    )
+      study.mode("wait");
     working(true);
     try {
       let result: Run;
@@ -391,12 +524,35 @@ export function App() {
       next.draftMessage = "";
       next.answerDraft = undefined;
       if (!update(next)) throw new Error("Ответ не сохранён в браузере");
+      observeRun(next.id, result);
+      if (pending.action === "answer")
+        track(
+          "answer_acknowledged",
+          { runId: result.id, requestId: pending.id },
+          pending.id,
+        );
+      if (pending.action === "message")
+        track(
+          "message_acknowledged",
+          { runId: result.id, requestId: pending.id },
+          pending.id,
+        );
       setAnswer("");
       setPoll(true);
       setNotice(
         "Ответ сервиса получен. Сохранение каждого артефакта подтверждается отдельно.",
       );
     } catch (e) {
+      if (
+        study.active()?.phase !== "baseline" &&
+        study.active()?.projectId === p.id &&
+        study.active()?.mode === "wait"
+      )
+        study.mode("active");
+      track("operation_failed", {
+        requestId: pending.id,
+        status: "unconfirmed",
+      });
       setError(
         `${e instanceof Error ? e.message : "Не удалось обработать ответ"} ID запроса: ${pending.id}`,
       );
@@ -413,7 +569,8 @@ export function App() {
       );
       if (nextRun.id !== run.id) throw new Error("Другой ID запуска");
       const current = projectsRef.current.find((x) => x.id === p.id);
-      if (current) update(mergeRun(current, nextRun));
+      if (current && update(mergeRun(current, nextRun)))
+        observeRun(current.id, nextRun);
       setPoll(true);
     } catch (e) {
       setPoll(false);
@@ -435,6 +592,7 @@ export function App() {
       link.href = url;
       link.download = `coreteams-v${a.version}.zip`;
       link.click();
+      track("zip_download_handed", { runId: run.id, artifactId: a.id });
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setNotice(
         "ZIP получен с сервера и передан браузеру. Сохранение на диске выполняет браузер.",
@@ -469,7 +627,8 @@ export function App() {
         if (stopped) return;
         if (incoming.id !== run.id) throw new Error("Другой ID запуска");
         const current = projectsRef.current.find((x) => x.id === p.id);
-        if (current) update(mergeRun(current, incoming));
+        if (current && update(mergeRun(current, incoming)))
+          observeRun(current.id, incoming);
       } catch (e) {
         if (!stopped) {
           setPoll(false);
@@ -508,6 +667,20 @@ export function App() {
       .filter((a) => a.documentId === activeDocument?.documentId)
       .sort((a, b) => b.version - a.version) || [];
   const a = versions.find((a) => a.id === artifactId) || versions[0];
+  useEffect(() => {
+    if (!sample && view === "workspace" && sideTab === "artifacts" && a) {
+      track(
+        "result_shown",
+        { runId: run?.id, artifactId: a.id, stageId: a.stageId },
+        a.id,
+      );
+      track("artifact_viewed", {
+        runId: run?.id,
+        artifactId: a.id,
+        stageId: a.stageId,
+      });
+    }
+  }, [view, p?.id, sample, sideTab, a?.id]);
   function team() {
     return (
       <>
@@ -598,6 +771,22 @@ export function App() {
               : "CTF не подключён"}
         </span>
       </header>
+      <JourneyPanel
+        recorder={study}
+        configured={api.available}
+        projectId={p?.id}
+        hasRun={Boolean(run)}
+        sample={sample}
+        savedArtifact={
+          !sample &&
+          a?.saved &&
+          run &&
+          view === "workspace" &&
+          sideTab === "artifacts"
+            ? { artifactId: a.id, runId: run.id }
+            : undefined
+        }
+      />
       {issue ? (
         <div role="alert" className="banner error">
           {issue}
@@ -1633,7 +1822,13 @@ export function App() {
                           <div className="artifact-actions">
                             <button
                               className="secondary"
-                              onClick={() => downloadText(a)}
+                              onClick={() => {
+                                downloadText(a);
+                                track("text_download_handed", {
+                                  runId: run?.id,
+                                  artifactId: a.id,
+                                });
+                              }}
                             >
                               Скачать текст версии
                             </button>
