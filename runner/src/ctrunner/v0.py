@@ -6,6 +6,7 @@
 """
 
 import json
+import math
 import posixpath
 import sys
 import uuid
@@ -41,6 +42,7 @@ class EventType(StrEnum):
     PROGRESS_UPDATED = "progress.updated"
     ARTIFACT_CREATED = "artifact.created"
     ARTIFACT_SAVED = "artifact.saved"  # gateway после подтверждения хранилища 2.3
+    USAGE_REPORTED = "usage.reported"  # факты `result` SDK, перед терминальным событием
     RUN_COMPLETED = "run.completed"
     RUN_FAILED = "run.failed"
     RUN_OUTCOME_UNKNOWN = "run.outcome_unknown"  # gateway; runner — только при state_corrupt
@@ -195,6 +197,9 @@ class Translator:
         if (run_id := self._live(event)) is None:
             return
         run, msg = self._runs[run_id], _object(event.payload)
+        if msg.get("type") == "result":
+            out.emit(run_id, EventType.USAGE_REPORTED, _usage(msg))
+            return
         parent = msg.get("parent_tool_use_id")
         author = run.roles.get(parent) if isinstance(parent, str) else None
         message = msg.get("message")
@@ -380,6 +385,40 @@ def _question(raw: JsonValue) -> dict[str, JsonValue]:
             "allow_custom": True,
         })  # fmt: skip
     return {"question_id": _str(payload, "fork_id"), "questions": questions}
+
+
+def _count(raw: JsonValue | None) -> int | None:
+    """Счётчик из ответа SDK: неизвестное или негодное — `None`, а не 0."""
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        return None
+    return raw
+
+
+def _cost(raw: JsonValue | None) -> int | float | None:
+    if (
+        isinstance(raw, bool)
+        or not isinstance(raw, int | float)
+        or not math.isfinite(raw)
+        or raw < 0
+    ):
+        return None
+    return raw
+
+
+def _usage(result: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    """`result` SDK → `usage.reported`. Только то, что SDK сообщил; прочее наружу не идёт."""
+    raw = result.get("usage")
+    usage = raw if isinstance(raw, dict) else {}
+    return {
+        "input_tokens": _count(usage.get("input_tokens")),
+        "output_tokens": _count(usage.get("output_tokens")),
+        "cache_creation_input_tokens": _count(usage.get("cache_creation_input_tokens")),
+        "cache_read_input_tokens": _count(usage.get("cache_read_input_tokens")),
+        "num_turns": _count(result.get("num_turns")),
+        "duration_ms": _count(result.get("duration_ms")),
+        "duration_api_ms": _count(result.get("duration_api_ms")),
+        "cost_usd": _cost(result.get("total_cost_usd")),
+    }
 
 
 def _option(raw: Mapping[str, JsonValue]) -> JsonValue:

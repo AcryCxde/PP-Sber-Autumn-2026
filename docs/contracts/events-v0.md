@@ -45,6 +45,7 @@
 | `facilitator.question` | runner | `question_id`, `questions[]`: `text`, `header` \| null, `options[]` (`label`, `description` \| null), `multi_select`, `allow_custom` | `waiting_for_input` |
 | `user.answer.accepted` | runner | `question_id`, `answers`: текст вопроса → ответ | `running` |
 | `progress.updated` | runner | `stage`: `interrupted` \| `recovering` \| `working`; для `working` ещё `attempt`, `context_restored` | `running` (с пометкой о сбое) |
+| `usage.reported` | runner | `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `num_turns`, `duration_ms`, `duration_api_ms`, `cost_usd`; каждое поле — число \| null | без изменений |
 | `artifact.created` | runner | `artifact_id`, `path` (от корня проекта), `commit_sha`, `role_id` \| null | без изменений |
 | `artifact.saved` | gateway по подтверждению 2.3 | `artifact_id`, `version_id`, `size_bytes`, `download` | без изменений |
 | `run.completed` | runner → gateway | `{}` | `completed` (терминальное) |
@@ -56,6 +57,8 @@
 Коды `run.failed`: `result_error`, `checkpoint_failed`, `resume_limit` (`retryable: true`), `disk_full` (`false`, нужен оператор), `artifact_save_failed` (gateway).
 `run.failed{disk_full}` публикуется только при отказе commit; падение процесса по ENOSPC — `progress.updated{interrupted}`, как любое падение (§4.3).
 Коды `run.outcome_unknown`: `heartbeat_lost`, `artifact_save_unknown` (gateway), `state_corrupt` (runner).
+
+`usage.reported` — только факты из `result` SDK: токены, число ходов модели (`num_turns`), длительность, стоимость в USD. Если SDK поле не передал или передал негодное значение, поле равно `null`; `0` означает, что SDK сообщил ноль. Runner ничего не оценивает и не досчитывает. Событие публикуется по одному на каждый `result` хода, до терминального события запуска (обычно одно; сложение нескольких — на стороне потребителя). `result`, пришедший после терминального события, не публикуется. Пример: `{"input_tokens": 18432, "output_tokens": 5210, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 40960, "num_turns": 9, "duration_ms": 95000, "duration_api_ms": 81200, "cost_usd": 0.41}`.
 
 `progress.updated` не содержит процентов и ETA: runner их не знает, а выдумывать их запрещает 2.5 §9. Этап и роли — всё, что есть честного.
 
@@ -72,7 +75,7 @@
 
 ## 5. Что не попадает в ленту
 
-Постановка пользователя (она в истории сообщений gateway, а не в событиях runner), рассуждения модели (thinking), вызовы инструментов и их ввод/вывод, системные сообщения SDK, `session_id`, стоимость и токены, пути вне проекта, служебные каталоги (`.runner`, `.git`), содержимое файлов. Также не публикуются `access_denied`: это аудит оператора, а не продуктовое событие.
+Постановка пользователя (она в истории сообщений gateway, а не в событиях runner), рассуждения модели (thinking), вызовы инструментов и их ввод/вывод, системные сообщения SDK, `session_id`, сырой `result` SDK (наружу идут только поля `usage.reported`), пути вне проекта, служебные каталоги (`.runner`, `.git`), содержимое файлов. Также не публикуются `access_denied`: это аудит оператора, а не продуктовое событие.
 
 Артефакт в ленте представлен только метаданными. Содержимое выдаётся отдельным авторизованным запросом из подтверждённого снимка 2.3, а не из живой файловой системы.
 
@@ -86,6 +89,7 @@
 | `sdk` assistant: текст | `message.created`; `role_id` по `parent_tool_use_id` |
 | `sdk` assistant: `Agent`/`Task` | `role.started` (`role_id` = `subagent_type`) |
 | `sdk` user: результат `Agent`/`Task` | `role.completed` |
+| `sdk` result | `usage.reported` (поля из `usage`, `num_turns`, `duration_*`, `total_cost_usd`) |
 | `sdk` assistant: `Write`/`Edit`/`MultiEdit`/`NotebookEdit` + успешный результат | запоминается до `checkpoint` |
 | `checkpoint` | `artifact.created` на каждый успешно записанный файл проекта |
 | `fork_question` / `fork_answered` | `facilitator.question` / `user.answer.accepted` |
@@ -143,7 +147,7 @@
 2. **`hello` и `welcome`.** На `hello{project_id, last_seq}` отвечать `welcome{acked_seq}`; `acked_seq` — наибольший `journal_seq`, который gateway уже записал для проекта (0, если ничего). Хранить его надо по проекту.
 3. **Приём `event`.** Тело — публичное событие v0 без `seq` и `schema`. Дедуплицировать по `event_id`, присваивать `seq` ленты при записи (раздел 4), добавлять `schema: "events.v0"` вместо `schema_version`. Один `journal_seq` может нести несколько событий.
 4. **Статус `waiting_for_input`.** Включить его в число активных запусков (сейчас активны `pending`/`running`, и частичный уникальный индекс «один активный запуск на диалог» пропустил бы второй запуск во время вопроса). Ставить по `facilitator.question`, снимать по `user.answer.accepted`, по `progress.updated` и по новому `facilitator.question`.
-5. **Проекция публичных типов.** Сейчас `facilitator.question`, `user.answer.accepted`, `progress.updated`, `artifact.created`, `role.*` превращаются в `legacy.redacted`. Они входят в контракт v0 и должны проходить.
+5. **Проекция публичных типов.** Сейчас `facilitator.question`, `user.answer.accepted`, `progress.updated`, `artifact.created`, `usage.reported`, `role.*` превращаются в `legacy.redacted`. Они входят в контракт v0 и должны проходить.
 6. **Создание запуска.** `command{kind: "message", id: <run_id>, text}`, где `run_id` выбирает gateway, формат `[0-9A-Za-z_-]{1,64}`. Ответ `command_ack`: `accepted` либо `rejected{reason}`.
 7. **Ответ пользователя.** Команда клиента «ответ» превращается в `command{kind: "fork_answer", id: <новый>, fork_id: <question_id>, answers: {текст вопроса: метка или свой текст}}`. Ключи должны точно совпадать с `questions[].text`; multi-select склеивается через `", "`. Разбирать `command_ack`.
 8. **Реакция на `rejected`.** `unknown_fork`: вопрос устарел (после рестарта runner спросит заново с новым `question_id`), ждать новый `facilitator.question`. `answers_mismatch`: ошибка клиента.

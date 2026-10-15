@@ -67,6 +67,7 @@ def test_happy_journal_maps_to_public_lifecycle() -> None:
         "message.created",
         "role.completed",
         "message.created",
+        "usage.reported",
         "artifact.created",
         "run.completed",
     ]
