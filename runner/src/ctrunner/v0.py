@@ -8,6 +8,7 @@
 import json
 import math
 import posixpath
+import re
 import sys
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
@@ -267,14 +268,19 @@ class Translator:
     def _checkpoint(self, out: "_Out", event: Event) -> None:
         if (run_id := self._live(event)) is None:
             return
-        run, sha = self._runs[run_id], _str(_object(event.payload), "sha")
+        payload = _object(event.payload)
+        run, sha, files = self._runs[run_id], _str(payload, "sha"), payload.get("files")
         for path, write in sorted(run.written.items()):
-            out.emit(run_id, EventType.ARTIFACT_CREATED, {
+            created: dict[str, JsonValue] = {
                 "artifact_id": self._opaque(f"{sha}:{path}"),
                 "path": path,
                 "commit_sha": sha,
                 "role_id": write.role_id,
-            })  # fmt: skip
+            }
+            fact = files.get(path) if isinstance(files, dict) else None
+            # Факт добавляется только целым: нет или битый — поля отсутствуют, а не 0 и не "".
+            created.update(_file_fact(fact))
+            out.emit(run_id, EventType.ARTIFACT_CREATED, created)
         run.written.clear()
 
     def _failed(self, out: "_Out", event: Event) -> None:
@@ -403,6 +409,19 @@ def _cost(raw: JsonValue | None) -> int | float | None:
     ):
         return None
     return raw
+
+
+_SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
+
+
+def _file_fact(raw: JsonValue | None) -> dict[str, JsonValue]:
+    """Запись `files[path]` журнала → `size_bytes` и `sha256`; негодная запись — пустой словарь."""
+    if not isinstance(raw, dict):
+        return {}
+    size, digest = _count(raw.get("size_bytes")), raw.get("sha256")
+    if size is None or not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
+        return {}
+    return {"size_bytes": size, "sha256": digest}
 
 
 def _usage(result: Mapping[str, JsonValue]) -> dict[str, JsonValue]:

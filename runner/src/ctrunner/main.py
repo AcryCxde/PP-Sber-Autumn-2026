@@ -16,7 +16,14 @@ from typing import Final, Protocol, assert_never, final
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, ProcessError
 
 from ctrunner import __version__
-from ctrunner.checkpoint import Head, clear_stale_lock, commit_turn, read_head, run_git
+from ctrunner.checkpoint import (
+    Head,
+    clear_stale_lock,
+    commit_turn,
+    read_file_facts,
+    read_head,
+    run_git,
+)
 from ctrunner.config import HEALTH_FILE, TOKEN_FILE, ConfigError, RunnerConfig, load_config
 from ctrunner.diag import diag
 from ctrunner.eventlog import EventLog, kinds_of_turn, open_questions
@@ -253,6 +260,7 @@ async def run(cfg: RunnerConfig) -> int:
                 state=session_state,
                 save_state=partial(save_state, state_file),
                 commit=partial(commit_turn, cfg.project_dir),
+                file_facts=partial(read_file_facts, cfg.project_dir),
                 turn_kinds=partial(kinds_of_turn, events),
                 open_questions=partial(open_questions, events),
             )

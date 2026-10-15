@@ -2,10 +2,11 @@ import asyncio
 import errno
 import json
 import os
+import subprocess
 import threading
 import time
 from collections import defaultdict
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,7 @@ from claude_agent_sdk import (
     ToolPermissionContext,
 )
 
-from ctrunner.checkpoint import CheckpointError, CheckpointFailure
+from ctrunner.checkpoint import CheckpointError, CheckpointFailure, FileFact
 from ctrunner.eventlog import Event, EventLog, kinds_of_turn, open_questions
 from ctrunner.guard import Policy
 from ctrunner.inbox import Inbox, put
@@ -97,7 +98,11 @@ class Observed:
 
 class Env:
     def __init__(
-        self, root: Path, state: PersistedState = EMPTY, commit: Callable[[str], str] | None = None
+        self,
+        root: Path,
+        state: PersistedState = EMPTY,
+        commit: Callable[[str], str] | None = None,
+        file_facts: Callable[[str], Mapping[str, FileFact]] | None = None,
     ) -> None:
         self.inbox_dir = root / "inbox"
         self.events = root / "events.jsonl"
@@ -123,6 +128,7 @@ class Env:
             state=state,
             save_state=self._save,
             commit=commit or self.commit,
+            file_facts=file_facts or (lambda sha: {}),
             turn_kinds=lambda turn_id: kinds_of_turn(self.events, turn_id),
             open_questions=lambda turn_id: open_questions(self.events, turn_id),
         )
@@ -720,3 +726,62 @@ async def test_turn_started_carries_inputs_and_prompt_has_block(env: Env) -> Non
     assert payload["input_files"] == ["inputs/a.md"]
     assert client.prompts == [payload["prompt"]]
     assert "Входные файлы" in client.prompts[0]
+
+
+FACTS = {"a.md": FileFact(3, "c" * 64)}
+FACTS_JSON = {"a.md": {"size_bytes": 3, "sha256": "c" * 64}}
+
+
+async def test_checkpoint_event_records_file_facts(tmp_path: Path) -> None:
+    asked: list[str] = []
+
+    def facts(sha: str) -> Mapping[str, FileFact]:
+        asked.append(sha)
+        return FACTS
+
+    env = Env(tmp_path, file_facts=facts)
+    try:
+        put(env.inbox_dir, {"id": "c1", "kind": "message", "text": "go"})
+        run = asyncio.create_task(env.session.run(FakeClient([result()])))
+        await env.wait_kind(EventKind.TURN_COMPLETED)
+        put(env.inbox_dir, {"id": "c2", "kind": "stop"})
+        await run
+        assert env.events_of("checkpoint")[0]["payload"] == {"sha": SHA, "files": FACTS_JSON}
+        assert asked == [SHA]
+    finally:
+        env.log.close()
+
+
+@pytest.mark.parametrize(
+    "error", [OSError(errno.EIO, "io"), subprocess.CalledProcessError(1, "git")]
+)
+async def test_unreadable_facts_do_not_lose_checkpoint_or_turn(
+    tmp_path: Path, error: Exception
+) -> None:
+    def facts(sha: str) -> Mapping[str, FileFact]:
+        raise error
+
+    env = Env(tmp_path, file_facts=facts)
+    try:
+        put(env.inbox_dir, {"id": "c1", "kind": "message", "text": "go"})
+        run = asyncio.create_task(env.session.run(FakeClient([result()])))
+        await env.wait_kind(EventKind.TURN_COMPLETED)
+        put(env.inbox_dir, {"id": "c2", "kind": "stop"})
+        await run
+        assert env.events_of("checkpoint")[0]["payload"] == {"sha": SHA}
+        assert env.kinds()[-2:] == ["checkpoint", "turn_completed"]
+    finally:
+        env.log.close()
+
+
+async def test_finalize_records_facts_for_missing_checkpoint(tmp_path: Path) -> None:
+    env = Env(tmp_path, open_state(), file_facts=lambda sha: FACTS)
+    try:
+        env.log.append(EventKind.TURN_STARTED, "t1", {"prompt": "x"})
+        run = asyncio.create_task(env.session.run(FakeClient([]), Finalize("t1", SHA)))
+        await env.wait_kind(EventKind.TURN_COMPLETED)
+        put(env.inbox_dir, {"id": "c9", "kind": "stop"})
+        await run
+        assert env.events_of("checkpoint")[0]["payload"] == {"sha": SHA, "files": FACTS_JSON}
+    finally:
+        env.log.close()

@@ -46,7 +46,7 @@
 | `user.answer.accepted` | runner | `question_id`, `answers`: текст вопроса → ответ | `running` |
 | `progress.updated` | runner | `stage`: `interrupted` \| `recovering` \| `working`; для `working` ещё `attempt`, `context_restored` | `running` (с пометкой о сбое) |
 | `usage.reported` | runner | `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`, `num_turns`, `duration_ms`, `duration_api_ms`, `cost_usd`; каждое поле — число \| null | без изменений |
-| `artifact.created` | runner | `artifact_id`, `path` (от корня проекта), `commit_sha`, `role_id` \| null | без изменений |
+| `artifact.created` | runner | `artifact_id`, `path` (от корня проекта), `commit_sha`, `role_id` \| null; необязательные `size_bytes`, `sha256` | без изменений |
 | `artifact.saved` | gateway по подтверждению 2.3 | `artifact_id`, `version_id`, `size_bytes`, `download` | без изменений |
 | `run.completed` | runner → gateway | `{}` | `completed` (терминальное) |
 | `run.failed` | runner или gateway | `code`, `retryable` | `failed` (терминальное) |
@@ -57,6 +57,8 @@
 Коды `run.failed`: `result_error`, `checkpoint_failed`, `resume_limit` (`retryable: true`), `disk_full` (`false`, нужен оператор), `artifact_save_failed` (gateway).
 `run.failed{disk_full}` публикуется только при отказе commit; падение процесса по ENOSPC — `progress.updated{interrupted}`, как любое падение (§4.3).
 Коды `run.outcome_unknown`: `heartbeat_lost`, `artifact_save_unknown` (gateway), `state_corrupt` (runner).
+
+`size_bytes` и `sha256` (нижний регистр, 64 символа) в `artifact.created` — размер и хэш содержимого файла в коммите `commit_sha`. Runner считает их по объекту git сразу после commit, а не по рабочему дереву, и пишет в журнал как факт. Если прочитать файл не удалось (сбой git, путь не UTF-8 или с переводом строки, больше 2000 файлов в коммите, файл не менялся в этом коммите), полей в событии нет: они отсутствуют, а не равны `0` или пустой строке, и событие не теряется. Gateway сверяет с ними прочитанное из тома (`artifact.saved.size_bytes` должен совпасть).
 
 `usage.reported` — только факты из `result` SDK: токены, число ходов модели (`num_turns`), длительность, стоимость в USD. Если SDK поле не передал или передал негодное значение, поле равно `null`; `0` означает, что SDK сообщил ноль. Runner ничего не оценивает и не досчитывает. Событие публикуется по одному на каждый `result` хода, до терминального события запуска (обычно одно; сложение нескольких — на стороне потребителя). `result`, пришедший после терминального события, не публикуется. Пример: `{"input_tokens": 18432, "output_tokens": 5210, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 40960, "num_turns": 9, "duration_ms": 95000, "duration_api_ms": 81200, "cost_usd": 0.41}`.
 
@@ -91,7 +93,7 @@
 | `sdk` user: результат `Agent`/`Task` | `role.completed` |
 | `sdk` result | `usage.reported` (поля из `usage`, `num_turns`, `duration_*`, `total_cost_usd`) |
 | `sdk` assistant: `Write`/`Edit`/`MultiEdit`/`NotebookEdit` + успешный результат | запоминается до `checkpoint` |
-| `checkpoint` | `artifact.created` на каждый успешно записанный файл проекта |
+| `checkpoint` | `artifact.created` на каждый успешно записанный файл проекта; `size_bytes` и `sha256` берутся из `checkpoint.files[path]` (runner пишет их после commit) |
 | `fork_question` / `fork_answered` | `facilitator.question` / `user.answer.accepted` |
 | `turn_completed` | `run.completed` |
 | `turn_failed{fatal}` (и `sdk_crashed` старых журналов) | `progress.updated{interrupted}` |
@@ -153,4 +155,4 @@
 8. **Реакция на `rejected`.** `unknown_fork`: вопрос устарел (после рестарта runner спросит заново с новым `question_id`), ждать новый `facilitator.question`. `answers_mismatch`: ошибка клиента.
 9. **Heartbeat.** Приходит каждые 10 с (`phase`, `health`, `last_progress_at`). Нет heartbeat дольше 30 с: `run.outcome_unknown{heartbeat_lost}`. `phase = awaiting_answer` при `health = ok` — штатное ожидание ответа, не зависание. Ожидание ответа живым прогоном проверено до 15 минут; при `state_corrupt` runner завершается (выход 65) до подключения клиента, `hello` и heartbeat не приходят, остаётся только `heartbeat_lost`.
 10. **`run.completed` держать до `artifact.saved`** (правило 2 раздела 4).
-11. **Открыто.** Канал передачи содержимого артефактов из тома проекта в хранилище 2.3 не определён: `artifact.created` несёт только метаданные. Без него путь до download не замыкается.
+11. **Открыто.** Канал передачи содержимого артефактов из тома проекта в хранилище 2.3 не определён: `artifact.created` несёт только метаданные (путь, `commit_sha`, `size_bytes`, `sha256`). При чтении файла gateway сверяет размер и sha256 с `artifact.created`; несовпадение — `run.failed{artifact_save_failed}`, а не тихая запись другого содержимого. Если полей нет, сверять нечем. Без него путь до download не замыкается.

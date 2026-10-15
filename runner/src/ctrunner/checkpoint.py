@@ -6,15 +6,22 @@
 """
 
 import errno
+import hashlib
 import subprocess
+import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Final, final
+from typing import IO, Final, final
+
+from ctrunner.protocol import JsonValue
 
 GIT_TIMEOUT_S: Final = 600.0  # git add большого проекта; одновременно срок commit
 TRAILER_KEY: Final = "Turn-Id"
 DETAIL_LIMIT: Final = 500
+MAX_FACT_FILES: Final = 2000  # сверх лимита факты не пишутся: событие артефакта всё равно уйдёт
+READ_CHUNK: Final = 1 << 20
 
 
 def run_git(project: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[bytes]:
@@ -96,3 +103,91 @@ def clear_stale_lock(project: Path) -> bool:
     except FileNotFoundError:
         return False
     return True
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class FileFact:
+    """Размер и sha256 содержимого файла в коммите."""
+
+    size_bytes: int
+    sha256: str
+
+
+def checkpoint_payload(sha: str, facts: Mapping[str, FileFact]) -> dict[str, JsonValue]:
+    """Запись `checkpoint` журнала; `files` только если факты есть (старые записи не меняются)."""
+    payload: dict[str, JsonValue] = {"sha": sha}
+    if facts:
+        payload["files"] = {
+            path: {"size_bytes": f.size_bytes, "sha256": f.sha256} for path, f in facts.items()
+        }
+    return payload
+
+
+def read_file_facts(project: Path, sha: str) -> dict[str, FileFact]:
+    """Факты о файлах, добавленных или изменённых коммитом `sha`, по содержимому коммита.
+
+    Читается объект git, а не рабочее дерево: оно после commit могло измениться. Путь, который
+    нельзя безопасно передать git (перевод строки, не UTF-8), и не-файл (submodule) пропускаются.
+    Сбой git или чтения — исключение: вызывающий решает, терять ли факты (событие они не отменяют).
+    """
+    raw = run_git(
+        project, "diff-tree", "--root", "-r", "-z", "--no-renames", "--diff-filter=AM",
+        "--name-only", "--no-commit-id", sha,
+    ).stdout  # fmt: skip
+    paths = [p for p in (_decode_path(x) for x in raw.split(b"\0")) if p is not None]
+    return _blob_facts(project, sha, paths[:MAX_FACT_FILES])
+
+
+def _decode_path(raw: bytes) -> str | None:
+    try:
+        path = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return path if path and "\n" not in path else None
+
+
+def _blob_facts(project: Path, sha: str, paths: list[str]) -> dict[str, FileFact]:
+    if not paths:
+        return {}
+    with subprocess.Popen(  # noqa: S603 — аргументы фиксированы, без shell
+        ["git", "-C", str(project), "cat-file", "--batch"],  # noqa: S607 — git из PATH образа
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    ) as proc:
+        timer = threading.Timer(GIT_TIMEOUT_S, proc.kill)  # зависший git не держит commit-поток
+        timer.start()
+        try:
+            if proc.stdin is None or proc.stdout is None:
+                raise OSError("git cat-file: pipes are not available")
+            facts: dict[str, FileFact] = {}
+            for path in paths:
+                fact = _one_blob(proc.stdin, proc.stdout, f"{sha}:{path}")
+                if fact is not None:
+                    facts[path] = fact
+            return facts
+        finally:
+            timer.cancel()
+            proc.kill()  # после чтения всех ответов процессу нечего делать; pipes закроет `with`
+
+
+def _one_blob(stdin: IO[bytes], stdout: IO[bytes], name: str) -> FileFact | None:
+    stdin.write(f"{name}\n".encode())
+    stdin.flush()
+    header = stdout.readline().split()
+    if len(header) == 2 and header[1] == b"missing":
+        return None
+    if len(header) != 3 or not header[2].isdigit():
+        raise OSError("git cat-file: unexpected output")
+    is_blob, size = header[1] == b"blob", int(header[2])
+    digest, left = hashlib.sha256(), size
+    while left:
+        chunk = stdout.read(min(left, READ_CHUNK))
+        if not chunk:
+            raise OSError("git cat-file: truncated output")
+        digest.update(chunk)
+        left -= len(chunk)
+    if stdout.read(1) != b"\n":
+        raise OSError("git cat-file: malformed object frame")
+    return FileFact(size, digest.hexdigest()) if is_blob else None

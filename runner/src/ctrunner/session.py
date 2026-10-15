@@ -12,11 +12,12 @@
 import asyncio
 import errno
 import os
+import subprocess
 import sys
 import time
 import traceback
 import uuid
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from enum import IntEnum
 from pathlib import Path
 from typing import Any, Protocol, assert_never, final
@@ -31,7 +32,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import SyncHookJSONOutput
 
-from ctrunner.checkpoint import CheckpointError
+from ctrunner.checkpoint import CheckpointError, FileFact, checkpoint_payload
 from ctrunner.diag import diag
 from ctrunner.eventlog import Event
 from ctrunner.guard import Allow, Deny, Policy, Verdict, check
@@ -107,6 +108,10 @@ def _no_questions(turn_id: str) -> Sequence[str]:
     return ()
 
 
+def _no_facts(sha: str) -> Mapping[str, FileFact]:
+    return {}
+
+
 @final
 class Session:
     def __init__(  # noqa: PLR0913 — зависимости оболочки передаются явно
@@ -123,6 +128,7 @@ class Session:
         commit: Callable[[str], str],
         turn_kinds: Callable[[str], frozenset[EventKind]],
         open_questions: Callable[[str], Sequence[str]] = _no_questions,
+        file_facts: Callable[[str], Mapping[str, FileFact]] = _no_facts,
         poll_s: float = 1.0,
         heartbeat_s: float = 10.0,
         resolve: Callable[[Path], Path] = _realpath,
@@ -141,6 +147,7 @@ class Session:
         self._commit_turn = commit
         self._turn_kinds = turn_kinds
         self._open_questions = open_questions
+        self._file_facts = file_facts
         self._session_id = state.session_id
         self._last_sha = state.last_sha
         # Попытка автопродолжения относится к конкретному ходу: у нового хода счёт с нуля.
@@ -230,7 +237,8 @@ class Session:
             case Finalize(turn_id=turn_id, sha=sha):
                 logged = self._turn_kinds(turn_id)
                 if EventKind.CHECKPOINT not in logged:
-                    self._log.append(EventKind.CHECKPOINT, turn_id, {"sha": sha})
+                    facts = await asyncio.to_thread(self._facts_of, sha)
+                    self._log.append(EventKind.CHECKPOINT, turn_id, checkpoint_payload(sha, facts))
                 if EventKind.TURN_COMPLETED not in logged:
                     self._log.append(EventKind.TURN_COMPLETED, turn_id, {})
                 self._last_sha = sha
@@ -350,10 +358,19 @@ class Session:
             diag("checkpoint_failed", reason=error.failure.value, detail=detail)
             self._state, effects = on_commit_failed(self._committing(), error.failure.value)
         else:
-            self._log.append(EventKind.CHECKPOINT, turn_id, {"sha": sha})
+            facts = await asyncio.to_thread(self._facts_of, sha)
+            self._log.append(EventKind.CHECKPOINT, turn_id, checkpoint_payload(sha, facts))
             self._last_sha = sha
             self._state, effects = on_committed(self._committing())
         await self._apply(client, effects)
+
+    def _facts_of(self, sha: str) -> Mapping[str, FileFact]:
+        """Размер и sha256 файлов коммита. Не прочиталось — события артефактов уйдут без них."""
+        try:
+            return self._file_facts(sha)
+        except (OSError, subprocess.SubprocessError, ValueError) as error:
+            diag("file_facts_failed", error=type(error).__name__)
+            return {}
 
     def _committing(self) -> Committing:
         # Пока идёт commit, состояние меняют только очередь команд и ничего больше.
