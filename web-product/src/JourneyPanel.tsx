@@ -2,6 +2,12 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import "./journey.css";
 import { BaselineJournal } from "./BaselineJournal.tsx";
 import {
+  OUTCOME_LABELS,
+  outcomeLabel,
+  missingSavedLabel,
+  finishExplanation,
+} from "./study-labels.ts";
+import {
   JourneyRecorder,
   compare,
   csv,
@@ -32,7 +38,9 @@ const RATING_LABELS = {
   verifiability: "Проверяемость источников",
 };
 const seconds = (n: number | null | undefined) =>
-  n === null || n === undefined ? "Не измерено" : `${n.toFixed(1)} с`;
+  n === null || n === undefined
+    ? "Не измерено"
+    : `${n.toLocaleString("ru-RU", { minimumFractionDigits: 1, maximumFractionDigits: 1 })} с`;
 function download(content: string, extension: "json" | "csv", suffix = "") {
   const url = URL.createObjectURL(
     new Blob([content], {
@@ -69,16 +77,16 @@ export function JourneyPanel({
   const [phase, setPhase] = useState<Phase>("baseline"),
     [consent, setConsent] = useState(false);
   const [ratings, setRatings] = useState<Ratings>({}),
-    [outcome, setOutcome] = useState<"completed" | "incomplete" | "abandoned">(
-      "incomplete",
-    );
+    [outcome, setOutcome] = useState<
+      "completed" | "incomplete" | "abandoned" | ""
+    >("");
   const [baselineId, setBaselineId] = useState(""),
     [prototypeId, setPrototypeId] = useState(""),
     [comparable, setComparable] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
     setRatings({});
-    setOutcome("incomplete");
+    setOutcome("");
   }, [active?.id]);
   const pair = compare(
     state.sessions.find((s) => s.id === baselineId),
@@ -115,6 +123,10 @@ export function JourneyPanel({
     setConsent(false);
   }
   function finish() {
+    if (!outcome) {
+      setError("Выберите итог задачи перед завершением замера.");
+      return;
+    }
     if (
       outcome === "completed" &&
       active &&
@@ -128,10 +140,17 @@ export function JourneyPanel({
       active.phase !== "interface"
     ) {
       setError(
-        "Для завершения с результатом нужна отметка сохранения. Иначе выберите «Не завершена».",
+        "Для завершения с результатом нужна отметка сохранения. Иначе выберите «Задача не завершена».",
       );
       return;
     }
+    if (
+      outcome === "abandoned" &&
+      !confirm(
+        "Прекратить попытку? В журнале будет «Попытка прекращена», а не успешное завершение. Уже записанные шаги сохранятся; время до результата останется неизвестным, если сохранение не отмечено.",
+      )
+    )
+      return;
     if (recorder.finish(outcome, ratings)) setError("");
   }
   function selection(
@@ -457,12 +476,26 @@ export function JourneyPanel({
                   value={outcome}
                   onChange={(e) => setOutcome(e.target.value as typeof outcome)}
                 >
-                  <option value="incomplete">Не завершена</option>
-                  <option value="completed">Завершена с результатом</option>
-                  <option value="abandoned">Участник прекратил попытку</option>
+                  <option value="">Выберите итог задачи</option>
+                  <option value="incomplete">
+                    {OUTCOME_LABELS.incomplete}
+                  </option>
+                  <option value="completed">{OUTCOME_LABELS.completed}</option>
+                  <option value="abandoned">{OUTCOME_LABELS.abandoned}</option>
                 </select>
               </label>
-              <button className="primary" disabled={disabled} onClick={finish}>
+              <p className="muted">
+                «Задача не завершена» — задача ещё не доведена до нужного итога.
+                «Попытка прекращена» — вы решили остановиться. Для успешного
+                завершения сначала отметьте сохранённый результат, затем
+                выберите «Завершено с результатом». Итог не определяется по
+                закрытию вкладки.
+              </p>
+              <button
+                className="primary"
+                disabled={disabled || !outcome}
+                onClick={finish}
+              >
                 Завершить замер
               </button>
               <button
@@ -494,7 +527,8 @@ export function JourneyPanel({
                         <th>Участник / задача</th>
                         <th>Способ</th>
                         <th>Итог</th>
-                        <th>До сохранения</th>
+                        <th>Время замера</th>
+                        <th>До сохранения результата</th>
                         <th>Пропуск наблюдения</th>
                         <th>Управление</th>
                       </tr>
@@ -511,10 +545,56 @@ export function JourneyPanel({
                               ? " · тестовая заглушка"
                               : ""}
                           </td>
-                          <td>{s.open ? "Идёт" : s.outcome}</td>
-                          <td>{seconds(summary(s).elapsed_to_saved_s)}</td>
-                          <td>{seconds(summary(s).unobserved_s)}</td>
+                          <td>{outcomeLabel(s)}</td>
+                          <td>{seconds(summary(s).elapsed_s)}</td>
                           <td>
+                            {summary(s).elapsed_to_saved_s === null
+                              ? missingSavedLabel(s)
+                              : seconds(summary(s).elapsed_to_saved_s)}
+                          </td>
+                          <td>
+                            {summary(s).unobserved_s === 0
+                              ? "Пропусков не отмечено"
+                              : seconds(summary(s).unobserved_s)}
+                          </td>
+                          <td>
+                            <details>
+                              <summary>Почему такой итог?</summary>
+                              <p>
+                                {s.open
+                                  ? "Замер ещё не завершён."
+                                  : finishExplanation(s)}
+                              </p>
+                              <p>
+                                {s.phase === "interface"
+                                  ? "Проверка интерфейса не измеряет получение результата AI-команды."
+                                  : summary(s).elapsed_to_saved_s === null
+                                    ? `${missingSavedLabel(s)}. Общее время и шаги сохранены, но подставлять их вместо времени до результата нельзя.`
+                                    : "Время до результата рассчитано по зафиксированной отметке сохранения, отдельно от общего времени замера."}
+                              </p>
+                              {s.phase === "baseline" ? (
+                                <p>
+                                  Шагов записано: {s.baselineSteps?.length || 0}
+                                  . Из них с итогом «Шаг не завершён»:{" "}
+                                  {s.baselineSteps?.filter(
+                                    (step) => step.outcome === "unfinished",
+                                  ).length || 0}
+                                  . Отметка сохранения:{" "}
+                                  {s.events.some(
+                                    (e) => e.name === "baseline_result_saved",
+                                  )
+                                    ? "есть"
+                                    : "нет"}
+                                  .
+                                </p>
+                              ) : null}
+                              <p>
+                                Исторические данные не исправляются
+                                автоматически. Если итог выбран ошибочно,
+                                сообщите исследователю — нельзя задним числом
+                                придумывать время сохранения.
+                              </p>
+                            </details>
                             <button
                               className="text-btn"
                               disabled={disabled}

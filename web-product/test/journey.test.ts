@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  outcomeLabel,
+  missingSavedLabel,
+  finishExplanation,
+} from "../src/study-labels.ts";
+import {
   JourneyRecorder,
   JOURNEY_KEY,
   compare,
@@ -253,4 +258,42 @@ test("storage exhaustion stops recording without changing the product or last sa
   assert.equal(r.record("help_observed", {}, undefined, true), false);
   assert(r.getSnapshot().issue);
   assert.equal(f.storage.getItem(JOURNEY_KEY), raw);
+});
+
+test("stopping without a saved result keeps elapsed time, explains missing time and does not translate stored codes", () => {
+  const f = fixture(),
+    r = f.create();
+  r.start(input());
+  f.advance(30);
+  assert.equal(r.active()!.outcome, undefined);
+  r.mode("unobserved");
+  assert.equal(r.active()!.outcome, undefined);
+  r.finish("abandoned", {});
+  const session = r.getSnapshot().sessions[0];
+  assert.equal(session.outcome, "abandoned");
+  assert.equal(outcomeLabel(session), "Попытка прекращена");
+  assert.equal(missingSavedLabel(session), "Сохранение не отмечено");
+  assert(
+    finishExplanation(session).includes("В журнале завершения записан итог"),
+  );
+  assert.equal(summary(session).elapsed_s, 30);
+  assert.equal(summary(session).elapsed_to_saved_s, null);
+  assert.equal(summary(session).outcome_label, "Попытка прекращена");
+  assert.equal(
+    outcomeLabel({ open: false, outcome: "completed" }),
+    "Завершено с результатом",
+  );
+  assert.equal(
+    outcomeLabel({ open: false, outcome: "incomplete" }),
+    "Задача не завершена",
+  );
+  assert.equal(
+    missingSavedLabel({ ...session, phase: "interface" }),
+    "Не применяется",
+  );
+  assert(
+    finishExplanation({ ...session, events: [] }).includes(
+      "подтвердить нельзя",
+    ),
+  );
 });

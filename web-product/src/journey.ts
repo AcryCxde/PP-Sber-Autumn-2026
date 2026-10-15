@@ -1,4 +1,5 @@
 // Local, opt-in study data. Never pass this record to the product API.
+import { outcomeLabel } from "./study-labels.ts";
 import {
   BASELINE_ACTIONS,
   BASELINE_TOOLS,
@@ -565,6 +566,7 @@ export function summary(s: Session) {
     started_at: s.startedAt,
     ended_at: s.endedAt || null,
     outcome: s.outcome || null,
+    outcome_label: outcomeLabel(s),
     elapsed_s:
       (Date.parse(s.endedAt || s.cursor) - Date.parse(s.startedAt)) / 1000,
     active_s: totals.active,

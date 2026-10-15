@@ -23,8 +23,9 @@ export function BaselineJournal({
   const [tool, setTool] = useState<BaselineStep["tool"] | "">("");
   const [barrier, setBarrier] =
     useState<NonNullable<BaselineStep["barrier"]>>("unknown");
-  const [outcome, setOutcome] =
-    useState<NonNullable<BaselineStep["outcome"]>>("unfinished");
+  const [outcome, setOutcome] = useState<
+    NonNullable<BaselineStep["outcome"]> | ""
+  >("");
   const [kind, setKind] = useState<ResultKind | "">("");
   const steps = session.baselineSteps || [],
     current = steps.find((s) => !s.endedAt);
@@ -90,7 +91,7 @@ export function BaselineJournal({
                     recorder.beginBaselineStep(action, tool)
                   ) {
                     setBarrier("unknown");
-                    setOutcome("unfinished");
+                    setOutcome("");
                   }
                 }}
               >
@@ -135,6 +136,7 @@ export function BaselineJournal({
                       setOutcome(e.target.value as typeof outcome)
                     }
                   >
+                    <option value="">Выберите итог шага</option>
                     {Object.entries(BASELINE_OUTCOMES).map(([key, label]) => (
                       <option key={key} value={key}>
                         {label}
@@ -145,8 +147,10 @@ export function BaselineJournal({
               </div>
               <button
                 className="secondary"
-                disabled={disabled}
-                onClick={() => recorder.endBaselineStep(barrier, outcome)}
+                disabled={disabled || !outcome}
+                onClick={() =>
+                  outcome && recorder.endBaselineStep(barrier, outcome)
+                }
               >
                 Завершить шаг привычного пути
               </button>
