@@ -85,12 +85,22 @@ def test_feed_translates_journal_to_wire_events(tmp_path: Path) -> None:
     assert set(body) == {"event_id", "project_id", "run_id", "occurred_at", "type", "payload"}
 
 
-def test_feed_skips_rows_up_to_acked_seq_but_still_folds_them(tmp_path: Path) -> None:
+def test_feed_skips_rows_before_acked_seq_but_still_folds_them(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     with open_log(path) as log:
         log.append(EventKind.TURN_STARTED, "run-1", {"prompt": "go"})
         log.append(EventKind.FORK_QUESTION, "run-1", {"fork_id": "f1", "questions": []})
-    assert [seq for seq, _ in feed(path, after=1).poll()] == [2]
+        log.append(EventKind.FORK_ANSWERED, "run-1", {"fork_id": "f1", "answers": {}})
+    assert [seq for seq, _ in feed(path, after=2).poll()] == [2, 3]
+
+
+def test_feed_resends_acked_row_because_it_may_be_half_written(tmp_path: Path) -> None:
+    """`acked_seq` = номер строки, дошедшей хотя бы одним событием; остальные события строки
+    досылаются, а повторные отсекает gateway по `event_id`."""
+    path = tmp_path / "events.jsonl"
+    with open_log(path) as log:
+        log.append(EventKind.TURN_STARTED, "run-1", {"prompt": "go"})
+    assert [seq for seq, _ in feed(path, after=1).poll()] == [1]
 
 
 def test_feed_is_incremental_and_waits_for_whole_lines(tmp_path: Path) -> None:
@@ -164,3 +174,24 @@ def test_fork_answer_for_open_fork_is_accepted(tmp_path: Path) -> None:
     ack = accept_command(raw, inbox_dir=tmp_path, fork_questions=lambda _: ("Q?",))
     assert ack == command_ack("a1", "accepted")
     assert json.loads(next(tmp_path.glob("*.json")).read_text())["fork_id"] == "f1"
+
+
+def test_retried_fork_answer_after_lost_ack_is_accepted_again(tmp_path: Path) -> None:
+    """Gateway повторяет команду с тем же `id`; развилка к тому времени уже закрыта ответом."""
+    raw = {"type": "command", "id": "a1", "kind": "fork_answer", "fork_id": "f1",
+           "answers": {"Q?": "A"}}  # fmt: skip
+    first = accept_command(raw, inbox_dir=tmp_path, fork_questions=lambda _: ("Q?",))
+    retry = accept_command(raw, inbox_dir=tmp_path, fork_questions=lambda _: None)
+    assert first == retry == command_ack("a1", "accepted")
+    assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+def test_retried_command_already_processed_is_accepted_again(tmp_path: Path) -> None:
+    raw = {"type": "command", "id": "a1", "kind": "fork_answer", "fork_id": "f1",
+           "answers": {"Q?": "A"}}  # fmt: skip
+    accept_command(raw, inbox_dir=tmp_path, fork_questions=lambda _: ("Q?",))
+    inbox = Inbox(tmp_path)
+    inbox.ack(inbox.peek()[0])
+    retry = accept_command(raw, inbox_dir=tmp_path, fork_questions=lambda _: None)
+    assert retry == command_ack("a1", "accepted")
+    assert list(tmp_path.glob("*.json")) == []

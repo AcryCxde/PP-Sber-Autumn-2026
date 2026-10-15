@@ -7,15 +7,16 @@
 
 import asyncio
 import json
+import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from pathlib import Path
 from typing import Final, assert_never, final
 
 from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import WebSocketException
 
 from ctrunner.diag import diag
-from ctrunner.inbox import put
+from ctrunner.inbox import has_command, put
 from ctrunner.protocol import (
     Command,
     ForkAnswerCmd,
@@ -28,6 +29,7 @@ from ctrunner.protocol import (
 from ctrunner.v0 import Draft, Translator, parse_row
 
 WIRE_VERSION: Final = 1
+STABLE_CONNECTION_S: Final = 30.0
 FRAME_ENVELOPE: Final = ("v", "type")
 
 
@@ -86,7 +88,9 @@ def command_ack(
 @final
 class JournalFeed:
     """Хвост журнала → драфты v0. `Translator` — свёртка с первой строки, поэтому читаем с начала,
-    а наружу отдаём только строки с `seq > after_seq`."""
+    а наружу отдаём строки с `seq >= after_seq`: одна строка может дать несколько событий, и обрыв
+    посреди неё оставляет `acked_seq` равным её номеру. Повтор безопасен — gateway дедуплицирует
+    по `event_id`."""
 
     def __init__(self, path: Path, translator: Translator, after_seq: int) -> None:
         self._path = path
@@ -113,7 +117,7 @@ class JournalFeed:
             except ValueError as error:  # ProtocolError — его подкласс; ядовитая строка не должна
                 diag("journal_row_skipped", error=str(error))  # останавливать поток навсегда
                 continue
-            if event.seq > self._after and drafts:
+            if event.seq >= self._after and drafts:
                 out.append((event.seq, drafts))
         return out
 
@@ -145,12 +149,19 @@ def accept_command(
         cmd = parse_command(body)
     except ProtocolError as error:
         return command_ack(raw_id if isinstance(raw_id, str) else None, "rejected", str(error))
-    if isinstance(cmd, ForkAnswerCmd):
-        questions = fork_questions(cmd.fork_id)
-        if questions is None:
-            return command_ack(cmd.id, "rejected", "unknown_fork")
-        if set(cmd.answers) != set(questions):
-            return command_ack(cmd.id, "rejected", "answers_mismatch")
+    if has_command(inbox_dir, cmd.id):  # повтор после потерянного ack: тот же id, тот же исход
+        return command_ack(cmd.id, "accepted")
+    match cmd:
+        case ForkAnswerCmd():
+            questions = fork_questions(cmd.fork_id)
+            if questions is None:
+                return command_ack(cmd.id, "rejected", "unknown_fork")
+            if set(cmd.answers) != set(questions):
+                return command_ack(cmd.id, "rejected", "answers_mismatch")
+        case MessageCmd() | StopCmd():
+            pass
+        case _:
+            assert_never(cmd)
     put(inbox_dir, command_to_raw(cmd))
     return command_ack(cmd.id, "accepted")
 
@@ -196,16 +207,27 @@ class GatewayClient:
         self._heartbeat_s = heartbeat_s
         self._backoff = backoff
         self._failures = 0
+        self._draining = asyncio.Event()
+
+    def drain(self) -> None:
+        """Выход runner: дослать хвост журнала и закончить `run` без реконнекта."""
+        self._draining.set()
 
     async def run(self) -> None:
-        while True:
+        while not self._draining.is_set():
+            started = time.monotonic()
             try:
                 await self._connection()
-            except (OSError, WebSocketException, ValueError) as error:
+            except Exception as error:  # граница задачи: любой сбой не должен гасить поток навсегда
                 diag("gateway_disconnected", error=type(error).__name__)
+            if time.monotonic() - started >= STABLE_CONNECTION_S:
+                self._failures = 0  # живое соединение; мгновенно закрывающий gateway не сбрасывает
+            if self._draining.is_set():
+                return
             delay = self._backoff[min(self._failures, len(self._backoff) - 1)]
             self._failures += 1
-            await asyncio.sleep(delay)
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._draining.wait(), delay)
 
     async def _connection(self) -> None:
         headers = {"Authorization": f"Bearer {self._token}"}
@@ -217,7 +239,6 @@ class GatewayClient:
             await ws.send(json.dumps(hello, ensure_ascii=False))
             async with asyncio.timeout(10):
                 acked = parse_welcome(json.loads(await ws.recv()))
-            self._failures = 0
             diag("gateway_connected", acked_seq=acked)
             translator = Translator(self._project_id, self._project_root)
             feed = JournalFeed(self._journal, translator, acked)
@@ -237,10 +258,14 @@ class GatewayClient:
 
     async def _send_events(self, ws: ClientConnection, feed: JournalFeed) -> None:
         while True:
+            last = self._draining.is_set()  # читаем до опроса: хвост, записанный до drain, уйдёт
             for seq, drafts in await asyncio.to_thread(feed.poll):
                 for draft in drafts:
                     await ws.send(json.dumps(event_message(seq, draft), ensure_ascii=False))
-            await asyncio.sleep(self._poll_s)
+            if last:
+                return
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._draining.wait(), self._poll_s)
 
     async def _send_heartbeats(self, ws: ClientConnection) -> None:
         while True:

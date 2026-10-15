@@ -8,10 +8,10 @@ import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
-from typing import Final, Protocol, assert_never
+from typing import Final, Protocol, assert_never, final
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, ProcessError
 
@@ -34,6 +34,7 @@ EX_CONFIG: Final = 78  # sysexits: ошибка конфигурации, рес
 EX_STATE: Final = 65  # sysexits EX_DATAERR: state.json повреждён, рестарт не поможет
 EX_UNAVAILABLE: Final = 1  # сеть или SDK: Docker перезапустит
 PROBE_TIMEOUT_S: Final = 30.0
+GATEWAY_DRAIN_S: Final = 5.0  # сколько ждём досылки хвоста журнала при выходе
 # Docker перезапускает on-failure с задержкой от 100 мс: 5 рестартов проходят за секунды,
 # поэтому кратковременную недоступность cliproxy переживаем внутри процесса.
 PROBE_RETRY_DELAYS_S: Final = (5.0, 10.0, 20.0, 40.0, 60.0)
@@ -188,9 +189,24 @@ class LiveForks:
         return None if self.session is None else self.session.fork_questions(fork_id)
 
 
+@final
+@dataclass(frozen=True, slots=True)
+class RunningGateway:
+    client: GatewayClient
+    task: asyncio.Task[None]
+
+    async def stop(self, timeout_s: float = GATEWAY_DRAIN_S) -> None:
+        """Дослать хвост журнала (финальные `turn_failed`/`turn_completed`) и закрыть соединение."""
+        self.client.drain()
+        _, pending = await asyncio.wait({self.task}, timeout=timeout_s)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(self.task, return_exceptions=True)
+
+
 def _start_gateway(
     cfg: RunnerConfig, state: PersistedState, log: EventLog, live: LiveForks
-) -> asyncio.Task[None] | None:
+) -> RunningGateway | None:
     """Без `GATEWAY_URL` runner автономен: события только в журнале, команды через inbox."""
     if cfg.gateway_url is None or cfg.gateway_token is None:
         return None
@@ -201,7 +217,7 @@ def _start_gateway(
         inbox_dir=cfg.runner_dir / "inbox", project_root=str(cfg.project_dir),
         last_seq=lambda: log.last_seq, fork_questions=live.questions,
     )  # fmt: skip
-    return asyncio.create_task(client.run())
+    return RunningGateway(client, asyncio.create_task(client.run()))
 
 
 async def run(cfg: RunnerConfig) -> int:
@@ -269,8 +285,7 @@ async def run(cfg: RunnerConfig) -> int:
             )
         finally:
             if gateway is not None:
-                gateway.cancel()
-                await asyncio.gather(gateway, return_exceptions=True)
+                await gateway.stop()
 
 
 def cli() -> None:

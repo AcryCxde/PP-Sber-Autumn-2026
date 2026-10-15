@@ -17,7 +17,9 @@ QUESTIONS: list[JsonValue] = [{"question": "Q?", "options": [{"label": "A"}]}]
 class Rig:
     """Клиент, журнал и inbox во временном каталоге; клиент работает, пока открыт `async with`."""
 
-    def __init__(self, root: Path, gateway: FakeGateway, token: str = TOKEN) -> None:
+    def __init__(
+        self, root: Path, gateway: FakeGateway, token: str = TOKEN, poll_s: float = 0.02
+    ) -> None:
         self.journal = root / "events.jsonl"
         self.health = root / "health.json"
         self.inbox = root / "inbox"
@@ -28,7 +30,7 @@ class Rig:
             session_id="s-1", journal=self.journal, health_file=self.health,
             inbox_dir=self.inbox, project_root="/workspace/project",
             last_seq=lambda: self.log.last_seq, fork_questions=self.forks.get,
-            poll_s=0.02, heartbeat_s=0.05, backoff=(0.05,),
+            poll_s=poll_s, heartbeat_s=0.05, backoff=(0.05,),
         )  # fmt: skip
         self.task: asyncio.Task[None] | None = None
 
@@ -65,7 +67,7 @@ async def test_hello_then_events_after_welcome(tmp_path: Path) -> None:
         assert {e["event"]["run_id"] for e in gw.events()} == {"run-1"}
 
 
-async def test_events_up_to_acked_seq_are_not_resent(tmp_path: Path) -> None:
+async def test_events_before_acked_seq_are_not_resent(tmp_path: Path) -> None:
     async with FakeGateway(token=TOKEN, acked_seq=2) as gw:
         rig = Rig(tmp_path, gw)
         rig.log.append(EventKind.TURN_STARTED, "run-1", {"prompt": "go"})
@@ -73,7 +75,7 @@ async def test_events_up_to_acked_seq_are_not_resent(tmp_path: Path) -> None:
         rig.log.append(EventKind.FORK_ANSWERED, "run-1", {"fork_id": "f1", "answers": {"Q?": "A"}})
         async with rig:
             await gw.wait_for(lambda m: m.get("event", {}).get("type") == "user.answer.accepted")
-        assert [e["journal_seq"] for e in gw.events()] == [3]
+        assert [e["journal_seq"] for e in gw.events()] == [2, 3]  # строка acked_seq досылается
 
 
 async def test_commands_are_acked_and_land_in_inbox(tmp_path: Path) -> None:
@@ -112,7 +114,7 @@ async def test_heartbeat_mirrors_health_file(tmp_path: Path) -> None:
         assert beat["turn_id"] is None
 
 
-async def test_reconnect_resends_nothing_acked_and_continues(tmp_path: Path) -> None:
+async def test_reconnect_continues_and_resends_only_by_event_id(tmp_path: Path) -> None:
     async with FakeGateway(token=TOKEN) as gw:
         rig = Rig(tmp_path, gw)
         rig.log.append(EventKind.TURN_STARTED, "run-1", {"prompt": "go"})
@@ -124,7 +126,11 @@ async def test_reconnect_resends_nothing_acked_and_continues(tmp_path: Path) -> 
             )
             await gw.wait_for(lambda m: m.get("event", {}).get("type") == "facilitator.question")
         assert gw.connections == 2
-        assert [e["event"]["type"] for e in gw.events()] == ["run.started", "facilitator.question"]
+        events = gw.events()
+        assert {e["event"]["type"] for e in events} == {"run.started", "facilitator.question"}
+        # строка acked_seq уходит повторно с тем же event_id — gateway по нему отсекает дубль
+        started = [e["event"]["event_id"] for e in events if e["event"]["type"] == "run.started"]
+        assert len(set(started)) == 1
 
 
 async def test_wrong_token_never_crashes_client(tmp_path: Path) -> None:
@@ -135,3 +141,15 @@ async def test_wrong_token_never_crashes_client(tmp_path: Path) -> None:
             assert rig.task is not None
             assert not rig.task.done()
         assert gw.received == []
+
+
+async def test_drain_sends_tail_written_just_before_exit(tmp_path: Path) -> None:
+    async with FakeGateway(token=TOKEN) as gw:
+        rig = Rig(tmp_path, gw, poll_s=30.0)  # без drain хвост не ушёл бы за время теста
+        async with rig:
+            await gw.wait_for(is_type("hello"))
+            rig.log.append(EventKind.TURN_STARTED, "run-1", {"prompt": "go"})
+            rig.client.drain()
+            assert rig.task is not None
+            await asyncio.wait_for(rig.task, timeout=5)
+        assert [e["event"]["type"] for e in gw.events()] == ["run.started"]
