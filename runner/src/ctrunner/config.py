@@ -21,6 +21,9 @@ TOKEN_FILE: Final = "anthropic_token"  # noqa: S105 — имя файла, а н
 GATEWAY_TOKEN_FILE: Final = "gateway_token"  # noqa: S105 — имя файла, а не значение
 DEFAULT_STALL_AFTER_S: Final = 720.0
 DEFAULT_WORKSPACE: Final = "/workspace"
+# ws:// без TLS допустим только до хоста этой же машины. host.docker.internal — то, во что
+# `sessions start` превращает localhost внутри контейнера.
+PLAIN_WS_HOSTS: Final = frozenset({"127.0.0.1", "::1", "localhost", "host.docker.internal"})
 # Вне корней сторожа: в /tmp агент мог бы подделать собственный статус живости.
 HEALTH_FILE: Final = Path("/run/ctrunner/health.json")
 
@@ -55,9 +58,7 @@ class RunnerConfig:
         if (self.gateway_url is None) != (self.gateway_token is None):
             raise ConfigError(f"env GATEWAY_URL and secret {GATEWAY_TOKEN_FILE} go together")
         if self.gateway_url is not None and self.gateway_token is not None:
-            gateway = urlsplit(self.gateway_url)
-            if gateway.scheme not in ("ws", "wss") or not gateway.hostname:
-                raise ConfigError("env GATEWAY_URL must be a ws(s) URL")
+            _check_gateway_url(self.gateway_url)
             _check_token(GATEWAY_TOKEN_FILE, self.gateway_token)
 
     @property
@@ -83,6 +84,21 @@ class RunnerConfig:
             "CLAUDE_CONFIG_DIR": str(self.claude_dir),
             **self.models,
         }
+
+
+def _check_gateway_url(raw: str) -> None:
+    """wss:// куда угодно, ws:// только на loopback; без userinfo. Значение URL в ошибку не идёт."""
+    try:
+        url = urlsplit(raw)
+        host = url.hostname
+    except ValueError:  # текст исключения urllib может содержать фрагмент URL
+        raise ConfigError("env GATEWAY_URL is not a valid URL") from None
+    if url.scheme not in ("ws", "wss") or not host:
+        raise ConfigError("env GATEWAY_URL must be a ws(s) URL")
+    if "@" in url.netloc:
+        raise ConfigError("env GATEWAY_URL must not contain credentials; use secret gateway_token")
+    if url.scheme == "ws" and host not in PLAIN_WS_HOSTS:
+        raise ConfigError("env GATEWAY_URL must be wss:// unless the host is loopback")
 
 
 def load_config(env: Mapping[str, str], secrets_dir: Path) -> RunnerConfig:

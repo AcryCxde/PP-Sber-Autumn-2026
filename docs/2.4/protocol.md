@@ -9,6 +9,7 @@ WebSocket-клиент runner реализован (`runner/src/ctrunner/gateway
 ## Транспорт
 
 - WebSocket, соединение открывает runner (у контейнера нет входящих портов). Адрес — `GATEWAY_URL`.
+- Токен идёт в заголовке, поэтому `wss://` допустим на любой хост, а `ws://` только на loopback (`127.0.0.1`, `::1`, `localhost`, `host.docker.internal`); URL с `user:password@` отклоняется при старте.
 - Авторизация: заголовок `Authorization: Bearer <gateway_token>`; токен — файл `/run/secrets/gateway_token`. `sessions secrets init` пишет его из `GATEWAY_AUTH_TOKEN`.
 - Переподключение: при любом обрыве runner ждёт 1, 2, 4, 8, 16, 30 с (дальше 30 с) и повторяет `hello`. Недоступный gateway и неверный токен runner не останавливают.
 - Одно JSON-сообщение на кадр, UTF-8. Конверт: `{"v": 1, "type": "<тип>", ...поля}`.

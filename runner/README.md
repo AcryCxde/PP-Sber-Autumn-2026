@@ -82,7 +82,7 @@ uv run sessions rm demo-a --volume
 
 ## Gateway
 
-Если задан `GATEWAY_URL` (`ws://` или `wss://`), runner сам подключается к gateway и отправляет события v0, heartbeat; команды (`message`, `fork_answer`, `stop`) приходят по тому же соединению и складываются в inbox. Секрет `gateway_token` обязателен вместе с `GATEWAY_URL`: на хосте `export GATEWAY_AUTH_TOKEN=…` перед `sessions secrets init`, `sessions start` без секрета не стартует. Без `GATEWAY_URL` runner автономен. Формат кадров — [protocol.md](../docs/2.4/protocol.md), требования к серверу — [events-v0.md, раздел 11](../docs/contracts/events-v0.md).
+Если задан `GATEWAY_URL` (`wss://` на любой хост; `ws://` только на loopback: `127.0.0.1`, `::1`, `localhost`, а также `host.docker.internal`, в который `sessions` превращает `localhost`; логин и пароль в URL запрещены — токен идёт отдельным секретом, при нарушении runner не стартует), runner сам подключается к gateway и отправляет события v0, heartbeat; команды (`message`, `fork_answer`, `stop`) приходят по тому же соединению и складываются в inbox. Секрет `gateway_token` обязателен вместе с `GATEWAY_URL`: на хосте `export GATEWAY_AUTH_TOKEN=…` перед `sessions secrets init`, `sessions start` без секрета не стартует. Без `GATEWAY_URL` runner автономен. Формат кадров — [protocol.md](../docs/2.4/protocol.md), требования к серверу — [events-v0.md, раздел 11](../docs/contracts/events-v0.md).
 
 `localhost` в `GATEWAY_URL` заменяется на `host.docker.internal`: это работает на Docker Desktop (macOS, Windows); на Linux контейнеру нужен `--add-host host.docker.internal:host-gateway`, которого `sessions` не добавляет.
 

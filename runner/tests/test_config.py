@@ -105,13 +105,13 @@ def test_gateway_is_optional(secrets: Path) -> None:
 
 def test_gateway_url_requires_secret(secrets: Path) -> None:
     with pytest.raises(ConfigError, match="gateway_token"):
-        load_config({**ENV, "GATEWAY_URL": "ws://gw:8000/runner"}, secrets)
+        load_config({**ENV, "GATEWAY_URL": "wss://gw:8000/runner"}, secrets)
 
 
 def test_gateway_loaded_and_token_hidden(secrets: Path) -> None:
     (secrets / "gateway_token").write_text("gw-secret-token\n")
-    cfg = load_config({**ENV, "GATEWAY_URL": "ws://gw:8000/runner"}, secrets)
-    assert cfg.gateway_url == "ws://gw:8000/runner"
+    cfg = load_config({**ENV, "GATEWAY_URL": "wss://gw:8000/runner"}, secrets)
+    assert cfg.gateway_url == "wss://gw:8000/runner"
     assert cfg.gateway_token == "gw-secret-token"
     assert "gw-secret" not in repr(cfg)
 
@@ -122,8 +122,43 @@ def test_gateway_url_must_be_websocket(secrets: Path) -> None:
         load_config({**ENV, "GATEWAY_URL": "http://gw:8000"}, secrets)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ws://127.0.0.1:8000/runner",
+        "ws://[::1]:8000/runner",
+        "ws://localhost:8000/runner",
+        "ws://host.docker.internal:8000/runner",  # во что sessions превращает localhost
+        "wss://gw.example/runner",
+    ],
+)
+def test_gateway_url_allows_wss_and_loopback_ws(secrets: Path, url: str) -> None:
+    (secrets / "gateway_token").write_text("gw-secret-token\n")
+    assert load_config({**ENV, "GATEWAY_URL": url}, secrets).gateway_url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "ws://gw:8000/runner",
+        "ws://10.0.0.5/runner",
+        "ws://localhost.evil.example/runner",
+        "ws://127.0.0.1.evil.example/runner",
+        "wss://user:pass-word-1@gw.example/runner",
+        "wss://user@gw.example/runner",
+        "ws://user:pass-word-1@127.0.0.1:8000/runner",
+    ],
+)
+def test_gateway_url_rejects_plain_ws_remote_and_userinfo(secrets: Path, url: str) -> None:
+    (secrets / "gateway_token").write_text("gw-secret-token\n")
+    with pytest.raises(ConfigError, match="GATEWAY_URL") as exc:
+        load_config({**ENV, "GATEWAY_URL": url}, secrets)
+    assert "pass-word-1" not in str(exc.value)
+    assert url not in str(exc.value)
+
+
 @pytest.mark.parametrize("token", ["short", "gw secret token"])
 def test_gateway_token_must_be_a_single_long_token(secrets: Path, token: str) -> None:
     (secrets / "gateway_token").write_text(token + "\n")
     with pytest.raises(ConfigError, match="gateway_token"):
-        load_config({**ENV, "GATEWAY_URL": "ws://gw:8000/runner"}, secrets)
+        load_config({**ENV, "GATEWAY_URL": "wss://gw:8000/runner"}, secrets)
