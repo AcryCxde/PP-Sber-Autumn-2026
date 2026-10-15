@@ -13,8 +13,8 @@
 |        | симлинк из seed                                    |                        |          |
 | PATH   | `..\\x`, `%2e%2e/x`, юникод-точки (буквальные)     | guard.check            | Allow внутри корня |
 | PATH   | hardlink на внешний файл                           | guard.check            | XFAIL    |
-| BASH   | `cd /`, подстановка `$(...)`, редирект с пробелом  | эвристика Bash         | Deny     |
-| BASH   | `$HOME`, `python -c`, base64, склеенный редирект   | эвристика Bash         | XFAIL    |
+| BASH   | `cd /`, `$(...)`, редирект (в т.ч. приклеенный)    | эвристика Bash         | Deny     |
+| BASH   | `$HOME`, base64-подстановка, динамический путь     | эвристика Bash         | XFAIL    |
 | CMD    | плохой `id`, чужой `fork_id`, чужие вопросы,       | accept_command, Inbox  | rejected, inbox пуст |
 |        | ответ на закрытую развилку, подмена по тому же id  |                        |          |
 | CMD    | чужой `project_id` в кадре команды                 | accept_command         | не пишется; reject XFAIL |
@@ -146,6 +146,10 @@ PATH_DENIED: dict[str, Build] = {
     "bash-dev-null-dotdot": lambda ws: ("Bash", {"command": "cat /dev/null/../../etc/passwd"}),
     "bash-cd-root": lambda ws: ("Bash", {"command": "cd / && cat etc/passwd"}),
     "bash-substitution": lambda ws: ("Bash", {"command": "cat $(echo /etc/passwd)"}),
+    "bash-interpreter-literal": lambda ws: (
+        "Bash",
+        {"command": "python3 -c \"print(open('/etc/passwd').read())\""},
+    ),
     "bash-tilde": lambda ws: ("Bash", {"command": "cat ~/.config/coreteams/secrets/x"}),
     "bash-option-value": lambda ws: ("Bash", {"command": "cp a --target-directory=/run/secrets"}),
 }
@@ -207,7 +211,7 @@ def test_hardlink_to_outside_file_denied(ws: Workspace) -> None:
 BASH_HEURISTIC_BYPASS = {
     "env-var": "cat $HOME/.config/coreteams/secrets/x",
     "encoded-path": "cat $(echo L2V0Yy9wYXNzd2Q= | base64 -d)",
-    "interpreter": "python3 -c \"print(open('/etc/passwd').read())\"",
+    "interpreter-built-path": "python3 -c \"import os; open(os.sep + 'etc' + os.sep + 'passwd')\"",
 }
 
 
@@ -221,10 +225,6 @@ def test_bash_heuristic_bypass_denied(ws: Workspace, command: str) -> None:
     assert isinstance(ws.verdict("Bash", {"command": command}), Deny)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="токен с пробелом: `echo x>/etc/foo` — кандидат начинается с `echo`, а не с `/`",
-)
 @pytest.mark.parametrize(
     "command",
     ["echo x>/etc/foo", "cat<</etc/passwd", "ls&&cat</etc/passwd", "true;cat</run/secrets/t"],
