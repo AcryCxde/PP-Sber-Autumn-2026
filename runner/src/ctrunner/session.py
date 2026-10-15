@@ -38,6 +38,7 @@ from ctrunner.guard import Allow, Deny, Policy, Verdict, check
 from ctrunner.health import write_health
 from ctrunner.inbox import Inbox
 from ctrunner.liveness import Health, Phase, assess
+from ctrunner.prompt import turn_started_payload
 from ctrunner.protocol import (
     EventKind,
     ForkAnswerCmd,
@@ -314,7 +315,7 @@ class Session:
                 case SendPrompt(turn_id=turn_id, text=text):
                     self._touch()
                     self._save()  # открытый ход durable до query
-                    self._log.append(EventKind.TURN_STARTED, turn_id, {"prompt": text})
+                    self._log.append(EventKind.TURN_STARTED, turn_id, self._started(text))
                     await client.query(text)
                 case Commit(turn_id=turn_id):
                     await self._commit(client, turn_id)
@@ -328,6 +329,12 @@ class Session:
                     await self._start_queued(client)
                 case _:
                     assert_never(effect)
+
+    def _started(self, prompt: str) -> dict[str, JsonValue]:
+        # `SendPrompt` рождается вместе с `Working`: команда хода уже в состоянии.
+        if not isinstance(self._state, Working):
+            raise RuntimeError(f"expected Working, got {type(self._state).__name__}")
+        return turn_started_payload(prompt, self._state.cmd)
 
     async def _start_queued(self, client: SdkClient) -> None:
         if isinstance(self._state, Idle):

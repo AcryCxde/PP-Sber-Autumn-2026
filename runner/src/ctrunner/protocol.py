@@ -18,6 +18,10 @@ class ProtocolError(ValueError):
 class MessageCmd:
     id: str
     text: str
+    # Необязательный вход хода: пусто — как раньше, без блока в промпте.
+    roles: tuple[str, ...] = ()
+    stage: str | None = None
+    input_files: tuple[str, ...] = ()  # пути относительно /workspace/project
 
 
 @final
@@ -51,7 +55,7 @@ class EventKind(StrEnum):
     TURN_RESUMED = "turn_resumed"
 
 
-def _text(raw: Mapping[object, object], key: str) -> str:
+def _text(raw: Mapping[str, object], key: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str) or not value:
         raise ProtocolError(f"field {key!r} must be a non-empty string")
@@ -61,7 +65,7 @@ def _text(raw: Mapping[object, object], key: str) -> str:
 COMMAND_ID_RE: Final = re.compile(r"[0-9A-Za-z_-]{1,64}")
 
 
-def _command_id(raw: Mapping[object, object]) -> str:
+def _command_id(raw: Mapping[str, object]) -> str:
     value = _text(raw, "id")
     if COMMAND_ID_RE.fullmatch(value) is None:
         # id попадает в trailer `Turn-Id` и в `run_id`: перевод строки или пробел его ломает.
@@ -69,7 +73,56 @@ def _command_id(raw: Mapping[object, object]) -> str:
     return value
 
 
-def _answers(raw: Mapping[object, object]) -> dict[str, str]:
+MAX_ROLES: Final = 32
+MAX_LABEL_LEN: Final = 128  # роль и этап
+MAX_INPUT_FILES: Final = 64
+MAX_INPUT_PATH_LEN: Final = 512
+_CONTROL_RE: Final = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _label(value: object, key: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > MAX_LABEL_LEN:
+        raise ProtocolError(f"field {key!r} must be a string of 1..{MAX_LABEL_LEN} characters")
+    return value
+
+
+def _input_path(value: object) -> str:
+    if not isinstance(value, str) or not value or len(value) > MAX_INPUT_PATH_LEN:
+        raise ProtocolError(
+            f"field 'input_files' must hold strings of 1..{MAX_INPUT_PATH_LEN} characters"
+        )
+    if value.startswith("/") or "\\" in value or _CONTROL_RE.search(value) is not None:
+        # NUL и переводы строк ломают и файловую систему, и промпт; обратный слэш прячет `..`.
+        raise ProtocolError(
+            "field 'input_files' must hold relative paths without control characters"
+        )
+    if ".." in value.split("/"):
+        raise ProtocolError("field 'input_files' must not contain '..'")
+    return value
+
+
+def _list_of(raw: Mapping[str, object], key: str, limit: int) -> list[object]:
+    value = raw.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > limit:
+        raise ProtocolError(f"field {key!r} must be an array of at most {limit} items")
+    return value
+
+
+def parse_message(command_id: str, raw: Mapping[str, object]) -> MessageCmd:
+    """Граница: `roles`, `stage`, `input_files` необязательны; `null` — то же, что отсутствие."""
+    stage = raw.get("stage")
+    return MessageCmd(
+        command_id,
+        _text(raw, "text"),
+        tuple(_label(r, "roles") for r in _list_of(raw, "roles", MAX_ROLES)),
+        None if stage is None else _label(stage, "stage"),
+        tuple(_input_path(p) for p in _list_of(raw, "input_files", MAX_INPUT_FILES)),
+    )
+
+
+def _answers(raw: Mapping[str, object]) -> dict[str, str]:
     value = raw.get("answers")
     if not isinstance(value, dict):
         raise ProtocolError("field 'answers' must be an object")
@@ -87,7 +140,7 @@ def parse_command(raw: object) -> Command:
     command_id = _command_id(raw)
     match raw.get("kind"):
         case "message":
-            return MessageCmd(command_id, _text(raw, "text"))
+            return parse_message(command_id, raw)
         case "fork_answer":
             return ForkAnswerCmd(command_id, _text(raw, "fork_id"), _answers(raw))
         case "stop":

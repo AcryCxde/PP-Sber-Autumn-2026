@@ -6,6 +6,7 @@ from typing import assert_never, final
 from claude_agent_sdk import Message, ResultMessage, SystemMessage
 
 from ctrunner.liveness import Phase
+from ctrunner.prompt import task_prompt
 from ctrunner.protocol import MessageCmd
 
 
@@ -116,7 +117,7 @@ def next_queued(s: Idle) -> Step:
     turn_id = first.id
     return (
         Working(turn_id, first, frozenset(), 0, tuple(rest)),
-        (SendPrompt(turn_id, first.text),),
+        (SendPrompt(turn_id, task_prompt(first)),),
     )
 
 

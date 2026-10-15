@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import Final, assert_never, final
 
 from ctrunner.checkpoint import Head
+from ctrunner.prompt import task_prompt
 from ctrunner.protocol import MessageCmd
 from ctrunner.state import PersistedState
 
@@ -81,7 +82,7 @@ def continuation_prompt(step: Continue, asked: Sequence[str] = ()) -> str:
             assert_never(step.mode)
     return (
         f"{preface} Сначала проверь `git status` и `git diff`: часть работы уже сделана, "
-        f"не повторяй её.\n\nЗадача:\n{step.cmd.text}{_unanswered_block(asked)}"
+        f"не повторяй её.\n\nЗадача:\n{task_prompt(step.cmd)}{_unanswered_block(asked)}"
     )
 
 

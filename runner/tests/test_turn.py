@@ -149,3 +149,12 @@ def test_halted_waits_for_human_then_runs_oldest_queued_first() -> None:
 def test_phases() -> None:
     assert Committing("t1", CMD, ()).phase is Phase.WORKING
     assert Halted(queue=()).phase is Phase.FAILED
+
+
+def test_turn_prompt_includes_inputs_block() -> None:
+    cmd = MessageCmd("c1", "go", ("методист",), "ревью", ("a.md",))
+    _, fx = on_command(Idle(queue=()), cmd)
+    (send,) = fx
+    assert isinstance(send, SendPrompt)
+    assert send.text.startswith("go\n\nРоли / Этап / Входные файлы:")
+    assert "- a.md" in send.text

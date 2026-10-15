@@ -702,3 +702,21 @@ async def test_fork_questions_visible_only_while_fork_is_open(env: Env) -> None:
     assert env.session.fork_questions(fork_id) is None
     put(env.inbox_dir, {"id": "c2", "kind": "stop"})
     assert await run is Exit.STOPPED
+
+
+async def test_turn_started_carries_inputs_and_prompt_has_block(env: Env) -> None:
+    client = FakeClient([result()])
+    put(env.inbox_dir, {"id": "c1", "kind": "message", "text": "go", "roles": ["методист"],
+                        "stage": "ревью", "input_files": ["inputs/a.md"]})  # fmt: skip
+    run = asyncio.create_task(env.session.run(client))
+    await env.wait_kind(EventKind.TURN_COMPLETED)
+    put(env.inbox_dir, {"id": "c2", "kind": "stop"})
+    await run
+    (started,) = env.events_of("turn_started")
+    payload = started["payload"]
+    assert isinstance(payload, dict)
+    assert payload["roles"] == ["методист"]
+    assert payload["stage"] == "ревью"
+    assert payload["input_files"] == ["inputs/a.md"]
+    assert client.prompts == [payload["prompt"]]
+    assert "Входные файлы" in client.prompts[0]

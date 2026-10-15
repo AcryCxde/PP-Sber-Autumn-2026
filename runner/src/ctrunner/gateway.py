@@ -126,7 +126,14 @@ def command_to_raw(cmd: Command) -> dict[str, JsonValue]:
     """Проверенная команда → файл inbox: лишние поля конверта и мусор отбрасываются."""
     match cmd:
         case MessageCmd():
-            return {"id": cmd.id, "kind": "message", "text": cmd.text}
+            raw: dict[str, JsonValue] = {"id": cmd.id, "kind": "message", "text": cmd.text}
+            if cmd.roles:
+                raw["roles"] = list(cmd.roles)
+            if cmd.stage is not None:
+                raw["stage"] = cmd.stage
+            if cmd.input_files:
+                raw["input_files"] = list(cmd.input_files)
+            return raw
         case ForkAnswerCmd():
             return {"id": cmd.id, "kind": "fork_answer", "fork_id": cmd.fork_id,
                     "answers": dict(cmd.answers)}  # fmt: skip

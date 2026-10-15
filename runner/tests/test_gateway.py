@@ -8,13 +8,21 @@ from ctrunner.gateway import (
     JournalFeed,
     accept_command,
     command_ack,
+    command_to_raw,
     event_message,
     heartbeat_message,
     hello_message,
     parse_welcome,
 )
 from ctrunner.inbox import Inbox
-from ctrunner.protocol import EventKind, JsonValue, MessageCmd, ProtocolError, StopCmd
+from ctrunner.protocol import (
+    EventKind,
+    JsonValue,
+    MessageCmd,
+    ProtocolError,
+    StopCmd,
+    parse_command,
+)
 from ctrunner.redact import Redactor
 from ctrunner.v0 import Translator
 
@@ -195,3 +203,12 @@ def test_retried_command_already_processed_is_accepted_again(tmp_path: Path) -> 
     retry = accept_command(raw, inbox_dir=tmp_path, fork_questions=lambda _: None)
     assert retry == command_ack("a1", "accepted")
     assert list(tmp_path.glob("*.json")) == []
+
+
+def test_command_to_raw_carries_message_inputs_only_when_given() -> None:
+    assert command_to_raw(MessageCmd("c1", "go")) == {"id": "c1", "kind": "message", "text": "go"}
+    cmd = MessageCmd("c1", "go", ("r",), "s", ("a.md",))
+    raw = command_to_raw(cmd)
+    assert raw == {"id": "c1", "kind": "message", "text": "go", "roles": ["r"], "stage": "s",
+                   "input_files": ["a.md"]}  # fmt: skip
+    assert parse_command(raw) == cmd
