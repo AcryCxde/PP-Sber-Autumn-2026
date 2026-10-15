@@ -1,0 +1,50 @@
+.skip-link {
+  position: fixed;
+  left: 12px;
+  top: -80px;
+  z-index: 10;
+  background: #fff;
+  color: #16252c;
+  border: 2px solid #71864c;
+  border-radius: 8px;
+  padding: 12px;
+}
+.skip-link:focus {
+  top: 12px;
+}
+:focus-visible {
+  outline: 2px solid #728548;
+  outline-offset: 4px;
+}
+button,
+a {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: #dcebb980;
+}
+.nav:hover:not(:disabled),
+.project-card:hover:not(:disabled),
+.secondary:hover:not(:disabled) {
+  background: #e9eddf;
+  color: #203139;
+}
+.back:hover:not(:disabled) {
+  color: #203139;
+  text-decoration: underline;
+}
+.project-card > span:nth-child(2),
+.workspace-grid > div {
+  min-width: 0;
+}
+.project-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 95px;
+}
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+  scroll-margin-top: 20px;
+}
+.content {
+  padding-bottom: max(40px, env(safe-area-inset-bottom));
+}
