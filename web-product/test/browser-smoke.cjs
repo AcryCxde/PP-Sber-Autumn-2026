@@ -6,6 +6,7 @@ const DEFAULT_URL = process.env.DEFAULT_URL || "http://127.0.0.1:4192";
 const FIXTURE_URL = process.env.FIXTURE_URL || "http://127.0.0.1:4191";
 const ROOT = path.resolve(__dirname, "..");
 const OUT = path.join(ROOT, "test-results");
+let diagnosticPage;
 fs.mkdirSync(OUT, { recursive: true });
 const TEXT =
   "Non-secret baseline file contents: compare options before committing.";
@@ -307,12 +308,15 @@ async function prepare(page, title, withGuide = true) {
       localStorage.setItem("coreteams-product-workspace:v2:learned", "true"),
     );
     const page = await context.newPage();
+    diagnosticPage = page;
     let uploaded = false;
     let createBody;
     let revision = 0;
     const runKeys = [];
     let runCount = 0,
       answered = false;
+    let reworked = false;
+    let completedSnapshot;
     const message = (id, role, text) => ({
       id,
       role,
@@ -392,6 +396,16 @@ async function prepare(page, title, withGuide = true) {
       }
       if (suffix === "/projects/project-v2/runs") {
         assert(uploaded);
+        if (req.postDataJSON().parentRunId) {
+          assert.equal(req.postDataJSON().parentRunId, "run-v2");
+          assert.equal(req.postDataJSON().sourceArtifactId, "a-v2");
+          assert.equal(req.postDataJSON().sourceVersion, 2);
+          assert.equal(req.postDataJSON().text, "Fixture revision request");
+          reworked = true;
+          return json({ ...completedSnapshot, id: "run-v3", revision: 1, parentRunId: "run-v2", sourceArtifactId: "a-v2",
+            artifacts: [{ ...artifacts[1], id: "a-v3", version: 3, content: "# Fixture version 3\nRework test only." }],
+            messages: [message("m2", "user", "Fixture revision request")] });
+        }
         runKeys.push(req.headers()["idempotency-key"]);
         assert.deepEqual(req.postDataJSON().fileIds, ["uploaded-v2"]);
         assert.equal(req.postDataJSON().stages[0].title, "Исходные данные");
@@ -401,42 +415,22 @@ async function prepare(page, title, withGuide = true) {
       if (suffix.endsWith("/answers")) {
         answered = true;
         assert.equal(req.postDataJSON().questionId, "q-real");
-        return json(response("review"));
-      }
-      if (suffix.endsWith("/messages")) {
-        assert.equal(req.postDataJSON().text, "Fixture revision request");
-        return json(
-          response("review", {
-            messages: [
-              message(
-                "m1",
-                "facilitator",
-                "Synthetic fixture facilitator, not real CTF.",
-              ),
-              message("m2", "user", "Fixture revision request"),
-            ],
-          }),
-        );
+        assert.deepEqual(req.postDataJSON().answers, { "Fixture question: which assumption matters?": "Fixture answer" });
+        completedSnapshot = response("completed");
+        return json(completedSnapshot);
       }
       if (suffix.endsWith("/approve")) {
-        assert.equal(req.postDataJSON().version, 2);
-        return json(
-          response("completed", {
-            artifacts: artifacts.map((a) => ({
-              ...a,
-              approved: a.id === "a-v2",
-            })),
-          }),
-        );
+        assert.equal(req.postDataJSON().version, 3);
+        return json({ receiptId: "approval-1", artifactId: "a-v3", version: 3, approved: true, approvedAt: "2026-10-16T00:00:00Z" });
       }
       if (suffix === "/projects/project-v2/runs/run-v2")
         return json(
           answered
-            ? response("review")
+            ? completedSnapshot
             : response("clarification", {
                 question: {
                   id: "q-real",
-                  text: "Fixture question: which assumption matters?",
+                  questions: [{ text: "Fixture question: which assumption matters?", header: null, options: [], multi_select: false, allow_custom: true }],
                 },
               }),
         );
@@ -506,8 +500,12 @@ async function prepare(page, title, withGuide = true) {
     await page
       .getByLabel("Вопрос или замечание к результату")
       .fill("Fixture revision request");
-    await page.getByRole("button", { name: "Передать фасилитатору" }).click();
+    await page.getByRole("button", { name: "Доработать в новом запуске" }).click();
     await page.getByText("Fixture revision request", { exact: true }).waitFor();
+    assert(reworked);
+    await page.getByLabel("Версия артефакта").selectOption("a-v1");
+    await page.getByRole("heading", { name: "Fixture version 1", exact: true }).waitFor();
+    await page.getByLabel("Версия артефакта").selectOption("a-v3");
     await page.getByRole("button", { name: "Замеры", exact: true }).click();
     await page.getByText("120", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Артефакты", exact: true }).click();
@@ -519,12 +517,12 @@ async function prepare(page, title, withGuide = true) {
       .waitFor();
     const download = page.waitForEvent("download");
     await page.getByRole("button", { name: "Скачать текст версии" }).click();
-    assert((await download).suggestedFilename().includes("v2.md"));
+    assert((await download).suggestedFilename().includes("v3.md"));
     const zipDownload = page.waitForEvent("download");
     await page
       .getByRole("button", { name: "Скачать ZIP версии", exact: true })
       .click();
-    assert((await zipDownload).suggestedFilename().endsWith("v2.zip"));
+    assert((await zipDownload).suggestedFilename().endsWith("v3.zip"));
     await page.getByRole("button", { name: /^Замер пути/ }).click();
     await page
       .getByRole("button", {
@@ -579,9 +577,9 @@ async function prepare(page, title, withGuide = true) {
       ).length,
       1,
     );
-    assert.equal(study.summaries[0].selected_result_artifact_id, "a-v2");
-    assert.equal(study.summaries[0].input_tokens, 120);
-    assert.equal(study.summaries[0].output_tokens, 45);
+    assert.equal(study.summaries[0].selected_result_artifact_id, "a-v3");
+    assert.equal(study.summaries[0].input_tokens, 240);
+    assert.equal(study.summaries[0].output_tokens, 90);
     assert.equal(study.summaries[0].failed_operations_n, 1);
     assert(!JSON.stringify(createBody).includes("U002"));
     assert(study.summaries[0].elapsed_to_saved_s !== null);
@@ -604,7 +602,7 @@ async function prepare(page, title, withGuide = true) {
     });
     await context.close();
     console.log(
-      "PASS fixture: actual multipart file bytes/hash, selected team/plan, stable retry across reload, same-run question/answer, immutable versions, message, approval, consumption and download. NOT live CTF.",
+      "PASS fixture: actual multipart file bytes/hash, selected team/plan, stable retry across reload, same-run question/answer, NEW linked rework Run, immutable project versions, separate approval receipt, summed study usage and download. NOT live CTF.",
     );
     const corrupt = await browser.newContext();
     await corrupt.addInitScript(() =>
@@ -646,6 +644,12 @@ async function prepare(page, title, withGuide = true) {
     console.log(
       "PASS opt-in study: desktop/mobile baseline, recovered fixture lifecycle, privacy-safe JSON/CSV, usage and corrupt journal preservation",
     );
+  } catch (error) {
+    if (diagnosticPage && !diagnosticPage.isClosed()) {
+      await diagnosticPage.screenshot({ path: path.join(OUT, "smoke-failure.png"), fullPage: true });
+      console.error((await diagnosticPage.locator("body").innerText()).slice(-3500));
+    }
+    throw error;
   } finally {
     await browser.close();
   }

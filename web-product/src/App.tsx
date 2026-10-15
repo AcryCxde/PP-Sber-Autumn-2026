@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { CtfApi } from "./api.ts";
+import { ApiError, CtfApi } from "./api.ts";
+import { FacilitatorQuestions } from "./FacilitatorQuestions.tsx";
 import {
   IDENTITY,
   KEY,
@@ -8,6 +9,15 @@ import {
   exampleProject,
   latest,
   mergeRun,
+  mergeRework,
+  projectArtifacts,
+  projectMessages,
+  projectRuns,
+  artifactRunId,
+  approved,
+  canRework,
+  isWaiting,
+  isTerminal,
   newProject,
   projectPayload,
   readProjects,
@@ -25,11 +35,14 @@ const api = new CtfApi(
   import.meta.env.VITE_CTF_V2_ENABLED === "true",
 );
 const labels = {
+  queued: "Запуск в очереди",
   running: "Команда работает",
   clarification: "Нужен ваш ответ",
+  waiting_for_input: "Нужен ваш ответ",
   review: "Результат на проверке",
   completed: "Работа завершена",
   failed: "Запуск завершился ошибкой",
+  outcome_unknown: "Исход запуска неизвестен — проверьте результат",
 };
 const STEP_NAMES = ["Задача и материалы", "Вопросы", "Команда", "План"];
 const TOUR = [
@@ -141,7 +154,6 @@ export function App() {
     [sideTab, setSideTab] = useState<"artifacts" | "team" | "usage">(
       "artifacts",
     ),
-    [answer, setAnswer] = useState(""),
     [preview, setPreview] = useState<{ name: string; text: string } | null>(
       null,
     ),
@@ -193,12 +205,6 @@ export function App() {
           },
           artifact.id,
         );
-      if (artifact.approved)
-        study.record(
-          "artifact_accepted",
-          { projectId, runId: incoming.id, artifactId: artifact.id },
-          artifact.id,
-        );
     }
     if (incoming.status === "running" && study.active()?.mode === "active")
       study.mode("wait");
@@ -235,7 +241,7 @@ export function App() {
     if (view === "onboard" && p) track("preparation_step", { step: p.step });
     if (view === "workspace" && p) {
       track("workspace_entered", {}, `${p.id}:${run?.id || "draft"}`);
-      if (run?.status === "clarification" && run.question)
+      if (isWaiting(run) && run?.question)
         track(
           "clarification_shown",
           { runId: run.id, questionId: run.question.id },
@@ -243,13 +249,6 @@ export function App() {
         );
     }
   }, [view, tourStep, p?.id, p?.step, run?.id, run?.question?.id, sample]);
-  useEffect(() => {
-    setAnswer(
-      p?.answerDraft?.questionId === run?.question?.id
-        ? p?.answerDraft?.text || ""
-        : "",
-    );
-  }, [p?.id, run?.question?.id]);
   function save(next: Project[]) {
     if (issue) return false;
     try {
@@ -259,7 +258,7 @@ export function App() {
         );
         return false;
       }
-      const raw = JSON.stringify({ version: 2, projects: next });
+      const raw = JSON.stringify({ version: 3, projects: next });
       localStorage.setItem(KEY, raw);
       rawRef.current = raw;
       projectsRef.current = next;
@@ -330,7 +329,6 @@ export function App() {
     setView(project.step === 4 ? "workspace" : "onboard");
     setStageId(project.run?.stageId || project.stages[0].id);
     setArtifactId("");
-    setAnswer("");
     setError("");
     setNotice("");
     setPoll(true);
@@ -428,7 +426,7 @@ export function App() {
     body: Record<string, unknown>,
     targetId?: string,
   ) {
-    if (!p || sample || block) return;
+    if (!p || sample || block || busyRef.current) return;
     setError("");
     setNotice("");
     if (!api.available) {
@@ -444,7 +442,16 @@ export function App() {
       id: crypto.randomUUID(),
       body,
       targetId,
+      runId: action === "approve" && targetId ? artifactRunId(next, targetId) : next.run?.id,
     };
+    if (pending.legacy || pending.action === "message" || pending.rejected) {
+      setError("Этот запрос нельзя повторить автоматически: устаревший формат или вопрос. Перечитайте состояние; прежние данные сохранены.");
+      return;
+    }
+    if (!next.pending && pending.action === "answer" && (!isWaiting(next.run) || next.run?.question?.id !== pending.body.questionId || next.run?.progress?.stage === "interrupted" || next.run?.progress?.stage === "recovering")) {
+      setError("Вопрос изменился или временно недоступен. Обновите статус; прежний ответ не отправлен.");
+      return;
+    }
     next.pending = pending;
     if (!update(next)) return;
     if (pending.action === "answer")
@@ -453,7 +460,7 @@ export function App() {
         { runId: next.run?.id, requestId: pending.id },
         pending.id,
       );
-    if (pending.action === "message")
+    if (pending.action === "rework")
       track(
         "message_submitted",
         { runId: next.run?.id, requestId: pending.id },
@@ -501,29 +508,42 @@ export function App() {
           { ...pending.body, fileIds: next.files.map((f) => f.uploadedId) },
           pending.id,
         );
+      } else if (pending.action === "rework") {
+        if (!next.serverId || !canRework(next.run) || next.run?.id !== pending.runId)
+          throw new Error("Для доработки нужен подтверждённый завершённый запуск");
+        result = await api.run(`projects/${encodeURIComponent(next.serverId)}/runs`, pending.body, pending.id);
+      } else if (pending.action === "approve") {
+        const artifact = projectArtifacts(next).find(a => a.id === pending.targetId);
+        if (!next.serverId || !artifact || !pending.runId) throw new Error("Нет сохранённой версии для одобрения");
+        const receipt = await api.approve(
+          `projects/${encodeURIComponent(next.serverId)}/runs/${encodeURIComponent(pending.runId)}/artifacts/${encodeURIComponent(artifact.id)}/approve`,
+          pending.body, pending.id, artifact,
+        );
+        const current = projectsRef.current.find(x => x.id === next.id) || next;
+        if (!update({ ...current, pending: undefined, approvals: { ...current.approvals, [artifact.id]: receipt } }))
+          throw new Error("Подтверждение одобрения не сохранено в браузере");
+        track("artifact_accepted", { runId: pending.runId, artifactId: artifact.id }, artifact.id);
+        setNotice("Сервер подтвердил одобрение конкретной версии. Закрытый запуск и содержимое документа не изменены.");
+        return;
       } else {
         if (!next.serverId || !next.run)
           throw new Error("Нет подтверждённого запуска");
+        if (next.run.id !== pending.runId) throw new Error("Запрос относится к другому запуску");
         const prefix = `projects/${encodeURIComponent(next.serverId)}/runs/${encodeURIComponent(next.run.id)}`;
-        const route =
-          pending.action === "answer"
-            ? `${prefix}/answers`
-            : pending.action === "message"
-              ? `${prefix}/messages`
-              : `${prefix}/artifacts/${encodeURIComponent(pending.targetId || "")}/approve`;
-        result = await api.run(route, pending.body, pending.id);
+        result = await api.run(`${prefix}/answers`, pending.body, pending.id);
         if (result.id !== next.run.id)
           throw new Error("Ответ относится к другому запуску");
       }
       const current = projectsRef.current.find((x) => x.id === next.id) || next;
-      next = mergeRun(
-        { ...current, serverId: next.serverId, files: next.files },
-        result,
-      );
+      const withServer = { ...current, serverId: next.serverId, files: next.files };
+      next = pending.action === "rework"
+        ? mergeRework(withServer, result, pending.runId!, String(pending.body.sourceArtifactId))
+        : mergeRun(withServer, result);
       next.pending = undefined;
       next.draftMessage = "";
       next.answerDraft = undefined;
       if (!update(next)) throw new Error("Ответ не сохранён в браузере");
+      if (pending.action === "rework") setArtifactId("");
       observeRun(next.id, result);
       if (pending.action === "answer")
         track(
@@ -531,18 +551,33 @@ export function App() {
           { runId: result.id, requestId: pending.id },
           pending.id,
         );
-      if (pending.action === "message")
+      if (pending.action === "rework")
         track(
           "message_acknowledged",
           { runId: result.id, requestId: pending.id },
           pending.id,
         );
-      setAnswer("");
       setPoll(true);
       setNotice(
         "Ответ сервиса получен. Сохранение каждого артефакта подтверждается отдельно.",
       );
     } catch (e) {
+      if (study.active()?.phase !== "baseline" && study.active()?.projectId === p.id && study.active()?.mode === "wait") study.mode("active");
+      if (pending.action === "answer" && e instanceof ApiError && e.code === "unknown_fork" && e.status && e.status >= 400 && e.status < 500) {
+        // A definite rejection, unlike timeout, makes this answer safe NOT to replay.
+        const current = projectsRef.current.find(x => x.id === next.id) || next;
+        update({ ...current, pending: { ...pending, rejected: true } });
+        try {
+          const fresh = await api.run(`projects/${encodeURIComponent(next.serverId!)}/runs/${encodeURIComponent(pending.runId!)}`);
+          const latestProject = projectsRef.current.find(x => x.id === next.id) || current;
+          if (update({ ...mergeRun(latestProject, fresh), pending: undefined, answerDraft: undefined })) observeRun(next.id, fresh);
+          setError("Прежний вопрос отклонён как устаревший. Загружено текущее состояние; заполните актуальные вопросы заново. Старый ответ не отправлен.");
+        } catch {
+          setError("Вопрос устарел (unknown_fork). Не удалось перечитать состояние. Нажмите «Обновить статус»; старый ответ не будет повторён.");
+        }
+        track("operation_failed", { requestId: pending.id, status: "unknown_fork" });
+        return;
+      }
       if (
         study.active()?.phase !== "baseline" &&
         study.active()?.projectId === p.id &&
@@ -569,8 +604,11 @@ export function App() {
       );
       if (nextRun.id !== run.id) throw new Error("Другой ID запуска");
       const current = projectsRef.current.find((x) => x.id === p.id);
-      if (current && update(mergeRun(current, nextRun)))
-        observeRun(current.id, nextRun);
+      if (current) {
+        const merged = mergeRun(current, nextRun);
+        if (current.pending?.rejected) { merged.pending = undefined; merged.answerDraft = undefined; }
+        if (update(merged)) observeRun(current.id, nextRun);
+      }
       setPoll(true);
     } catch (e) {
       setPoll(false);
@@ -585,14 +623,14 @@ export function App() {
     setError("");
     try {
       const blob = await api.zip(
-          `projects/${encodeURIComponent(p.serverId)}/runs/${encodeURIComponent(run.id)}/artifacts/${encodeURIComponent(a.id)}/zip`,
+          `projects/${encodeURIComponent(p.serverId)}/runs/${encodeURIComponent(artifactRunId(p, a.id)!)}/artifacts/${encodeURIComponent(a.id)}/zip`,
         ),
         url = URL.createObjectURL(blob),
         link = document.createElement("a");
       link.href = url;
       link.download = `coreteams-v${a.version}.zip`;
       link.click();
-      track("zip_download_handed", { runId: run.id, artifactId: a.id });
+      track("zip_download_handed", { runId: artifactRunId(p, a.id), artifactId: a.id });
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       setNotice(
         "ZIP получен с сервера и передан браузеру. Сохранение на диске выполняет браузер.",
@@ -609,7 +647,7 @@ export function App() {
       !api.available ||
       !p?.serverId ||
       !run ||
-      run.status !== "running" ||
+      isTerminal(run) || run.status === "review" ||
       p.pending ||
       !poll ||
       issue
@@ -655,8 +693,8 @@ export function App() {
     issue,
   ]);
   const selectedStage = p?.stages.find((s) => s.id === stageId) || p?.stages[0];
-  const stageArtifacts =
-    run?.artifacts.filter((a) => a.stageId === selectedStage?.id) || [];
+  const artifacts = p ? projectArtifacts(p) : [];
+  const stageArtifacts = artifacts.filter((a) => a.stageId === selectedStage?.id);
   const documents = Array.from(
     new Map(stageArtifacts.map((a) => [a.documentId, a])).values(),
   );
@@ -667,15 +705,19 @@ export function App() {
       .filter((a) => a.documentId === activeDocument?.documentId)
       .sort((a, b) => b.version - a.version) || [];
   const a = versions.find((a) => a.id === artifactId) || versions[0];
+  const answerDraft = p?.answerDraft?.questionId === run?.question?.id
+    ? p?.answerDraft?.answers || (p?.answerDraft?.text && run?.question?.questions.length === 1
+      ? { [run.question.questions[0].text]: { selected: [], custom: p.answerDraft.text } } : {}) : {};
+  const questionReady = isWaiting(run) && run?.progress?.stage !== "interrupted" && run?.progress?.stage !== "recovering";
   useEffect(() => {
     if (!sample && view === "workspace" && sideTab === "artifacts" && a) {
       track(
         "result_shown",
-        { runId: run?.id, artifactId: a.id, stageId: a.stageId },
+        { runId: p ? artifactRunId(p, a.id) : undefined, artifactId: a.id, stageId: a.stageId },
         a.id,
       );
       track("artifact_viewed", {
-        runId: run?.id,
+        runId: p ? artifactRunId(p, a.id) : undefined,
         artifactId: a.id,
         stageId: a.stageId,
       });
@@ -703,6 +745,15 @@ export function App() {
             ? "Состав учебного примера. CTF не запускался."
             : "Выбранные AI-роли — часть согласуемого плана. Их доступность и назначение должен подтвердить backend."}
         </p>
+        {!sample ? <div className="role-evidence">
+          <h3>Исполнение по событиям сервиса</h3>
+          {p && projectRuns(p).some(r => r.roleEvents?.length) ? <ul>
+            {projectRuns(p).flatMap(r => (r.roleEvents || []).map(e => <li key={`${r.id}:${e.id}`}>
+              {ROLES.find(role => role.id === e.roleId)?.name || e.roleId}: {e.type === "role.started" ? "работа начата" : e.type === "role.completed" ? "работа завершена" : "сообщена ошибка"}
+              <small> · {new Date(e.at).toLocaleString("ru")}</small>
+            </li>))}
+          </ul> : <p className="muted">Подтверждённых событий ролей пока нет. Выбор команды и названия ролей в запросе не доказывают их исполнение.</p>}
+        </div> : null}
       </>
     );
   }
@@ -783,7 +834,7 @@ export function App() {
           run &&
           view === "workspace" &&
           sideTab === "artifacts"
-            ? { artifactId: a.id, runId: run.id }
+            ? { artifactId: a.id, runId: artifactRunId(p!, a.id)! }
             : undefined
         }
       />
@@ -1426,6 +1477,7 @@ export function App() {
                       onClick={() =>
                         perform("start", {
                           ...projectPayload(p),
+                          stageId: p.stages[0].id,
                           files: p.files,
                         })
                       }
@@ -1439,7 +1491,7 @@ export function App() {
                 {!sample && run ? (
                   <button
                     className="secondary"
-                    disabled={block || Boolean(p.pending)}
+                    disabled={block}
                     onClick={refresh}
                   >
                     Обновить статус
@@ -1449,11 +1501,13 @@ export function App() {
             </div>
             {p.pending && !sample ? (
               <div className="banner pending">
-                Исход запроса не подтверждён. Повтор отправляет прежние данные и
-                тот же ID.
+                {p.pending.legacy || p.pending.action === "message"
+                  ? "Сохранён запрос прежнего формата. Он не повторяется новым протоколом. Нужна сверка его исхода с сервером; данные не удалены."
+                  : p.pending.rejected ? "Прежний вопрос отклонён. Обновите статус; старый ответ не повторяется."
+                  : "Исход доставки запроса не подтверждён. Это не терминальный outcome_unknown. Сначала обновите статус; повтор вручную использует прежние данные и тот же ID."}
                 <button
                   className="text-btn"
-                  disabled={block}
+                  disabled={block || p.pending.legacy || p.pending.rejected || p.pending.action === "message"}
                   onClick={() =>
                     perform(
                       p.pending!.action,
@@ -1471,21 +1525,23 @@ export function App() {
                 <h2>Путь проекта</h2>
                 <nav aria-label="Этапы работы">
                   {p.stages.map((s, i) => {
-                    const result = latest(run?.artifacts || [], s.id);
+                    const result = latest(artifacts, s.id);
                     const ids = new Set(
-                      (run?.artifacts || [])
+                      artifacts
                         .filter((a) => a.stageId === s.id)
                         .map((a) => a.documentId),
                     );
                     const phaseApproved =
                       ids.size > 0 &&
                       [...ids].every(
-                        (id) =>
-                          (run?.artifacts || [])
+                        (id) => {
+                          const version = artifacts
                             .filter(
                               (a) => a.stageId === s.id && a.documentId === id,
                             )
-                            .sort((a, b) => b.version - a.version)[0]?.approved,
+                            .sort((a, b) => b.version - a.version)[0];
+                          return version && (sample ? version.approved : approved(p, version));
+                        },
                       );
                     return (
                       <button
@@ -1525,6 +1581,16 @@ export function App() {
                   })}
                 </nav>
                 <div className="sidebar-divider">
+                  {run ? <details className="run-history">
+                    <summary>История запусков · {projectRuns(p).length}</summary>
+                    <ol>{projectRuns(p).map((attempt, i) => <li key={attempt.id}>
+                      <strong>Запуск {i + 1}{attempt.id === run.id ? " · текущий" : ""}</strong>
+                      <small>{labels[attempt.status]}</small>
+                      <code>{attempt.id}</code>
+                      {attempt.sourceArtifactId ? <small>Доработка версии: {attempt.sourceArtifactId}</small> : null}
+                    </li>)}</ol>
+                    <p className="muted">Диалог и версии всех запусков остаются в этом проекте. Техническое завершение не означает ваше одобрение.</p>
+                  </details> : null}
                   <h2>Материалы</h2>
                   {p.files.length ? (
                     fileList()
@@ -1586,7 +1652,7 @@ export function App() {
                       </div>
                     </div>
                   ) : (
-                    run.messages.map((m) => (
+                    projectMessages(p).map((m) => (
                       <article key={m.id} className={`message ${m.role}`}>
                         <span className="message-avatar">
                           {m.role === "user" ? "Вы" : "C"}
@@ -1605,49 +1671,20 @@ export function App() {
                       </article>
                     ))
                   )}
-                  {run?.status === "clarification" && run.question ? (
-                    <div className="question-box">
-                      <span className="eyebrow">НУЖНО ВАШЕ РЕШЕНИЕ</span>
-                      <h3>{run.question.text}</h3>
-                      <label>
-                        Ответ фасилитатору
-                        <textarea
-                          name="facilitator-answer"
-                          aria-label="Ответ фасилитатору"
-                          autoComplete="off"
-                          rows={3}
-                          value={answer}
-                          disabled={block || sample || Boolean(p.pending)}
-                          onChange={(e) => {
-                            setAnswer(e.target.value);
-                            patch({
-                              answerDraft: {
-                                questionId: run.question!.id,
-                                text: e.target.value,
-                              },
-                            });
-                          }}
-                        />
-                      </label>
-                      <button
-                        className="primary"
-                        disabled={
-                          block ||
-                          sample ||
-                          !answer.trim() ||
-                          Boolean(p.pending)
-                        }
-                        onClick={() =>
-                          perform("answer", {
-                            questionId: run.question!.id,
-                            answer: answer.trim(),
-                          })
-                        }
-                      >
-                        Ответить и продолжить
-                      </button>
-                    </div>
-                  ) : null}
+                  {isWaiting(run) && run?.question ? <FacilitatorQuestions
+                    group={run.question} draft={answerDraft}
+                    disabled={block || sample || Boolean(p.pending) || !questionReady}
+                    onChange={answers => patch({ answerDraft: { questionId: run.question!.id, answers } })}
+                    onSubmit={answers => void perform("answer", { questionId: run.question!.id, answers })}
+                  /> : null}
+                  {run?.progress ? <p className="note" role="status">
+                    {run.progress.stage === "interrupted" ? "Связь с исполнением прервана. Ожидаем состояние сервера."
+                      : run.progress.stage === "recovering" ? "Сервис восстанавливает выполнение. Повторный запуск не создаём."
+                      : "Сервис сообщает: выполнение продолжается."}
+                    {run.progress.attempt ? ` Попытка восстановления: ${run.progress.attempt}.` : ""}
+                    {run.progress.context_restored === true ? " Восстановление контекста подтверждено сервером." : ""}
+                  </p> : null}
+                  {run?.status === "outcome_unknown" ? <p className="error-note" role="status">Сервер сообщил неизвестный исход. Успех и сохранение не подтверждены этим статусом. Проверьте версии и состояние с командой; автоматического повтора или нового запуска нет.</p> : null}
                   {run?.status === "failed" ? (
                     <p className="error-note">
                       Запуск завершился ошибкой. ID: {run.id}. Новый запуск не
@@ -1659,11 +1696,16 @@ export function App() {
                   className="composer"
                   onSubmit={(e) => {
                     e.preventDefault();
-                    if (p.draftMessage.trim())
-                      void perform("message", {
+                    if (p.draftMessage.trim() && canRework(run) && a?.saved)
+                      void perform("rework", {
+                        ...projectPayload(p),
                         text: p.draftMessage.trim(),
                         stageId: selectedStage?.id,
-                        artifactId: a?.id,
+                        parentRunId: run!.id,
+                        sourceArtifactId: a.id,
+                        documentId: a.documentId,
+                        sourceVersion: a.version,
+                        fileIds: p.files.map(f => f.uploadedId),
                       });
                   }}
                 >
@@ -1673,7 +1715,7 @@ export function App() {
                       name="revision-message"
                       autoComplete="off"
                       rows={3}
-                      disabled={sample || block || Boolean(p.pending)}
+                      disabled={sample || block || Boolean(p.pending) || !canRework(run) || !a?.saved}
                       value={sample ? "" : p.draftMessage}
                       onChange={(e) => patch({ draftMessage: e.target.value })}
                       placeholder={
@@ -1688,7 +1730,8 @@ export function App() {
                       {sample
                         ? "Для своей задачи создайте проект"
                         : run
-                          ? "Отправка относится к текущему запуску"
+                          ? canRework(run) ? "Доработка создаст новый запуск в этом же проекте. Выбранные документ, версия и история сохранят связь."
+                            : "Дождитесь завершения запуска. На вопросы отвечайте в форме выше; доработка не переоткрывает завершённый Run."
                           : "Черновик замечания сохранён. Для отправки нужен запуск CTF."}
                     </small>
                     <button
@@ -1696,12 +1739,12 @@ export function App() {
                       disabled={
                         sample ||
                         block ||
-                        !run ||
+                        !canRework(run) || !a?.saved ||
                         Boolean(p.pending) ||
                         !p.draftMessage.trim()
                       }
                     >
-                      Передать фасилитатору
+                      Доработать в новом запуске
                     </button>
                   </div>
                 </form>
@@ -1729,6 +1772,7 @@ export function App() {
                     <>
                       <p className="eyebrow">ФАКТИЧЕСКОЕ ПОТРЕБЛЕНИЕ</p>
                       <h2>Замеры CTF</h2>
+                      <p className="muted">Данные текущего запуска, не сумма по проекту. Запусков в истории: {projectRuns(p).length}.</p>
                       <dl className="usage-list">
                         {[
                           ["Входные токены", run?.usage?.inputTokens],
@@ -1802,7 +1846,7 @@ export function App() {
                               {versions.map((v) => (
                                 <option key={v.id} value={v.id}>
                                   v{v.version} · {v.title}
-                                  {v.approved ? " · согласована" : ""}
+                                  {(sample ? v.approved : approved(p, v)) ? " · одобрена" : ""}
                                 </option>
                               ))}
                             </select>
@@ -1819,13 +1863,14 @@ export function App() {
                                 ? `Сервер подтвердил запись${a.savedAt ? ` · ${new Date(a.savedAt).toLocaleString("ru")}` : ""}`
                                 : "Постоянное сохранение не подтверждено"}
                           </p>
+                          {!sample ? <p className="artifact-status">{approved(p, a) ? "Одобрено вами · подтверждено сервером для этой версии" : "Пользовательское одобрение этой версии не подтверждено"}</p> : null}
                           <div className="artifact-actions">
                             <button
                               className="secondary"
                               onClick={() => {
                                 downloadText(a);
                                 track("text_download_handed", {
-                                  runId: run?.id,
+                                  runId: artifactRunId(p, a.id),
                                   artifactId: a.id,
                                 });
                               }}
@@ -1852,7 +1897,7 @@ export function App() {
                                 disabled={
                                   block ||
                                   Boolean(p.pending) ||
-                                  a.approved ||
+                                  approved(p, a) ||
                                   a.id !== versions[0]?.id ||
                                   !a.saved
                                 }
@@ -1864,7 +1909,7 @@ export function App() {
                                   )
                                 }
                               >
-                                {a.approved
+                                {approved(p, a)
                                   ? "Версия согласована"
                                   : "Согласовать результат"}
                               </button>

@@ -75,18 +75,33 @@ export type Usage = {
 export type Run = {
   id: string;
   revision: number;
-  status: "running" | "clarification" | "review" | "completed" | "failed";
+  status: "queued" | "running" | "clarification" | "waiting_for_input" | "review" | "completed" | "failed" | "outcome_unknown";
   stageId: string;
-  question?: { id: string; text: string };
+  question?: QuestionGroup;
+  progress?: { stage: "interrupted" | "recovering" | "working"; attempt?: number; context_restored?: boolean };
+  parentRunId?: string;
+  sourceArtifactId?: string;
   messages: Message[];
   artifacts: Artifact[];
+  roleEvents?: RoleEvent[];
   usage?: Usage;
 };
+export type RoleEvent = { id: string; roleId: string; type: "role.started" | "role.completed" | "role.failed"; at: string };
+export type QuestionGroup = { id: string; questions: {
+  text: string; header: string | null;
+  options: { label: string; description: string | null }[];
+  multi_select: boolean; allow_custom: boolean;
+}[] };
+export type AnswerValue = { selected: string[]; custom: string };
+export type Approval = { receiptId: string; artifactId: string; version: number; approved: true; approvedAt: string };
 export type Pending = {
-  action: "start" | "answer" | "message" | "approve";
+  action: "start" | "answer" | "message" | "rework" | "approve";
   id: string;
   body: Record<string, unknown>;
   targetId?: string;
+  runId?: string;
+  legacy?: boolean;
+  rejected?: boolean;
 };
 export type Project = {
   id: string;
@@ -104,9 +119,11 @@ export type Project = {
   step: number;
   serverId?: string;
   run?: Run;
+  runs?: Run[];
+  approvals?: Record<string, Approval>;
   pending?: Pending;
   draftMessage: string;
-  answerDraft?: { questionId: string; text: string };
+  answerDraft?: { questionId: string; text?: string; answers?: Record<string, AnswerValue> };
 };
 export function newProject(): Project {
   const now = new Date().toISOString();
@@ -149,13 +166,67 @@ const str = (v: unknown): v is string => typeof v === "string";
 const nonempty = (v: unknown): v is string => str(v) && v.trim().length > 0;
 const count = (v: unknown) =>
   typeof v === "number" && Number.isFinite(v) && v >= 0;
+export const isWaiting = (run?: Run) => run?.status === "clarification" || run?.status === "waiting_for_input";
+export const isTerminal = (run?: Run) => Boolean(run && ["completed", "failed", "outcome_unknown"].includes(run.status));
+export const canRework = (run?: Run) => run?.status === "completed";
+export function parseQuestion(v: unknown): QuestionGroup {
+  if (!obj(v) || !nonempty(v.id) || !Array.isArray(v.questions) || !v.questions.length)
+    throw new Error("Нет структурированных вопросов фасилитатора");
+  for (const q of v.questions) {
+    if (!obj(q) || !nonempty(q.text) || !(q.header === null || str(q.header)) ||
+        typeof q.multi_select !== "boolean" || typeof q.allow_custom !== "boolean" || !Array.isArray(q.options) ||
+        q.options.some(o => !obj(o) || !nonempty(o.label) || !(o.description === null || str(o.description))) ||
+        new Set(q.options.map((o: any) => o.label)).size !== q.options.length ||
+        (!q.allow_custom && !q.options.length)) throw new Error("Некорректный вопрос фасилитатора");
+  }
+  if (new Set(v.questions.map((q: any) => q.text)).size !== v.questions.length)
+    throw new Error("Одинаковые тексты вопросов: ответы нельзя передать однозначно");
+  return v as QuestionGroup;
+}
+export function buildAnswers(group: QuestionGroup, draft: Record<string, AnswerValue>): Record<string, string> {
+  parseQuestion(group);
+  return Object.fromEntries(group.questions.map(q => {
+    const value = draft[q.text] || { selected: [], custom: "" };
+    const custom = value.custom.trim();
+    if (new Set(value.selected).size !== value.selected.length ||
+        value.selected.some(v => !q.options.some(o => o.label === v)) ||
+        (custom && !q.allow_custom) ||
+        (!q.multi_select && value.selected.length + Number(Boolean(custom)) > 1))
+      throw new Error("Ответ не соответствует вариантам вопроса");
+    const parts = [...value.selected, ...(custom ? [custom] : [])];
+    if (!parts.length) throw new Error("Ответьте на каждый вопрос фасилитатора");
+    return [q.text, parts.join(", ")];
+  }));
+}
+export function parseApproval(v: unknown, artifact: Artifact): Approval {
+  if (!obj(v) || !artifact.saved || !nonempty(v.receiptId) || v.artifactId !== artifact.id ||
+      v.version !== artifact.version || v.approved !== true || !str(v.approvedAt) || !Number.isFinite(Date.parse(v.approvedAt)))
+    throw new Error("Сервис не подтвердил одобрение выбранной сохранённой версии");
+  return v as Approval;
+}
+export function projectRuns(p: Project): Run[] {
+  return [...new Map([...(p.runs || []), ...(p.run ? [p.run] : [])].map(r => [r.id, r])).values()];
+}
+export function projectArtifacts(p: Project): Artifact[] {
+  return [...new Map(projectRuns(p).flatMap(r => r.artifacts).map(a => [a.id, a])).values()];
+}
+export function projectMessages(p: Project): Message[] {
+  return [...new Map(projectRuns(p).flatMap(r => r.messages).map(m => [m.id, m])).values()];
+}
+export function artifactRunId(p: Project, artifactId: string): string | undefined {
+  return projectRuns(p).find(r => r.artifacts.some(a => a.id === artifactId))?.id;
+}
+export function approved(p: Project, a: Artifact): boolean {
+  const receipt = p.approvals?.[a.id];
+  return Boolean(a.saved && receipt && receipt.artifactId === a.id && receipt.version === a.version);
+}
 export function parseRun(v: unknown): Run {
   if (
     !obj(v) ||
     !nonempty(v.id) ||
     !Number.isInteger(v.revision) ||
     Number(v.revision) < 0 ||
-    !["running", "clarification", "review", "completed", "failed"].includes(
+    !["queued", "running", "clarification", "waiting_for_input", "review", "completed", "failed", "outcome_unknown"].includes(
       String(v.status),
     ) ||
     !nonempty(v.stageId) ||
@@ -163,11 +234,20 @@ export function parseRun(v: unknown): Run {
     !Array.isArray(v.artifacts)
   )
     throw new Error("Несовместимый ответ сервиса");
-  if (
-    v.status === "clarification" &&
-    (!obj(v.question) || !nonempty(v.question.id) || !nonempty(v.question.text))
-  )
-    throw new Error("Нет вопроса фасилитатора");
+  const replacingQuestion = obj(v.progress) && ["interrupted", "recovering"].includes(String(v.progress.stage));
+  const question = isWaiting(v as Run) && !(replacingQuestion && v.question == null) ? parseQuestion(v.question) : undefined;
+  if (v.roleEvents !== undefined && (!Array.isArray(v.roleEvents) || v.roleEvents.some(e =>
+    !obj(e) || !nonempty(e.id) || !nonempty(e.roleId) || !["role.started", "role.completed", "role.failed"].includes(String(e.type)) ||
+    !str(e.at) || !Number.isFinite(Date.parse(e.at))) || new Set(v.roleEvents.map((e: any) => e.id)).size !== v.roleEvents.length))
+    throw new Error("Некорректные события исполнения ролей");
+  if (v.progress !== undefined && (!obj(v.progress) || !["interrupted", "recovering", "working"].includes(String(v.progress.stage)) ||
+      (v.progress.attempt !== undefined && (!Number.isInteger(v.progress.attempt) || Number(v.progress.attempt) < 1)) ||
+      (v.progress.context_restored !== undefined && typeof v.progress.context_restored !== "boolean")))
+    throw new Error("Некорректное состояние восстановления");
+  if (isTerminal(v as Run) && v.progress && (v.progress as any).stage !== "working")
+    throw new Error("Терминальный запуск не может продолжать восстановление");
+  for (const field of ["parentRunId", "sourceArtifactId"])
+    if (v[field] !== undefined && !nonempty(v[field])) throw new Error("Некорректная связь доработки");
   const messages = v.messages.map((m: unknown) => {
     if (
       !obj(m) ||
@@ -218,7 +298,7 @@ export function parseRun(v: unknown): Run {
       "computeSeconds",
       "cost",
     ] as const) {
-      if (v.usage[field] !== undefined) {
+      if (v.usage[field] !== undefined && v.usage[field] !== null) {
         if (!count(v.usage[field])) throw new Error("Некорректный замер");
         if (
           ["inputTokens", "outputTokens", "requests"].includes(field) &&
@@ -228,7 +308,7 @@ export function parseRun(v: unknown): Run {
         usage[field] = v.usage[field] as number;
       }
     }
-    if (v.usage.currency !== undefined) {
+    if (v.usage.currency !== undefined && v.usage.currency !== null) {
       if (!nonempty(v.usage.currency)) throw new Error("Некорректная валюта");
       usage.currency = v.usage.currency;
     }
@@ -240,15 +320,29 @@ export function parseRun(v: unknown): Run {
     revision: v.revision as number,
     status: v.status as Run["status"],
     stageId: v.stageId,
-    ...(v.status === "clarification"
-      ? { question: v.question as Run["question"] }
-      : {}),
+    ...(question ? { question } : {}),
+    ...(v.progress ? { progress: v.progress as Run["progress"] } : {}),
+    ...(v.parentRunId ? { parentRunId: v.parentRunId as string } : {}),
+    ...(v.sourceArtifactId ? { sourceArtifactId: v.sourceArtifactId as string } : {}),
     messages,
     artifacts,
+    ...(v.roleEvents ? { roleEvents: v.roleEvents as RoleEvent[] } : {}),
     ...(usage ? { usage } : {}),
   };
 }
 export function mergeRun(p: Project, run: Run): Project {
+  const historical = (p.runs || []).flatMap(r => r.artifacts);
+  for (const a of run.artifacts) {
+    const existing = historical.find(old => old.id === a.id);
+    if (existing) {
+      if (JSON.stringify(a) !== JSON.stringify(existing)) throw new Error("Изменилась историческая версия документа");
+    } else if (historical.some(old => a.documentId === old.documentId && a.stageId === old.stageId && a.version <= old.version))
+      throw new Error("Версия не продолжает историю документа");
+  }
+  for (const m of run.messages) {
+    const existing = (p.runs || []).flatMap(r => r.messages).find(old => old.id === m.id);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(m)) throw new Error("Изменено сообщение прежнего запуска");
+  }
   if (
     !p.stages.some((s) => s.id === run.stageId) ||
     run.artifacts.some((a) => !p.stages.some((s) => s.id === a.stageId))
@@ -257,6 +351,8 @@ export function mergeRun(p: Project, run: Run): Project {
   if (p.run && p.run.id !== run.id)
     throw new Error("Ответ относится к другому запуску");
   if (p.run && run.revision < p.run.revision) return p;
+  if (isTerminal(p.run) && (run.status !== p.run!.status || run.revision !== p.run!.revision))
+    throw new Error("Завершённый Run нельзя переоткрыть или дополнять событиями");
   const artifacts = new Map(p.run?.artifacts.map((a) => [a.id, a]) || []);
   for (const a of run.artifacts) {
     const old = artifacts.get(a.id);
@@ -272,21 +368,45 @@ export function mergeRun(p: Project, run: Run): Project {
     artifacts.set(a.id, { ...old, ...a });
   }
   const messages = new Map(p.run?.messages.map((m) => [m.id, m]) || []);
+  const roleEvents = new Map(p.run?.roleEvents?.map(e => [e.id, e]) || []);
+  for (const e of run.roleEvents || []) {
+    const old = roleEvents.get(e.id);
+    if (old && JSON.stringify(old) !== JSON.stringify(e)) throw new Error("Изменено событие исполнения роли");
+    roleEvents.set(e.id, e);
+  }
   for (const m of run.messages) {
     const old = messages.get(m.id);
     if (old && (old.text !== m.text || old.role !== m.role))
       throw new Error("Сервис изменил сообщение в истории");
     messages.set(m.id, m);
   }
+  if (isTerminal(p.run) && (JSON.stringify([...artifacts.values()]) !== JSON.stringify(p.run!.artifacts) ||
+      JSON.stringify([...messages.values()]) !== JSON.stringify(p.run!.messages) ||
+      run.stageId !== p.run!.stageId || JSON.stringify(run.usage) !== JSON.stringify(p.run!.usage) ||
+      JSON.stringify(run.progress) !== JSON.stringify(p.run!.progress) ||
+      JSON.stringify([...roleEvents.values()]) !== JSON.stringify(p.run!.roleEvents || []) ||
+      run.parentRunId !== p.run!.parentRunId || run.sourceArtifactId !== p.run!.sourceArtifactId))
+    throw new Error("История закрытого Run изменилась");
   return {
     ...p,
     run: {
       ...run,
       artifacts: [...artifacts.values()],
       messages: [...messages.values()],
+      ...(roleEvents.size ? { roleEvents: [...roleEvents.values()] } : {}),
     },
     updatedAt: new Date().toISOString(),
   };
+}
+export function mergeRework(p: Project, run: Run, parentRunId: string, sourceArtifactId: string): Project {
+  const parent = p.run;
+  const source = projectArtifacts(p).find(a => a.id === sourceArtifactId);
+  if (!parent || parent.id !== parentRunId || !canRework(parent) || !source?.saved ||
+      run.id === parent.id || projectRuns(p).some(r => r.id === run.id) ||
+      run.parentRunId !== parentRunId || run.sourceArtifactId !== sourceArtifactId)
+    throw new Error("Сервис не подтвердил связь нового Run с доработкой");
+  // Validate against ALL closed runs before adding the new current attempt.
+  return mergeRun({ ...p, runs: projectRuns(p), run: undefined }, run);
 }
 export function latest(artifacts: Artifact[], stageId: string) {
   return artifacts
@@ -296,7 +416,7 @@ export function latest(artifacts: Artifact[], stageId: string) {
 export function readProjects(value: string | null): Project[] {
   if (value === null) return [];
   const data: unknown = JSON.parse(value);
-  if (!obj(data) || data.version !== 2 || !Array.isArray(data.projects))
+  if (!obj(data) || (data.version !== 2 && data.version !== 3) || !Array.isArray(data.projects))
     throw new Error("Неизвестный формат черновиков");
   return data.projects.map((v: unknown) => {
     if (
@@ -350,22 +470,50 @@ export function readProjects(value: string | null): Project[] {
       v.pending !== undefined &&
       (!obj(v.pending) ||
         !nonempty(v.pending.id) ||
-        !["start", "answer", "message", "approve"].includes(
+        !["start", "answer", "message", "rework", "approve"].includes(
           String(v.pending.action),
         ) ||
         !obj(v.pending.body) ||
-        (v.pending.targetId !== undefined && !str(v.pending.targetId)))
+        (v.pending.targetId !== undefined && !str(v.pending.targetId)) ||
+        (v.pending.runId !== undefined && !nonempty(v.pending.runId)) ||
+        (v.pending.legacy !== undefined && typeof v.pending.legacy !== "boolean") ||
+        (v.pending.rejected !== undefined && typeof v.pending.rejected !== "boolean"))
     )
       throw new Error("Некорректный запрос");
     if (
       v.answerDraft !== undefined &&
       (!obj(v.answerDraft) ||
         !nonempty(v.answerDraft.questionId) ||
-        !str(v.answerDraft.text))
+        (v.answerDraft.text !== undefined && !str(v.answerDraft.text)) ||
+        (v.answerDraft.answers !== undefined && (!obj(v.answerDraft.answers) ||
+          Object.values(v.answerDraft.answers).some(a => !obj(a) || !Array.isArray(a.selected) || !a.selected.every(str) || !str(a.custom)))))
     )
       throw new Error("Некорректный черновик ответа");
     const p = v as Project;
-    if (p.run) p.run = parseRun(p.run);
+    const migrateRun = (r: Run): Run => {
+      const q = r.question as any;
+      const upgraded = data.version === 2 && q && !q.questions && nonempty(q.text)
+        ? { ...r, question: { id: q.id, questions: [{ text: q.text, header: null, options: [], multi_select: false, allow_custom: true }] } } : r;
+      return parseRun(upgraded);
+    };
+    if (p.run) p.run = migrateRun(p.run);
+    if (p.runs !== undefined) {
+      if (!Array.isArray(p.runs)) throw new Error("Некорректная история запусков");
+      p.runs = p.runs.map(migrateRun);
+      if (new Set(p.runs.map(r => r.id)).size !== p.runs.length || p.runs.some(r => r.id === p.run?.id)) throw new Error("Дубли запусков");
+    }
+    for (let i = 0; i < (p.runs?.length || 0); i++)
+      mergeRun({ ...p, runs: p.runs!.slice(0, i), run: undefined }, p.runs![i]);
+    if (p.run) mergeRun(p, p.run);
+    if (data.version === 2 && p.pending) p.pending = { ...p.pending, legacy: true };
+    if (p.approvals !== undefined) {
+      if (!obj(p.approvals)) throw new Error("Некорректные подтверждения одобрения");
+      for (const [id, receipt] of Object.entries(p.approvals)) {
+        const a = projectArtifacts(p).find(a => a.id === id);
+        if (!a) throw new Error("Неизвестная одобренная версия");
+        parseApproval(receipt, a);
+      }
+    }
     return p;
   });
 }

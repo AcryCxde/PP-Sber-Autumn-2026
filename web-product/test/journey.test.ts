@@ -199,6 +199,21 @@ test("actual usage preserves unknown versus zero and partial snapshot fields", (
   assert.equal(values.compute_seconds, null);
 });
 
+test("rework usage is cumulative PER Run, not last-run-only or a sum of polling snapshots", () => {
+  const f = fixture(), r = f.create();
+  r.start(input("prototype"));
+  r.record("run_received", { runId: "r1" });
+  r.record("usage_received", { runId: "r1", inputTokens: 2, cost: 1, currency: "USD" });
+  r.record("usage_received", { runId: "r1", inputTokens: 3 });
+  assert.equal(summary(r.active()!).input_tokens, 3);
+  r.record("run_received", { runId: "r2" });
+  assert.equal(summary(r.active()!).input_tokens, null); // one Run is unmeasured
+  r.record("usage_received", { runId: "r2", inputTokens: 5, cost: 2, currency: "EUR" });
+  assert.equal(summary(r.active()!).input_tokens, 8);
+  assert.equal(summary(r.active()!).cost, null); // never add different currencies
+  assert.equal(summary(r.active()!).runs_n, 2);
+});
+
 test("baseline has a real structured journal, persisted steps, barriers and result; not external surveillance", () => {
   const f = fixture(),
     r = f.create();

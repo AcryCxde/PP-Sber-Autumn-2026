@@ -1,5 +1,8 @@
-import { parseRun, type Run } from "./domain.ts";
+import { parseRun, parseApproval, type Artifact, type Run } from "./domain.ts";
 import type { EventName, Fields } from "./journey.ts";
+export class ApiError extends Error {
+  constructor(message: string, public code?: string, public status?: number) { super(message); }
+}
 export class CtfApi {
   onMetric?: (name: EventName, fields: Fields) => void;
   private metric(name: EventName, fields: Fields) {
@@ -70,12 +73,20 @@ export class CtfApi {
         durationMs: performance.now() - started,
         status: `http_${response.status}`,
       });
-      if (!response.ok)
-        throw new Error(
+      if (!response.ok) {
+        let code: string | undefined;
+        try {
+          const value = JSON.parse(text);
+          const candidate = value?.code ?? value?.error?.code;
+          if (["unknown_fork", "answers_mismatch", "version_conflict", "idempotency_conflict"].includes(candidate)) code = candidate;
+        } catch { /* Never display arbitrary server error bodies. */ }
+        throw new ApiError(
           response.status === 401 || response.status === 403
             ? "Нет доступа к проекту. Проверьте сессию."
             : `Сервис вернул ошибку ${response.status}. Исход запроса не подтверждён.`,
+          code, response.status,
         );
+      }
       return JSON.parse(text);
     } catch (e) {
       this.metric("request_failed", {
@@ -105,6 +116,9 @@ export class CtfApi {
     blob: Blob,
     sha256: string,
   ): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+    const actualHash = Array.from(new Uint8Array(digest)).map(n => n.toString(16).padStart(2, "0")).join("");
+    if (actualHash !== sha256) throw new Error("Байты входного файла не совпадают с сохранённым SHA-256. Запуск остановлен.");
     const body = new FormData();
     body.append("file", blob, name);
     body.append("clientFileId", fileId);
@@ -124,6 +138,9 @@ export class CtfApi {
     key?: string,
   ): Promise<Run> {
     return parseRun(await this.request(route, body, key));
+  }
+  async approve(route: string, body: Record<string, unknown>, key: string, artifact: Artifact) {
+    return parseApproval(await this.request(route, body, key), artifact);
   }
   async zip(route: string): Promise<Blob> {
     if (!this.available) throw new Error("CTF не подключён");

@@ -534,7 +534,11 @@ export function summary(s: Session) {
         Date.parse(x.from) < Date.parse(firstSaved.at),
     );
   const usage: Fields = {};
+  const perRun = new Map<string, Fields>();
+  for (const e of s.events.filter(e => e.name === "run_received" && e.runId)) perRun.set(e.runId!, {});
   for (const e of s.events.filter((e) => e.name === "usage_received")) {
+    const key = e.runId || "legacy-unscoped";
+    const previous = perRun.get(key) || {};
     for (const key of [
       "inputTokens",
       "outputTokens",
@@ -543,7 +547,15 @@ export function summary(s: Session) {
       "cost",
       "currency",
     ] as const)
-      if (e[key] !== undefined) Object.assign(usage, { [key]: e[key] });
+      if (e[key] !== undefined) Object.assign(previous, { [key]: e[key] });
+    perRun.set(key, previous);
+  }
+  const values = [...perRun.values()];
+  for (const key of ["inputTokens", "outputTokens", "requests", "computeSeconds"] as const)
+    if (values.length && values.every(v => v[key] !== undefined)) usage[key] = values.reduce((sum, v) => sum + v[key]!, 0);
+  if (values.length && values.every(v => v.cost !== undefined && v.currency && v.currency === values[0].currency)) {
+    usage.cost = values.reduce((sum, v) => sum + v.cost!, 0);
+    usage.currency = values[0].currency;
   }
   return {
     session_id: s.id,
@@ -563,6 +575,7 @@ export function summary(s: Session) {
     environment: s.environment,
     project_id: s.projectId || null,
     run_id: s.events.find((e) => e.name === "run_received")?.runId || null,
+    runs_n: new Set(s.events.filter(e => e.name === "run_received" && e.runId).map(e => e.runId)).size,
     started_at: s.startedAt,
     ended_at: s.endedAt || null,
     outcome: s.outcome || null,

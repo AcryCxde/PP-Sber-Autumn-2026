@@ -1389,3 +1389,16 @@ h1,
 h2 {
   text-wrap: balance;
 }
+.facilitator-question {
+  min-width: 0;
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid #424249;
+  border-radius: 12px;
+}
+.facilitator-question legend { font-weight: 600; padding: 0 6px; overflow-wrap: anywhere; }
+.question-option { display: flex; gap: 10px; align-items: flex-start; margin: 12px 0; cursor: pointer; }
+.question-option input { width: auto; flex: 0 0 auto; margin-top: 4px; }
+.question-option small, .run-history small { display: block; }
+.run-history li { margin: 12px 0; overflow-wrap: anywhere; }
+.run-history code { display: block; font-size: 11px; overflow-wrap: anywhere; }

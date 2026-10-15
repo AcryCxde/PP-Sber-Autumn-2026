@@ -28,3 +28,9 @@ Use **«Замер пути»** for consented baseline, interface-only or CoreTe
 Read [proposed V2 contract](docs/ctf-v2-contract.md), [acceptance](docs/acceptance.md) and [verification](docs/verification.md). This proposed contract adds file ingestion, chosen team/plan, messages, document/version snapshots, approvals and consumption. It is not the implemented gateway WebSocket contract and must not be enabled without review by Дмитрий/Илья/Арина/Филипп.
 
 Tests: `pnpm test`, `pnpm build`. Browser script uses the bundled Playwright via NODE_PATH and two local URLs; synthetic network responses exist only in the test. Its fixture operations/usage/ZIP do not prove live CTF, source truth, deployment or user outcomes.
+
+## Agreed WEB16–21 update
+
+B supports explicit unknown/recovery states, full structured facilitator questions and stale-fork recovery, actual file-byte/hash checks, linked NEW Runs for post-completion rework within one project, project-wide immutable version/history browsing and separate version-specific server approval receipts. Requested roles are distinct from execution evidence. Old browser drafts migrate without clearing files or study journals; legacy in-flight requests are not silently rewritten. A and backend remain unchanged; PR11 remains draft, no merge/deploy.
+
+Additional regression: `node test/contracts-browser.cjs` on the explicitly marked fixture dev server (4191, `VITE_RESEARCH_ENV=fixture`). The updated [existing contract](docs/ctf-v2-contract.md) identifies client-side fields still requiring joint mapping/acceptance; this is not a claim that the current gateway implements them.
