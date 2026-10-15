@@ -51,7 +51,7 @@
 | Случай | Поведение |
 |---|---|
 | ENOSPC при commit | `turn_failed{disk_full}`, ход не завершён, команды принимаются дальше |
-| ENOSPC или другая ошибка записи `state.json` | runner падает (exit 1, `turn_failed{disk_full}` через общий `crash`): без записи состояния восстановление не гарантируется |
+| ENOSPC или другая ошибка записи `state.json` | runner падает (exit 1, `turn_failed{disk_full}` через общий `crash`; для потребителя `interrupted`, `run.failed{disk_full}` — только отказ commit): без записи состояния восстановление не гарантируется |
 | commit упал по другой причине | `turn_failed{checkpoint_failed}`, дерево не трогаем |
 | `state.json` повреждён | не угадываем: `turn_failed{state_corrupt}`, exit 65 (рестарт не поможет; файл чинит человек) |
 | транскрипта нет или `resume` вернул ошибку | `mode=fresh` |

@@ -16,7 +16,7 @@ import sys
 import time
 import traceback
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from enum import IntEnum
 from pathlib import Path
 from typing import Any, Protocol, assert_never, final
@@ -38,7 +38,14 @@ from ctrunner.guard import Allow, Deny, Policy, Verdict, check
 from ctrunner.health import write_health
 from ctrunner.inbox import Inbox
 from ctrunner.liveness import Health, Phase, assess
-from ctrunner.protocol import EventKind, ForkAnswerCmd, JsonValue, MessageCmd, StopCmd
+from ctrunner.protocol import (
+    EventKind,
+    ForkAnswerCmd,
+    JsonValue,
+    MessageCmd,
+    StopCmd,
+    question_texts,
+)
 from ctrunner.recovery import (
     CLEAN,
     Clean,
@@ -95,6 +102,10 @@ def _new_id() -> str:
     return uuid.uuid4().hex
 
 
+def _no_questions(turn_id: str) -> Sequence[str]:
+    return ()
+
+
 @final
 class Session:
     def __init__(  # noqa: PLR0913 — зависимости оболочки передаются явно
@@ -110,6 +121,7 @@ class Session:
         save_state: Callable[[PersistedState], None],
         commit: Callable[[str], str],
         turn_kinds: Callable[[str], frozenset[EventKind]],
+        open_questions: Callable[[str], Sequence[str]] = _no_questions,
         poll_s: float = 1.0,
         heartbeat_s: float = 10.0,
         resolve: Callable[[Path], Path] = _realpath,
@@ -127,6 +139,7 @@ class Session:
         self._save_state = save_state
         self._commit_turn = commit
         self._turn_kinds = turn_kinds
+        self._open_questions = open_questions
         self._session_id = state.session_id
         self._last_sha = state.last_sha
         # Попытка автопродолжения относится к конкретному ходу: у нового хода счёт с нуля.
@@ -135,6 +148,7 @@ class Session:
         )
         self._state: TurnState = Idle(queue=state.queue)
         self._forks: dict[str, asyncio.Future[dict[str, str]]] = {}
+        self._fork_questions: dict[str, tuple[str, ...]] = {}
         self._progress_mono = time.monotonic()
         self._progress_wall = time.time()
         self._stop = asyncio.Event()
@@ -222,6 +236,7 @@ class Session:
                 self._save()  # state закрывается после событий
                 await self._start_queued(client)
             case Continue() as step:
+                asked = self._open_questions(step.turn_id)  # до turn_interrupted: он обнуляет набор
                 self._touch()
                 self._resumed = (step.turn_id, step.attempt)
                 self._state = Working(step.turn_id, step.cmd, frozenset(), 0, self._state.queue)
@@ -229,7 +244,7 @@ class Session:
                 self._log.append(EventKind.TURN_INTERRUPTED, step.turn_id, {})
                 attempt: dict[str, JsonValue] = {"attempt": step.attempt, "mode": step.mode.value}
                 self._log.append(EventKind.TURN_RESUMED, step.turn_id, attempt)
-                await client.query(continuation_prompt(step))
+                await client.query(continuation_prompt(step, asked))
             case GiveUp(turn_id=turn_id):
                 # Падение между событиями и записью state повторит этот путь: журнал не удваивается.
                 if EventKind.TURN_FAILED not in self._turn_kinds(turn_id):
@@ -262,7 +277,7 @@ class Session:
                 cmd = delivery.command
                 match cmd:
                     case MessageCmd():
-                        self._state, effects = on_command(self._state, cmd, turn_id=_new_id())
+                        self._state, effects = on_command(self._state, cmd)
                         self._save()  # команда durable (в очереди или как открытый ход) до ack
                         self._inbox.ack(delivery)
                         await self._apply(client, effects)
@@ -316,7 +331,7 @@ class Session:
 
     async def _start_queued(self, client: SdkClient) -> None:
         if isinstance(self._state, Idle):
-            self._state, effects = next_queued(self._state, turn_id=_new_id())
+            self._state, effects = next_queued(self._state)
             await self._apply(client, effects)
 
     async def _commit(self, client: SdkClient, turn_id: str) -> None:
@@ -360,6 +375,13 @@ class Session:
         if snapshot != self._saved:
             self._save_state(snapshot)
             self._saved = snapshot
+
+    def fork_questions(self, fork_id: str) -> tuple[str, ...] | None:
+        """Тексты вопросов открытой развилки; `None` — такой развилки нет или она закрыта."""
+        fork = self._forks.get(fork_id)
+        if fork is None or fork.done():
+            return None
+        return self._fork_questions.get(fork_id)
 
     def _answer(self, cmd: ForkAnswerCmd) -> None:
         fork = self._forks.get(cmd.fork_id)
@@ -413,14 +435,16 @@ class Session:
             return PermissionResultAllow()
         fork_id = _new_id()
         fork: asyncio.Future[dict[str, str]] = asyncio.get_running_loop().create_future()
+        questions = to_json(tool_input.get("questions", []))
         self._forks[fork_id] = fork
+        self._fork_questions[fork_id] = question_texts(questions)  # до записи: ответ не опередит
         self._fork_opened()
         try:
-            questions = to_json(tool_input.get("questions", []))
             self._record(EventKind.FORK_QUESTION, {"fork_id": fork_id, "questions": questions})
             answers = await fork  # без таймаута: человек думает, это не зависание
         finally:
             del self._forks[fork_id]
+            del self._fork_questions[fork_id]
             self._fork_closed()
         self._touch()
         answered: dict[str, JsonValue] = {"fork_id": fork_id, "answers": {**answers}}

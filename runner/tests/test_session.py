@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import os
 import threading
@@ -20,7 +21,7 @@ from claude_agent_sdk import (
 )
 
 from ctrunner.checkpoint import CheckpointError, CheckpointFailure
-from ctrunner.eventlog import Event, EventLog, kinds_of_turn
+from ctrunner.eventlog import Event, EventLog, kinds_of_turn, open_questions
 from ctrunner.guard import Policy
 from ctrunner.inbox import Inbox, put
 from ctrunner.protocol import EventKind, JsonValue, MessageCmd
@@ -123,6 +124,7 @@ class Env:
             save_state=self._save,
             commit=commit or self.commit,
             turn_kinds=lambda turn_id: kinds_of_turn(self.events, turn_id),
+            open_questions=lambda turn_id: open_questions(self.events, turn_id),
         )
 
     def _save(self, state: PersistedState) -> None:
@@ -569,6 +571,26 @@ async def test_repeated_give_up_does_not_duplicate_events(
     assert load_state(env.state_file).open_turn is None
 
 
+async def test_give_up_after_crash_still_writes_resume_limit(
+    make_env: Callable[[PersistedState], Env],
+) -> None:
+    env = make_env(open_state(count=3))
+    # Прошлый процесс упал посреди хода: crash() оставил в журнале turn_failed{fatal}.
+    env.log.append(EventKind.TURN_FAILED, "t1", {"reason": "sdk_crashed", "fatal": True})
+    client = FakeClient([])
+    run = asyncio.create_task(env.session.run(client, GiveUp("t1")))
+    await env.wait_kind(EventKind.TURN_FAILED)
+    assert env.kinds() == ["turn_failed", "turn_interrupted", "turn_failed"]
+    assert env.events_of("turn_failed")[-1]["payload"] == {"reason": "resume_limit"}
+    put(env.inbox_dir, {"id": "c9", "kind": "stop"})
+    assert await run is Exit.STOPPED
+
+
+async def test_crash_on_enospc_is_recorded_as_fatal_disk_full(env: Env) -> None:
+    assert env.session.crash(OSError(errno.ENOSPC, "No space left on device")) is Exit.CRASHED
+    assert env.events_of("turn_failed")[0]["payload"] == {"reason": "disk_full", "fatal": True}
+
+
 async def test_redelivered_command_is_not_run_twice(
     make_env: Callable[[PersistedState], Env],
 ) -> None:
@@ -598,3 +620,85 @@ async def test_redelivered_queued_command_is_acked_without_requeue(
     put(env.inbox_dir, {"id": "c9", "kind": "stop"})
     assert await run is Exit.STOPPED
     assert client.prompts == ["потом"]  # один раз: из очереди, не из повторной доставки
+
+
+async def test_turn_id_is_command_id_and_queued_turn_keeps_its_own(env: Env) -> None:
+    client = FakeClient([result()])
+    put(env.inbox_dir, {"id": "run-1", "kind": "message", "text": "a"})
+    put(env.inbox_dir, {"id": "run-2", "kind": "message", "text": "b"})
+    run = asyncio.create_task(env.session.run(client))
+    await env.wait_count(EventKind.TURN_COMPLETED, 2)
+    put(env.inbox_dir, {"id": "c3", "kind": "stop"})
+    assert await run is Exit.STOPPED
+    started = [r["turn_id"] for r in env.events_of("turn_started")]
+    assert started == ["run-1", "run-2"]
+    assert env.commit.turns == ["run-1", "run-2"]
+
+
+async def test_restart_during_question_reasks_and_finishes_same_turn(
+    make_env: Callable[[PersistedState], Env],
+) -> None:
+    env = make_env(open_state(count=1))
+    env.log.append(EventKind.TURN_STARTED, "t1", {"prompt": "собери отчёт"})
+    env.log.append(  # прошлый процесс успел спросить и упал, не дождавшись ответа
+        EventKind.FORK_QUESTION, "t1", {"fork_id": "old", "questions": [{"question": "Формат?"}]}
+    )
+    client = FakeClient([])
+    step = Continue("t1", MessageCmd("c1", "собери отчёт"), 2, ResumeMode.RESUME)
+    run = asyncio.create_task(env.session.run(client, step))
+    await env.wait_kind(EventKind.TURN_RESUMED)
+    assert "Формат?" in client.prompts[0]
+    assert "AskUserQuestion" in client.prompts[0]
+    questions = [{"question": "Формат?", "options": [{"label": "md"}]}]
+    ask = asyncio.create_task(
+        env.session.can_use_tool(
+            "AskUserQuestion", {"questions": questions}, ToolPermissionContext()
+        )
+    )
+    await env.wait_count(EventKind.FORK_QUESTION, 2)
+    new_fork = env.events_of("fork_question")[-1]["payload"]
+    assert isinstance(new_fork, dict)
+    assert new_fork["fork_id"] != "old"
+    put(
+        env.inbox_dir,
+        {"id": "a1", "kind": "fork_answer", "fork_id": new_fork["fork_id"],
+         "answers": {"Формат?": "md"}},
+    )  # fmt: skip
+    assert isinstance(await ask, PermissionResultAllow)
+    client.queue.put_nowait(result())
+    await env.wait_kind(EventKind.TURN_COMPLETED)
+    put(env.inbox_dir, {"id": "c9", "kind": "stop"})
+    assert await run is Exit.STOPPED
+    assert env.kinds() == [  # "sdk" — журнал `result`, как в других тестах хода
+        "turn_started", "fork_question", "turn_interrupted", "turn_resumed",
+        "fork_question", "fork_answered", "sdk", "checkpoint", "turn_completed",
+    ]  # fmt: skip
+    assert env.commit.turns == ["t1"]
+
+
+async def test_fork_questions_visible_only_while_fork_is_open(env: Env) -> None:
+    client = FakeClient([])
+    put(env.inbox_dir, {"id": "c1", "kind": "message", "text": "go"})
+    run = asyncio.create_task(env.session.run(client))
+    await env.wait_kind(EventKind.TURN_STARTED)
+    questions = [{"question": "Q1?"}, {"question": "Q2?"}]
+    ask = asyncio.create_task(
+        env.session.can_use_tool(
+            "AskUserQuestion", {"questions": questions}, ToolPermissionContext()
+        )
+    )
+    await env.wait_kind(EventKind.FORK_QUESTION)
+    payload = env.events_of("fork_question")[0]["payload"]
+    assert isinstance(payload, dict)
+    fork_id = str(payload["fork_id"])
+    assert env.session.fork_questions(fork_id) == ("Q1?", "Q2?")
+    assert env.session.fork_questions("nope") is None
+    put(
+        env.inbox_dir,
+        {"id": "a1", "kind": "fork_answer", "fork_id": fork_id,
+         "answers": {"Q1?": "a", "Q2?": "b"}},
+    )  # fmt: skip
+    await ask
+    assert env.session.fork_questions(fork_id) is None
+    put(env.inbox_dir, {"id": "c2", "kind": "stop"})
+    assert await run is Exit.STOPPED

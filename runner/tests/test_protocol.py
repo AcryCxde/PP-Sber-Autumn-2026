@@ -35,8 +35,16 @@ def test_parse_stop() -> None:
         {"id": "c", "kind": "fork_answer", "fork_id": "f", "answers": {"q": 1}},
         {"id": "c", "kind": "fork_answer", "fork_id": "", "answers": {}},
         ["not", "object"],
+        {"id": "a b", "kind": "stop"},
+        {"id": "line\nbreak", "kind": "stop"},
+        {"id": "x" * 65, "kind": "stop"},
     ],
 )
 def test_rejects_malformed(raw: object) -> None:
     with pytest.raises(ProtocolError):
         parse_command(raw)
+
+
+def test_accepts_uuid_command_id() -> None:
+    raw = {"id": "7c2e4a90-b1d3-4f6e-8a5b-0c9d1e2f3a4b", "kind": "stop"}
+    assert parse_command(raw) == StopCmd("7c2e4a90-b1d3-4f6e-8a5b-0c9d1e2f3a4b")

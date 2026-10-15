@@ -96,22 +96,24 @@ type Effect = SendPrompt | Commit | TurnDone | TurnFailedFx
 type Step = tuple[TurnState, tuple[Effect, ...]]
 
 
-def on_command(s: TurnState, cmd: MessageCmd, *, turn_id: str) -> Step:
+def on_command(s: TurnState, cmd: MessageCmd) -> Step:
     match s:
         case Idle():
-            return next_queued(Idle((*s.queue, cmd)), turn_id=turn_id)
+            return next_queued(Idle((*s.queue, cmd)))
         case Halted():  # команда человека возвращает runner в работу
-            return next_queued(Idle((*s.queue, cmd)), turn_id=turn_id)
+            return next_queued(Idle((*s.queue, cmd)))
         case Working() | Committing():
             return replace(s, queue=(*s.queue, cmd)), ()
         case _:
             assert_never(s)
 
 
-def next_queued(s: Idle, *, turn_id: str) -> Step:
+def next_queued(s: Idle) -> Step:
     if not s.queue:
         return s, ()
     first, *rest = s.queue
+    # Ход — исполнение команды: `turn_id` (он же `run_id` для gateway) равен `id` команды.
+    turn_id = first.id
     return (
         Working(turn_id, first, frozenset(), 0, tuple(rest)),
         (SendPrompt(turn_id, first.text),),
