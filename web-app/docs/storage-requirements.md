@@ -1,0 +1,7 @@
+# Storage requirements — Арина
+
+Server storage architecture is Арина's ownership. All server requirements below are proposed. Client currently stores versioned browser-local projects with context, server IDs, last run/result/save ack and pending request ID/body. No secrets expected; localStorage is not encrypted or cross-device. Corrupt storage is preserved and editing blocked; cross-tab changes block stale writing until reload. Storage write failures block new mutations. Clearing browser data loses local draft and linkage.
+
+Proposed durable entities: actor/tenant-owned project, context snapshot, run/question/answer, immutable result version, acknowledged artifact, ZIP manifest. Stable project↔conversation↔run mapping; authorization per read/save/download; idempotency keys/body hash/outcome retained beyond retry window. Save ack emitted only after durable artifact commit; checksum/size/version and lifecycle timestamps available for verification. ZIP sources must refer to actual generated content and citations, not labels.
+
+Agree retention/deletion, quotas, content limits, encryption/access audit, recovery, concurrent editing and duplicate submissions. Discovery/list/get for cross-device restore is still missing. Browser snapshot is not evidence server data exists; stale saved reference must fail safely on revoked/deleted archive. No schema, database, migration, provider or CTF integration added by WEB.
