@@ -9,6 +9,7 @@ ctrunner = "ctrunner.main:cli"
 ctrunner-healthcheck = "ctrunner.healthcheck:cli"
 ctrunner-inbox = "ctrunner.inbox:cli"
 sessions = "ctrunner.sessions:cli"
+ctrunner-v0 = "ctrunner.v0:cli"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "mypy>=1.11"]

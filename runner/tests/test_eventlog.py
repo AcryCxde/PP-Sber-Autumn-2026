@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from ctrunner.eventlog import EventLog
+from ctrunner.eventlog import EventLog, kinds_of_turn
 from ctrunner.fsio import write_json_atomic
 from ctrunner.protocol import EventKind
 from ctrunner.redact import Redactor
@@ -48,3 +48,27 @@ def test_atomic_write_keeps_old_file_on_failure(tmp_path: Path) -> None:
         write_json_atomic(p, bad)  # type: ignore[arg-type]
     assert json.loads(p.read_text()) == {"v": 1}
     assert list(tmp_path.iterdir()) == [p]
+
+
+def test_kinds_of_turn_collects_only_that_turn(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    rows = [
+        {"seq": 1, "turn_id": "t1", "kind": "turn_started"},
+        {"seq": 2, "turn_id": "t2", "kind": "checkpoint"},
+        {"seq": 3, "turn_id": "t1", "kind": "checkpoint"},
+        {"seq": 4, "turn_id": None, "kind": "session_started"},
+    ]
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    assert kinds_of_turn(path, "t1") == {EventKind.TURN_STARTED, EventKind.CHECKPOINT}
+
+
+def test_kinds_of_turn_without_log_is_empty(tmp_path: Path) -> None:
+    assert kinds_of_turn(tmp_path / "missing.jsonl", "t1") == frozenset()
+
+
+def test_recovery_event_kinds_are_serialised() -> None:
+    assert {EventKind.CHECKPOINT, EventKind.TURN_INTERRUPTED, EventKind.TURN_RESUMED} == {
+        EventKind("checkpoint"),
+        EventKind("turn_interrupted"),
+        EventKind("turn_resumed"),
+    }

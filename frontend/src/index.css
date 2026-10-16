@@ -1,0 +1,103 @@
+:root {
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  color-scheme: light;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --shell-bg: #f7f7f5;
+  --app-bg: #ffffff;
+  --sidebar-bg: #f1f0eb;
+  --surface: #ffffff;
+  --surface-muted: #f8f7f4;
+  --surface-hover: #e8e7e1;
+  --surface-soft: #f7f6f2;
+  --text: #292824;
+  --text-strong: #24231f;
+  --text-muted: #7b7971;
+  --text-faint: #9b9890;
+  --border: #e3e2dd;
+  --border-soft: #ecebe7;
+  --border-strong: #d6d4cc;
+  --accent: #292824;
+  --accent-contrast: #ffffff;
+  --success: #2aa66a;
+  --success-soft: #f3f7f3;
+  --success-border: #dce8dd;
+  --warning: #d89a2b;
+  --danger: #ce4a4a;
+  --danger-text: #9e4036;
+  --danger-soft: #fff5f3;
+  --danger-border: #eed6d2;
+  --shadow: rgba(36, 34, 28, 0.08);
+  --header-bg: rgba(255, 255, 255, 0.94);
+  --scrollbar: #d7d5cf;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --shell-bg: #171816;
+  --app-bg: #1d1e1b;
+  --sidebar-bg: #151613;
+  --surface: #242521;
+  --surface-muted: #20211e;
+  --surface-hover: #2b2d28;
+  --surface-soft: #252621;
+  --text: #e7e5de;
+  --text-strong: #f3f1e9;
+  --text-muted: #aaa79e;
+  --text-faint: #7f7d75;
+  --border: #343630;
+  --border-soft: #2c2e29;
+  --border-strong: #474942;
+  --accent: #e7e5de;
+  --accent-contrast: #1b1c19;
+  --success: #54c98b;
+  --success-soft: #1d2b22;
+  --success-border: #304b3a;
+  --warning: #e1aa4a;
+  --danger: #e16c64;
+  --danger-text: #ef958d;
+  --danger-soft: #34211f;
+  --danger-border: #59322e;
+  --shadow: rgba(0, 0, 0, 0.28);
+  --header-bg: rgba(29, 30, 27, 0.94);
+  --scrollbar: #464842;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+  color: var(--text);
+  background: var(--app-bg);
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--success);
+  outline-offset: 2px;
+}

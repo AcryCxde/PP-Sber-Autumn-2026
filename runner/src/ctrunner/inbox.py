@@ -1,6 +1,8 @@
 """Файловый inbox команд на томе: `sessions send` → `docker exec ctrunner-inbox` → runner.
 
 На этапе 2 тот же `Command` придёт по WebSocket; inbox останется запасным путём без гейтвея.
+Команда подтверждается (`ack`) только после записи состояния runner: падение между `peek` и `ack`
+повторяет доставку, а не теряет команду.
 """
 
 import argparse
@@ -10,6 +12,7 @@ import sys
 import time
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, final
 
@@ -33,6 +36,13 @@ def put(directory: Path, raw: Mapping[str, JsonValue]) -> Path:
 
 
 @final
+@dataclass(frozen=True, slots=True)
+class Delivery:
+    command: Command
+    path: Path
+
+
+@final
 class Inbox:
     def __init__(self, directory: Path) -> None:
         self._dir = directory
@@ -42,8 +52,10 @@ class Inbox:
             d.mkdir(parents=True, exist_ok=True)
         self._seen = {_command_id(p) for p in self._processed.glob("*.json")} - {None}
 
-    def take(self) -> list[Command]:
-        commands: list[Command] = []
+    def peek(self) -> list[Delivery]:
+        """Команды без переноса: файл остаётся в inbox до `ack` после записи состояния."""
+        deliveries: list[Delivery] = []
+        batch: set[str] = set()
         for path in sorted(self._dir.glob("[!.]*.json")):
             try:
                 command = parse_command(json.loads(path.read_text(encoding="utf-8")))
@@ -51,13 +63,17 @@ class Inbox:
                 os.replace(path, self._rejected / path.name)
                 diag("command_rejected", file=path.name, reason=str(error))
                 continue
-            os.replace(path, self._processed / path.name)
-            if command.id in self._seen:
+            if command.id in self._seen or command.id in batch:
+                os.replace(path, self._processed / path.name)
                 diag("command_duplicate", command_id=command.id)
                 continue
-            self._seen.add(command.id)
-            commands.append(command)
-        return commands
+            batch.add(command.id)
+            deliveries.append(Delivery(command, path))
+        return deliveries
+
+    def ack(self, delivery: Delivery) -> None:
+        os.replace(delivery.path, self._processed / delivery.path.name)
+        self._seen.add(delivery.command.id)
 
 
 def _command_id(path: Path) -> str | None:

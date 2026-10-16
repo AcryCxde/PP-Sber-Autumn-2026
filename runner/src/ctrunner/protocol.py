@@ -46,6 +46,9 @@ class EventKind(StrEnum):
     TURN_FAILED = "turn_failed"
     ARTIFACT_SAVED = "artifact_saved"
     ACCESS_DENIED = "access_denied"
+    CHECKPOINT = "checkpoint"
+    TURN_INTERRUPTED = "turn_interrupted"
+    TURN_RESUMED = "turn_resumed"
 
 
 def _text(raw: Mapping[object, object], key: str) -> str:

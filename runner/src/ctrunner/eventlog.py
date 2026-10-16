@@ -80,3 +80,17 @@ def _recover(path: Path) -> int:
     if not isinstance(seq, int):
         raise ValueError(f"{path}: last event has no integer seq")
     return seq
+
+
+def kinds_of_turn(path: Path, turn_id: str) -> frozenset[EventKind]:
+    """Какие события хода уже в журнале: восстановление дописывает только недостающие."""
+    kinds: set[EventKind] = set()
+    try:
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                row = json.loads(line)
+                if row.get("turn_id") == turn_id:
+                    kinds.add(EventKind(row["kind"]))
+    except FileNotFoundError:
+        return frozenset()
+    return frozenset(kinds)
