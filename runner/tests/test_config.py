@@ -69,6 +69,17 @@ def test_short_token_is_config_error(tmp_path: Path) -> None:
         load_config(ENV, tmp_path)
 
 
+def test_artifact_storage_requires_service_secret(secrets: Path) -> None:
+    with pytest.raises(ConfigError, match="storage_token"):
+        load_config({**ENV, "ARTIFACT_STORAGE_URL": "http://web:4173"}, secrets)
+
+    (secrets / "storage_token").write_text("storage-token-123\n")
+    config = load_config({**ENV, "ARTIFACT_STORAGE_URL": "http://web:4173"}, secrets)
+    assert config.artifact_storage_url == "http://web:4173"
+    assert config.artifact_storage_token == "storage-token-123"
+    assert "storage-token" not in repr(config)
+
+
 def test_missing_model_env(secrets: Path) -> None:
     env = {k: v for k, v in ENV.items() if k != "ANTHROPIC_DEFAULT_HAIKU_MODEL"}
     with pytest.raises(ConfigError, match="ANTHROPIC_DEFAULT_HAIKU_MODEL"):

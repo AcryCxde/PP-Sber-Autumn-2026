@@ -26,7 +26,7 @@ from ctrunner.inbox import Inbox, put
 from ctrunner.protocol import EventKind, JsonValue, MessageCmd
 from ctrunner.recovery import Continue, Finalize, GiveUp, ResumeMode
 from ctrunner.redact import Redactor
-from ctrunner.session import Exit, Session
+from ctrunner.session import ArtifactSaver, Exit, Session
 from ctrunner.state import EMPTY, OpenTurn, PersistedState, load_state, save_state
 
 TOKEN = "sk-test-0123456789"
@@ -96,7 +96,11 @@ class Observed:
 
 class Env:
     def __init__(
-        self, root: Path, state: PersistedState = EMPTY, commit: Callable[[str], str] | None = None
+        self,
+        root: Path,
+        state: PersistedState = EMPTY,
+        commit: Callable[[str], str] | None = None,
+        artifact_saver: ArtifactSaver | None = None,
     ) -> None:
         self.inbox_dir = root / "inbox"
         self.events = root / "events.jsonl"
@@ -117,6 +121,7 @@ class Env:
             policy=Policy(roots=(self.project,), bash_system=()),
             health_file=self.health,
             stall_after_s=720.0,
+            artifact_saver=artifact_saver,
             poll_s=0.01,
             heartbeat_s=0.01,
             state=state,
@@ -193,6 +198,52 @@ async def test_turn_is_logged_and_stop_exits_zero(env: Env) -> None:
     assert state.open_turn is None
     assert state.last_sha == SHA
     assert state.session_id == "s1"
+
+
+class ConfirmingSaver:
+    async def save(self, turn_id: str) -> dict[str, JsonValue]:
+        return {"operation_id": "op-1", "commit_sha": "a" * 40, "turn_id": turn_id}
+
+
+class FailingSaver:
+    async def save(self, turn_id: str) -> dict[str, JsonValue]:
+        del turn_id
+        raise RuntimeError("storage unavailable")
+
+
+async def test_artifact_is_confirmed_before_turn_completion(tmp_path: Path) -> None:
+    env = Env(tmp_path, artifact_saver=ConfirmingSaver())
+    try:
+        client = FakeClient([result()])
+        put(env.inbox_dir, {"id": "c1", "kind": "message", "text": "go"})
+        run = asyncio.create_task(env.session.run(client))
+        await env.wait_kind(EventKind.TURN_COMPLETED)
+        put(env.inbox_dir, {"id": "c2", "kind": "stop"})
+        assert await run is Exit.STOPPED
+        assert env.kinds() == [
+            "turn_started",
+            "sdk",
+            "checkpoint",
+            "artifact_saved",
+            "turn_completed",
+        ]
+    finally:
+        env.log.close()
+
+
+async def test_unconfirmed_artifact_prevents_turn_completion(tmp_path: Path) -> None:
+    env = Env(tmp_path, artifact_saver=FailingSaver())
+    try:
+        client = FakeClient([result()])
+        put(env.inbox_dir, {"id": "c1", "kind": "message", "text": "go"})
+        run = asyncio.create_task(env.session.run(client))
+        await env.wait_kind(EventKind.TURN_FAILED)
+        put(env.inbox_dir, {"id": "c2", "kind": "stop"})
+        assert await run is Exit.STOPPED
+        assert env.kinds() == ["turn_started", "sdk", "checkpoint", "turn_failed"]
+        assert env.events_of("turn_failed")[0]["payload"] == {"reason": "artifact_save_failed"}
+    finally:
+        env.log.close()
 
 
 async def test_sdk_stream_end_is_crash(env: Env) -> None:
@@ -537,6 +588,22 @@ async def test_finalize_adds_only_missing_events(make_env: Callable[[PersistedSt
     state = load_state(env.state_file)
     assert state.open_turn is None
     assert state.last_sha == SHA
+
+
+async def test_finalize_confirms_artifact_before_completion(tmp_path: Path) -> None:
+    saver = ConfirmingSaver()
+    env = Env(tmp_path, state=open_state(), artifact_saver=saver)
+    try:
+        env.log.append(EventKind.CHECKPOINT, "t1", {"sha": SHA})
+        client = FakeClient([])
+        run = asyncio.create_task(env.session.run(client, Finalize("t1", SHA)))
+        await env.wait_kind(EventKind.TURN_COMPLETED)
+        put(env.inbox_dir, {"id": "c9", "kind": "stop"})
+        assert await run is Exit.STOPPED
+        assert env.kinds() == ["checkpoint", "artifact_saved", "turn_completed"]
+        assert load_state(env.state_file).open_turn is None
+    finally:
+        env.log.close()
 
 
 async def test_give_up_fails_turn_then_human_command_resumes_work(
