@@ -23,7 +23,7 @@ from ctrunner.guard import Policy
 from ctrunner.inbox import Inbox, put
 from ctrunner.protocol import EventKind, JsonValue
 from ctrunner.redact import Redactor
-from ctrunner.session import Exit, Session
+from ctrunner.session import ArtifactSaver, Exit, Session
 
 TOKEN = "sk-test-0123456789"
 ETC_PASSWD = os.path.realpath("/etc/passwd")  # на macOS это /private/etc/passwd
@@ -76,7 +76,7 @@ class Observed:
 
 
 class Env:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, artifact_saver: ArtifactSaver | None = None) -> None:
         self.inbox_dir = root / "inbox"
         self.events = root / "events.jsonl"
         self.health = root / "health.json"
@@ -92,6 +92,7 @@ class Env:
             policy=Policy(roots=(self.project,), bash_system=()),
             health_file=self.health,
             stall_after_s=720.0,
+            artifact_saver=artifact_saver,
             poll_s=0.01,
             heartbeat_s=0.01,
         )
@@ -126,6 +127,46 @@ async def test_turn_is_logged_and_stop_exits_zero(env: Env) -> None:
     assert env.kinds() == ["turn_started", "sdk", "sdk", "turn_completed"]
     assert TOKEN not in env.events.read_text()
     assert json.loads(env.health.read_text())["phase"] == "idle"
+
+
+class ConfirmingSaver:
+    async def save(self, turn_id: str) -> dict[str, JsonValue]:
+        return {"operation_id": "op-1", "commit_sha": "a" * 40, "turn_id": turn_id}
+
+
+class FailingSaver:
+    async def save(self, turn_id: str) -> dict[str, JsonValue]:
+        del turn_id
+        raise RuntimeError("storage unavailable")
+
+
+async def test_artifact_is_confirmed_before_turn_completion(tmp_path: Path) -> None:
+    env = Env(tmp_path, ConfirmingSaver())
+    try:
+        client = FakeClient([result()])
+        put(env.inbox_dir, {"id": "c1", "kind": "message", "text": "go"})
+        run = asyncio.create_task(env.session.run(client))
+        await env.wait_kind(EventKind.TURN_COMPLETED)
+        put(env.inbox_dir, {"id": "c2", "kind": "stop"})
+        assert await run is Exit.STOPPED
+        assert env.kinds() == ["turn_started", "sdk", "artifact_saved", "turn_completed"]
+    finally:
+        env.log.close()
+
+
+async def test_unconfirmed_artifact_prevents_turn_completion(tmp_path: Path) -> None:
+    env = Env(tmp_path, FailingSaver())
+    try:
+        client = FakeClient([result()])
+        put(env.inbox_dir, {"id": "c1", "kind": "message", "text": "go"})
+        run = asyncio.create_task(env.session.run(client))
+        await env.wait_kind(EventKind.TURN_FAILED)
+        put(env.inbox_dir, {"id": "c2", "kind": "stop"})
+        assert await run is Exit.STOPPED
+        assert env.kinds() == ["turn_started", "sdk", "turn_failed"]
+        assert env.events_of("turn_failed")[0]["payload"] == {"reason": "artifact_save_failed"}
+    finally:
+        env.log.close()
 
 
 async def test_sdk_stream_end_is_crash(env: Env) -> None:

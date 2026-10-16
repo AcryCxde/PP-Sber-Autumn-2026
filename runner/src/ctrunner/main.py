@@ -23,6 +23,7 @@ from ctrunner.probe import ProbeResult, probe
 from ctrunner.protocol import EventKind
 from ctrunner.redact import Redactor
 from ctrunner.session import Session
+from ctrunner.storage import ArtifactStorageClient
 
 EX_CONFIG: Final = 78  # sysexits: ошибка конфигурации, рестарт не поможет
 EX_UNAVAILABLE: Final = 1  # сеть или SDK: Docker перезапустит
@@ -133,6 +134,14 @@ async def run(cfg: RunnerConfig) -> int:
             None,
             {"project_id": cfg.project_id, "runner_version": __version__},
         )
+        artifact_saver = None
+        if cfg.artifact_storage_url and cfg.artifact_storage_token:
+            artifact_saver = ArtifactStorageClient(
+                base_url=cfg.artifact_storage_url,
+                token=cfg.artifact_storage_token,
+                project_id=cfg.project_id,
+                project_dir=cfg.project_dir,
+            )
         session = Session(
             log=log,
             redactor=redactor,
@@ -140,6 +149,7 @@ async def run(cfg: RunnerConfig) -> int:
             policy=Policy(roots=(cfg.project_dir, TMP_DIR), bash_system=BASH_SYSTEM),
             health_file=HEALTH_FILE,
             stall_after_s=cfg.stall_after_s,
+            artifact_saver=artifact_saver,
         )
         asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, session.request_stop)
         options = ClaudeAgentOptions(

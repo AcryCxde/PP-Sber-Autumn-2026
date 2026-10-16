@@ -298,6 +298,15 @@ export interface MaterialGit {
    - **Администратор (Admin):** Отдельная служебная сессия. Администратор не имеет автоматического сквозного доступа к содержимому и результатам клиентских проектов. Любое служебное чтение/вмешательство требует обоснования и фиксируется в неизменяемом аудит-логе (кто, когда, к какому объекту обратился).
    - **Ключи доступа (API Keys / Service Tokens):** Изолированы во внутреннем контуре бэкенда/раннера и никогда не транслируются в публичные события и интерфейс.
 
+### 2.7. Реализация минимального S2 save + restore
+
+- Runner: `runner/src/ctrunner/storage.py` читает только финальный `result.md`, считает SHA-256 и отправляет его по внутреннему authenticated API. Событие `artifact_saved` записывается в журнал Runner только после ответа с `commit_sha`.
+- Confirm boundary: `runner/src/ctrunner/session.py` запрещает `turn_completed`, если внешняя запись не подтверждена, и фиксирует `artifact_save_failed`.
+- Git-as-Storage: `web-demo/git-storage.js` сериализует commit, добавляет trailers `Operation-Id` / `Content-SHA256` и восстанавливает содержимое командой `git show {commit_sha}:{git_path}`.
+- PostgreSQL: `web-demo/metadata.js` реализует `intent -> confirmed`; DDL и ограничения находятся в `init.sql`.
+- Web download: `GET /api/projects/{project_id}/runs/{run_id}/artifact` и `GET /api/projects/{project_id}/artifacts/{artifact_id}` отдают подтверждённый blob по commit SHA, а не файл из workspace Runner.
+- Разделение долговечных контуров в Compose: `pg_data` — users/projects/runs/operations/events/artifact metadata; `artifact_git` — Git content; `web_data` — служебное состояние demo. Удаление или пересоздание контейнера Runner не затрагивает первые два volume.
+
 ## 3. Последствия (Consequences)
 Положительные:
 Соответствие требованиям заказчика: Полное исключение стороннего S3-хранилища для артефактов первой версии.

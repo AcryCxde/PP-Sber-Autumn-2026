@@ -52,7 +52,18 @@ uv run sessions send demo-a "Ответь одним словом: ок"
 uv run sessions logs demo-a -f
 ```
 
-Ожидаемые события: `session_started` → `turn_started` → `sdk`… → `turn_completed`.
+Если агент создал `result.md` и настроено внешнее хранилище, ожидаемые события: `session_started` → `turn_started` → `sdk`… → `artifact_saved` → `turn_completed`. Без подтверждения записи `turn_completed` не публикуется.
+
+Для confirmed write запустите web storage из корня репозитория и передайте URL/токен перед `secrets init`:
+
+```bash
+export ARTIFACT_STORAGE_URL=http://127.0.0.1:4173
+export STORAGE_TOKEN=development-storage-token
+docker compose up --build -d
+uv run sessions secrets init demo-main
+```
+
+`ARTIFACT_STORAGE_URL` попадает в контейнер, а `STORAGE_TOKEN` записывается в `/run/secrets/storage_token` и не передаётся через env.
 
 Остановить и удалить вместе с томом проекта:
 
