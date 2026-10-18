@@ -55,7 +55,7 @@ class GitArtifactStorage {
     assertSegment(operationId, "operationId");
     const commitSha = git(
       this.repository,
-      ["log", "--all", "-1", "--format=%H", `--grep=Operation-Id: ${operationId}`],
+      ["log", "--all", "-1", "--format=%H", `--grep=^Operation-Id: ${operationId}$`],
     );
     return commitSha || null;
   }
