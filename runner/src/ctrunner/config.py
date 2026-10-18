@@ -18,6 +18,7 @@ MODEL_ENV: Final = (
 )
 OPTIONAL_MODEL_ENV: Final = ("ANTHROPIC_DEFAULT_FABLE_MODEL",)
 TOKEN_FILE: Final = "anthropic_token"  # noqa: S105 — имя файла, а не значение
+STORAGE_TOKEN_FILE: Final = "storage_token"  # noqa: S105 — имя файла, а не значение
 DEFAULT_STALL_AFTER_S: Final = 720.0
 DEFAULT_WORKSPACE: Final = "/workspace"
 # Вне корней сторожа: в /tmp агент мог бы подделать собственный статус живости.
@@ -37,6 +38,8 @@ class RunnerConfig:
     models: Mapping[str, str]
     stall_after_s: float
     workspace: Path
+    artifact_storage_url: str | None = None
+    artifact_storage_token: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not PROJECT_ID_RE.fullmatch(self.project_id):
@@ -52,6 +55,12 @@ class RunnerConfig:
             raise ConfigError("env STALL_AFTER_S must be a positive finite number")
         if not self.workspace.is_absolute():
             raise ConfigError("env WORKSPACE must be an absolute path")
+        if self.artifact_storage_url is not None:
+            storage_url = urlsplit(self.artifact_storage_url)
+            if storage_url.scheme not in ("http", "https") or not storage_url.hostname:
+                raise ConfigError("env ARTIFACT_STORAGE_URL must be an http(s) URL")
+            if not self.artifact_storage_token:
+                raise ConfigError(f"secret {STORAGE_TOKEN_FILE} missing")
 
     @property
     def project_dir(self) -> Path:
@@ -87,6 +96,8 @@ def load_config(env: Mapping[str, str], secrets_dir: Path) -> RunnerConfig:
         models=_models(env),
         stall_after_s=_stall_after_s(env),
         workspace=Path(env.get("WORKSPACE") or DEFAULT_WORKSPACE),
+        artifact_storage_url=env.get("ARTIFACT_STORAGE_URL") or None,
+        artifact_storage_token=_optional_token(secrets_dir, STORAGE_TOKEN_FILE),
     )
 
 
@@ -111,6 +122,19 @@ def _stall_after_s(env: Mapping[str, str]) -> float:
         return float(raw)
     except ValueError as error:
         raise ConfigError("env STALL_AFTER_S must be a number") from error
+
+
+def _optional_token(secrets_dir: Path, name: str) -> str | None:
+    path = secrets_dir / name
+    if not path.exists():
+        return None
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as error:
+        raise ConfigError(f"secret {name} unreadable") from error
+    if len(value) < MIN_SECRET_LEN or any(character.isspace() for character in value):
+        raise ConfigError(f"secret {name} invalid")
+    return value
 
 
 def _token(secrets_dir: Path) -> str:

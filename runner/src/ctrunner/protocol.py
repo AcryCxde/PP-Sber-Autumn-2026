@@ -44,6 +44,7 @@ class EventKind(StrEnum):
     FORK_ANSWERED = "fork_answered"
     TURN_COMPLETED = "turn_completed"
     TURN_FAILED = "turn_failed"
+    ARTIFACT_SAVED = "artifact_saved"
     ACCESS_DENIED = "access_denied"
     CHECKPOINT = "checkpoint"
     TURN_INTERRUPTED = "turn_interrupted"

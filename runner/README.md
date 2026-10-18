@@ -52,7 +52,18 @@ uv run sessions send demo-a "Ответь одним словом: ок"
 uv run sessions logs demo-a -f
 ```
 
-Ожидаемые события: `session_started` → `turn_started` → `sdk`… → `turn_completed`.
+Если агент создал `result.md` и настроено внешнее хранилище, ожидаемые события: `session_started` → `turn_started` → `sdk`… → `checkpoint` → `artifact_saved` → `turn_completed`. Без подтверждения записи `turn_completed` не публикуется.
+
+Для confirmed write запустите web storage из корня репозитория и передайте URL/токен перед `secrets init`:
+
+```bash
+export ARTIFACT_STORAGE_URL=http://127.0.0.1:4173
+export STORAGE_TOKEN=development-storage-token
+docker compose up --build -d
+uv run sessions secrets init demo-main
+```
+
+`ARTIFACT_STORAGE_URL` попадает в контейнер, а `STORAGE_TOKEN` записывается в `/run/secrets/storage_token` и не передаётся через env.
 
 Тот же журнал как публичная лента [events v0](../docs/contracts/events-v0.md):
 
@@ -106,13 +117,13 @@ Runner переживает рестарт контейнера (`docker kill`, 
 
 **Что хранится.** `/workspace/.runner/state.json` (атомарная запись: tmp + fsync + rename; сторож не пускает к нему агента): `session_id`, открытый ход с исходной командой, очередь команд, `last_sha`, `autoresume_count`. Транскрипт SDK лежит в `/workspace/claude/` на том же томе.
 
-**Подтверждённая работа.** Ход завершается `git commit` с trailer `Turn-Id: <id>` в `project/`, затем события `checkpoint{sha}` и `turn_completed`, затем `state.json`. Хуки git отключены, чтобы агент не мог заблокировать commit.
+**Подтверждённая работа.** Ход завершается `git commit` с trailer `Turn-Id: <id>` в `project/`, затем пишется `checkpoint{sha}`. Если создан `result.md`, Runner подтверждает его во внешнем Git-as-Storage и пишет `artifact_saved`; только после этого публикуется `turn_completed` и закрывается `state.json`. Хуки git отключены, чтобы агент не мог заблокировать commit.
 
 **Что происходит при старте:**
 
 | Исход | События | Условие |
 |---|---|---|
-| завершён | `checkpoint`, `turn_completed` (только отсутствующие в журнале) | `HEAD` содержит `Turn-Id` открытого хода: commit успел, события или state нет. Ход не повторяется |
+| завершён | `checkpoint`, `artifact_saved` (если есть `result.md`), `turn_completed` — только отсутствующие в журнале | `HEAD` содержит `Turn-Id` открытого хода: commit успел, события или state нет. Ход не повторяется; confirmed write идемпотентно доводится до конца |
 | продолжен | `turn_interrupted` → `turn_resumed{attempt, mode}` | открытый ход без commit. `mode=resume`: SDK продолжает сессию по `session_id`; `mode=fresh`: новая сессия |
 | провален | `turn_interrupted` → `turn_failed{resume_limit}` | автопродолжений уже 3 подряд |
 | нет хода | — | открытого хода нет: идёт обычная работа, очередь команд сохраняется |
@@ -122,7 +133,7 @@ Runner переживает рестарт контейнера (`docker kill`, 
 - **`mode=fresh`** — когда транскрипта сессии на томе нет или `resume` не подключился (ошибка при `connect`). Контекст прежней сессии потерян; агент знает только задачу и состояние дерева.
 - **Повторный вызов инструмента.** После `resume` модель может заново выполнить вызов, который прервал рестарт (проверено на `sleep` через cliproxy): побочные эффекты (запись, сеть, внешние команды) могут выполниться дважды. Промпт просит проверить дерево, но гарантией это не служит.
 - **После `resume_limit`** runner жив: `health=crashed`, `docker ps` показывает `unhealthy`, дерево и очередь сохранены. Новая команда (`sessions send`) возвращает runner в работу; провалившийся ход автоматически не повторяется, в том числе после следующего рестарта.
-- **Порядок записи.** Закрытие хода: commit → события → `state.json`; открытие: `state.json` → `query`. Команда подтверждается в inbox после записи `state.json`.
+- **Порядок записи.** Закрытие хода: commit → `checkpoint` → confirmed artifact write → `artifact_saved` → `turn_completed` → `state.json`; открытие: `state.json` → `query`. Команда подтверждается в inbox после записи `state.json`.
 - **Команды в inbox** доставляются at-least-once: файл остаётся в `inbox/`, пока команда не записана в `state.json`; после падения между записью и подтверждением команда подтверждается при старте и повторно не исполняется (идемпотентность по `id`).
 - **Отказы:**
 

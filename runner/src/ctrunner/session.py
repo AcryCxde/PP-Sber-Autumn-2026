@@ -82,6 +82,10 @@ class SdkClient(Protocol):
     def receive_messages(self) -> AsyncIterator[Message]: ...
 
 
+class ArtifactSaver(Protocol):
+    async def save(self, turn_id: str) -> dict[str, JsonValue] | None: ...
+
+
 class Exit(IntEnum):
     STOPPED = 0
     CRASHED = 1  # Docker перезапустит контейнер
@@ -110,6 +114,7 @@ class Session:
         save_state: Callable[[PersistedState], None],
         commit: Callable[[str], str],
         turn_kinds: Callable[[str], frozenset[EventKind]],
+        artifact_saver: ArtifactSaver | None = None,
         poll_s: float = 1.0,
         heartbeat_s: float = 10.0,
         resolve: Callable[[Path], Path] = _realpath,
@@ -120,6 +125,7 @@ class Session:
         self._policy = policy
         self._health_file = health_file
         self._stall_after_s = stall_after_s
+        self._artifact_saver = artifact_saver
         self._poll_s = poll_s
         self._heartbeat_s = heartbeat_s
         self._resolve = resolve
@@ -216,11 +222,8 @@ class Session:
                 logged = self._turn_kinds(turn_id)
                 if EventKind.CHECKPOINT not in logged:
                     self._log.append(EventKind.CHECKPOINT, turn_id, {"sha": sha})
-                if EventKind.TURN_COMPLETED not in logged:
-                    self._log.append(EventKind.TURN_COMPLETED, turn_id, {})
                 self._last_sha = sha
-                self._save()  # state закрывается после событий
-                await self._start_queued(client)
+                await self._finish_turn(client, turn_id, logged)
             case Continue() as step:
                 self._touch()
                 self._resumed = (step.turn_id, step.attempt)
@@ -304,15 +307,45 @@ class Session:
                 case Commit(turn_id=turn_id):
                     await self._commit(client, turn_id)
                 case TurnDone(turn_id=turn_id):
-                    self._log.append(EventKind.TURN_COMPLETED, turn_id, {})
-                    self._save()  # state закрывается после событий
-                    await self._start_queued(client)
+                    await self._finish_turn(client, turn_id)
                 case TurnFailedFx(turn_id=turn_id, reason=reason):
                     self._log.append(EventKind.TURN_FAILED, turn_id, {"reason": reason})
                     self._save()
                     await self._start_queued(client)
                 case _:
                     assert_never(effect)
+
+    async def _finish_turn(
+        self,
+        client: SdkClient,
+        turn_id: str,
+        logged: frozenset[EventKind] | None = None,
+    ) -> None:
+        recorded = logged or frozenset()
+        if self._artifact_saver is not None and EventKind.ARTIFACT_SAVED not in recorded:
+            try:
+                saved = await self._artifact_saver.save(turn_id)
+            except Exception as error:
+                diag(
+                    "artifact_save_failed",
+                    turn_id=turn_id,
+                    error=type(error).__name__,
+                )
+                if EventKind.TURN_FAILED not in recorded:
+                    self._log.append(
+                        EventKind.TURN_FAILED,
+                        turn_id,
+                        {"reason": "artifact_save_failed"},
+                    )
+                self._save()
+                await self._start_queued(client)
+                return
+            if saved is not None:
+                self._log.append(EventKind.ARTIFACT_SAVED, turn_id, saved)
+        if EventKind.TURN_COMPLETED not in recorded:
+            self._log.append(EventKind.TURN_COMPLETED, turn_id, {})
+        self._save()  # state закрывается после подтверждения артефакта и событий
+        await self._start_queued(client)
 
     async def _start_queued(self, client: SdkClient) -> None:
         if isinstance(self._state, Idle):
