@@ -3,16 +3,16 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: coreteam
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-coreteam-local}
-      POSTGRES_DB: coreteam
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U coreteam -d coreteam"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -23,10 +23,10 @@ services:
     environment:
       PORT: 4173
       HOST: 0.0.0.0
-      DATABASE_URL: postgresql://coreteam:${POSTGRES_PASSWORD:-coreteam-local}@db:5432/coreteam
-      STORAGE_TOKEN: ${STORAGE_TOKEN:-development-storage-token}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      STORAGE_TOKEN: ${STORAGE_TOKEN:?set STORAGE_TOKEN}
       DATA_DIR: /var/lib/coreteam/web
-      ARTIFACT_REPO_PATH: /var/lib/coreteam/artifacts
+      STORAGE_ROOT_PATH: /var/lib/coreteam/artifacts
     ports:
       - "4173:4173"
     volumes:
@@ -35,6 +35,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4173/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
 
 volumes:
   pg_data:

@@ -52,7 +52,7 @@ test("unknown outcome is never completed", async () => {
   const run = await response.json();
   await new Promise((resolve) => setTimeout(resolve, 1500));
   const events = await fetch(`${base}/api/projects/demo-main/runs/${run.id}/events`).then((result) => result.json());
-  assert.equal(events.at(-1).type, "unknown");
+  assert.equal(events.at(-1).type, "run.outcome_unknown");
   assert.equal(events.some((event) => event.type === "completed"), false);
 });
 

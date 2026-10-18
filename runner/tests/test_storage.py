@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-import ctrunner.storage as storage
+from ctrunner import storage
 from ctrunner.storage import ArtifactStorageClient, ArtifactStorageError
 
 
@@ -48,7 +48,7 @@ async def test_confirmed_save_returns_git_metadata(
                 "commitSha": "a" * 40,
                 "contentSha256": payload["contentSha256"],
                 "gitPath": f"projects/demo-main/runs/{payload['runId']}/result.md",
-                "sizeBytes": len("# Result\n".encode()),
+                "sizeBytes": len(b"# Result\n"),
             }
         )
 

@@ -1,16 +1,24 @@
 "use strict";
 
-const { Pool } = require("pg");
-
 class MetadataStore {
   constructor(databaseUrl) {
-    this.pool = databaseUrl ? new Pool({ connectionString: databaseUrl }) : null;
+    if (databaseUrl) {
+      const { Pool } = require("pg");
+      this.pool = new Pool({ connectionString: databaseUrl });
+    } else {
+      this.pool = null;
+    }
   }
 
   get enabled() { return this.pool !== null; }
 
   async initialize() {
     if (this.pool) await this.pool.query("SELECT 1");
+  }
+
+  async ready() {
+    if (this.pool) await this.pool.query("SELECT 1");
+    return true;
   }
 
   async close() {

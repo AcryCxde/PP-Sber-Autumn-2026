@@ -66,7 +66,7 @@ class ArtifactStorageClient:
             },
             ensure_ascii=False,
         ).encode("utf-8")
-        request = Request(
+        request = Request(  # noqa: S310 — URL проверен в RunnerConfig
             f"{self.base_url.rstrip('/')}/internal/artifacts",
             data=payload,
             headers={

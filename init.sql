@@ -30,7 +30,7 @@ CREATE TABLE projects (
 CREATE TABLE runs (
     id UUID PRIMARY KEY,
     project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    client_request_id VARCHAR(128) NOT NULL UNIQUE,
+    client_request_id VARCHAR(128) NOT NULL,
     status VARCHAR(32) NOT NULL CHECK (status IN (
         'queued', 'running', 'waiting_for_user', 'partial', 'completed',
         'failed', 'cancelled', 'limit_stopped', 'limit_reached',
@@ -42,6 +42,9 @@ CREATE TABLE runs (
     finished_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE UNIQUE INDEX uq_runs_project_client_request
+    ON runs (project_id, client_request_id);
 
 CREATE UNIQUE INDEX idx_runs_one_active_per_project
     ON runs (project_id)

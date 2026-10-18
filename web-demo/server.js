@@ -12,11 +12,17 @@ const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
 const stateFile = path.join(dataDir, "state.json");
 const publicDir = path.join(root, "public");
 const artifactStorage = new GitArtifactStorage(
-  process.env.ARTIFACT_REPO_PATH || path.join(dataDir, "artifact-repository"),
+  process.env.STORAGE_ROOT_PATH ||
+    process.env.ARTIFACT_REPO_PATH ||
+    path.join(dataDir, "artifact-repository"),
 );
 const metadata = new MetadataStore(process.env.DATABASE_URL);
-const storageToken = process.env.STORAGE_TOKEN || "development-storage-token";
+const storageToken = process.env.STORAGE_TOKEN || "";
 const subscribers = new Map();
+const terminalRunStatuses = new Set([
+  "completed", "failed", "cancelled", "limit_stopped", "limit_reached",
+  "outcome_unknown", "unknown",
+]);
 let storageQueue = Promise.resolve();
 
 const now = () => new Date().toISOString();
@@ -72,6 +78,7 @@ function readBody(req) {
   });
 }
 function internalAuthorized(req) {
+  if (!storageToken) return false;
   const supplied = req.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
   const expected = Buffer.from(storageToken);
   const actual = Buffer.from(supplied);
@@ -148,16 +155,16 @@ async function persistArtifact(state, run, { content, title = "итоговый-
 async function completeRun(runId, outcome = "completed") {
   const state = load(); const run = state.runs[runId]; if (!run || run.status !== "running") return;
   if (outcome === "failed") { run.status = "failed"; run.updatedAt = now(); await metadata.ensureRun(run.projectId, run); emit(state, run, "failed", { message: "Работу не удалось завершить. Данные проекта сохранены." }); return; }
-  if (outcome === "unknown") { run.status = "unknown"; run.updatedAt = now(); await metadata.ensureRun(run.projectId, run); emit(state, run, "unknown", { message: "Связь с исполнителем потеряна. Итог не подтверждён." }); return; }
+  if (outcome === "unknown") { run.status = "outcome_unknown"; run.updatedAt = now(); await metadata.ensureRun(run.projectId, run); emit(state, run, "run.outcome_unknown", { message: "Связь с исполнителем потеряна. Итог не подтверждён." }); return; }
   const content = `# Итоговый разбор\n\nЗадача: ${run.task}\n\n## Статус\n\nЭто демонстрационный артефакт, сохранённый сервером после завершения Run.\n\n## Открытые вопросы\n\n- Проверить выводы с владельцем проекта.\n`;
   try {
     await persistArtifact(state, run, { content });
   } catch (error) {
     console.error("artifact persistence failed", error);
-    run.status = "unknown";
+    run.status = "outcome_unknown";
     run.updatedAt = now();
     await metadata.ensureRun(run.projectId, run);
-    emit(state, run, "unknown", { message: "Результат сформирован, но подтверждение внешнего хранилища не получено." });
+    emit(state, run, "run.outcome_unknown", { message: "Результат сформирован, но подтверждение внешнего хранилища не получено." });
   }
 }
 function serveStatic(res, file) {
@@ -166,7 +173,18 @@ function serveStatic(res, file) {
   res.writeHead(200, { "content-type": types[path.extname(file)] || "application/octet-stream" }); res.end(content);
 }
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, "http://localhost"); const segments = url.pathname.split("/").filter(Boolean); const state = load();
+  const url = new URL(req.url, "http://localhost"); const segments = url.pathname.split("/").filter(Boolean);
+  if (req.method === "GET" && url.pathname === "/health/ready") {
+    try {
+      fs.accessSync(dataDir, fs.constants.R_OK | fs.constants.W_OK);
+      fs.accessSync(artifactStorage.repository, fs.constants.R_OK | fs.constants.W_OK);
+      await metadata.ready();
+      return json(res, 200, { status: "ready", database: metadata.enabled ? "ready" : "disabled", storage: "ready" });
+    } catch {
+      return json(res, 503, { status: "not_ready" });
+    }
+  }
+  const state = load();
   if (req.method === "GET" && ["/", "/v9", "/v9/"].includes(url.pathname)) return serveStatic(res, "v9/index.html");
   if (req.method === "GET" && url.pathname === "/v8") return serveStatic(res, "index.html");
   const v9Files = ["/v9/app.js", "/v9/style.css", "/assets/v9/team.png", "/assets/v9/guide.png", "/assets/v9/result.png", "/assets/v9/inter-cyrillic-400-normal.woff2", "/assets/v9/inter-cyrillic-600-normal.woff2", "/assets/v9/inter-latin-400-normal.woff2", "/assets/v9/inter-latin-600-normal.woff2"];
@@ -212,7 +230,19 @@ const server = http.createServer(async (req, res) => {
       }
       const actualHash = crypto.createHash("sha256").update(body.content, "utf8").digest("hex");
       if (body.contentSha256 !== actualHash) return json(res, 422, { error: "Контрольная сумма не совпадает." });
-      const run = state.runs[body.runId] || {
+      const existingRun = state.runs[body.runId];
+      if (existingRun && existingRun.projectId !== body.projectId) {
+        return json(res, 403, { error: "Запуск не принадлежит указанному проекту." });
+      }
+      const priorOperation = state.operations[body.operationId];
+      const exactReplay = priorOperation?.state === "confirmed" &&
+        priorOperation.projectId === body.projectId &&
+        priorOperation.runId === body.runId &&
+        priorOperation.contentSha256 === actualHash;
+      if (existingRun && terminalRunStatuses.has(existingRun.status) && !exactReplay) {
+        return json(res, 409, { error: "Запись в завершённый запуск запрещена." });
+      }
+      const run = existingRun || {
         id: body.runId, projectId: body.projectId, status: "running",
         task: String(body.title || "Runner artifact"), clientRequestId: `runner:${body.runId}`,
         createdAt: now(), updatedAt: now(),
@@ -261,10 +291,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && segments.length === 4) {
       try {
         const body = await readBody(req); const key = req.headers["idempotency-key"]; if (!key) return json(res, 400, { error: "Нужен ключ идемпотентности." });
-        if (state.idempotency[key]) return json(res, 200, safeRun(state.runs[state.idempotency[key]]));
+        const scopedKey = `${projectId}:${key}`;
+        if (state.idempotency[scopedKey]) return json(res, 200, safeRun(state.runs[state.idempotency[scopedKey]]));
         const task = String(body.task || "").trim(); if (!task) return json(res, 400, { error: "Опишите задачу." });
-        if (project.budget - project.spent < 1) { const run = { id: id(), projectId, status: "limit_reached", task, clientRequestId: key, createdAt: now(), updatedAt: now() }; state.runs[run.id] = run; state.idempotency[key] = run.id; await metadata.ensureRun(projectId, run); emit(state, run, "limit_reached", { message: "Тестовый лимит исчерпан. Работа не запускалась." }); return json(res, 201, safeRun(run)); }
-        project.spent += 1; const run = { id: id(), projectId, status: "queued", task, clientRequestId: key, createdAt: now(), updatedAt: now() }; state.runs[run.id] = run; state.idempotency[key] = run.id; await metadata.ensureRun(projectId, run); emit(state, run, "queued", { message: "Работа поставлена в очередь." });
+        if (project.budget - project.spent < 1) { const run = { id: id(), projectId, status: "limit_reached", task, clientRequestId: key, createdAt: now(), updatedAt: now() }; state.runs[run.id] = run; state.idempotency[scopedKey] = run.id; await metadata.ensureRun(projectId, run); emit(state, run, "limit_reached", { message: "Тестовый лимит исчерпан. Работа не запускалась." }); return json(res, 201, safeRun(run)); }
+        project.spent += 1; const run = { id: id(), projectId, status: "queued", task, clientRequestId: key, createdAt: now(), updatedAt: now() }; state.runs[run.id] = run; state.idempotency[scopedKey] = run.id; await metadata.ensureRun(projectId, run); emit(state, run, "queued", { message: "Работа поставлена в очередь." });
         setTimeout(() => { const fresh = load(); const current = fresh.runs[run.id]; if (!current) return; current.status = "running"; current.updatedAt = now(); metadata.ensureRun(projectId, current).then(() => { emit(fresh, current, "run_started", { message: "Работа началась." }); emit(fresh, current, "progress", { message: "Готовим безопасный итоговый материал." }); const outcome = body.simulateUnknown ? "unknown" : body.simulateFailure ? "failed" : "completed"; setTimeout(() => completeRun(run.id, outcome).catch((error) => console.error(error)), 900); }).catch((error) => console.error("metadata run update failed", error)); }, 300);
         return json(res, 201, safeRun(run));
       } catch (error) { return json(res, 400, { error: error.message }); }
@@ -289,6 +320,7 @@ const server = http.createServer(async (req, res) => {
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "127.0.0.1";
 async function start() {
+  load();
   artifactStorage.initialize();
   await metadata.initialize();
   server.listen(port, host, () => console.log(`CoreTeams demo: http://${host}:${port}`));

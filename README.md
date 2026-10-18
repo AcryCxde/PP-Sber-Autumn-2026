@@ -4,13 +4,15 @@
 
 ## Запуск
 
+Перед запуском передайте обязательные переменные окружения через deploy-среду или менеджер секретов; значения не храните в репозитории. Полный порядок описан в [`docs/deploy-storage-handoff.md`](docs/deploy-storage-handoff.md).
+
 ```bash
 docker compose up --build -d
 ```
 
 Web/API будет доступен на <http://127.0.0.1:4173>, PostgreSQL — на `localhost:5432`.
 
-Для чистого повторного развёртывания схемы:
+Для чистого повторного развёртывания одноразового локального контура:
 
 ```bash
 docker compose down -v
@@ -34,9 +36,9 @@ docker compose up --build -d
 
 Storage URL передаётся как обычный env, токен — только файлом секрета:
 
+Передайте `ARTIFACT_STORAGE_URL` через окружение, а `STORAGE_TOKEN` — из менеджера секретов, затем выполните:
+
 ```bash
-export ARTIFACT_STORAGE_URL=http://127.0.0.1:4173
-export STORAGE_TOKEN=development-storage-token
 uv --directory runner run sessions secrets init demo-main
 uv --directory runner run sessions start demo-main --data runner/evals/fixtures/demo
 ```
