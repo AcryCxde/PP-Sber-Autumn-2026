@@ -5,7 +5,7 @@
 - **Ветка:** `isolation-matrix-storage`
 - **Runner baseline:** `AcryCxde/isolation-matrix@8be086c`
 - **Storage 2.3 source snapshot:** `task-infra@8ba443b` (реализация из `86cf6d0`, проверки надёжности из `ff75f1e`, точный поиск `Operation-Id` из `8ba443b`)
-- **Текущий HEAD до коммита матрицы Storage:** `8be086c`; изменения Storage и этого документа находятся в рабочем дереве
+- **Коммит матрицы Storage 2.3:** `36d6cfcaaff8f68950675f4d8311e7bf46b0a61a` (`36d6cfc`), поверх Runner baseline `8be086c`
 - **Локальный Run ID:** `PPS-132-storage-20261022-local-02`
 
 Строгий `XFAIL` означает открытую находку, а не успешную проверку. `XPASS` для таких тестов
