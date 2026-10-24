@@ -10,6 +10,7 @@ from backend.dependencies import get_session
 from backend.models import Artifact, Event
 from backend.public_events import project_public_event_data
 from backend.repository import (
+    delete_conversation,
     get_active_run_ids,
     list_conversation_events,
     list_conversations,
@@ -39,6 +40,27 @@ def public_event_read(item: Event) -> EventRead:
         payload={key: value for key, value in projected.items() if key != "type"},
         created_at=item.created_at,
     )
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_conversation(
+    conversation_id: str,
+    request: Request,
+    session: SessionDependency,
+) -> Response:
+    outcome = await delete_conversation(session, conversation_id)
+    if outcome == "not_found":
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    if outcome == "busy":
+        raise HTTPException(status_code=409, detail="Conversation has an active run")
+    # В режиме runner у диалога есть контейнер и тома сессии: удаляются вместе с ним.
+    runner_manager = getattr(request.app.state, "runner_manager", None)
+    if runner_manager is not None:
+        await runner_manager.discard(
+            runner_manager.project_id(conversation_id),
+            reason="conversation_deleted",
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/conversations", response_model=list[ConversationRead])

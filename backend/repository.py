@@ -752,3 +752,22 @@ async def list_messages(
         .order_by(Message.sequence.asc())
     )
     return list(result)
+
+
+async def delete_conversation(session: AsyncSession, conversation_id: str) -> str:
+    """Мягкое удаление: диалог пропадает из списков. Возвращает deleted | not_found | busy."""
+    conversation = await session.get(Conversation, conversation_id)
+    if conversation is None or conversation.status == "deleted":
+        return "not_found"
+    active_run = await session.scalar(
+        select(Run.id).where(
+            Run.conversation_id == conversation.id,
+            Run.status.in_(ACTIVE_RUN_STATUSES),
+        )
+    )
+    if active_run is not None:
+        return "busy"
+    conversation.status = "deleted"
+    conversation.updated_at = datetime.now(UTC)
+    await session.commit()
+    return "deleted"

@@ -9,11 +9,12 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from backend import models  # noqa: F401
 from backend.api.history import router as history_router
 from backend.config import PROJECT_ROOT, Settings
+from backend.containers import ContainerError, ContainerManager
 from backend.db import Database
 from backend.models import Event
 from backend.parser import (
@@ -36,6 +37,9 @@ from backend.repository import (
     mark_run_running,
     reconcile_orphaned_runs,
 )
+from backend.runner_app import RunnerBridge, create_runner_router
+from backend.runner_executor import run_via_runner
+from backend.runner_transport import RunnerTransport
 from backend.workspace import (
     WorkspaceError,
     acquire_gateway_lock,
@@ -49,6 +53,9 @@ from backend.workspace import (
 
 APP_SETTINGS = Settings()
 logger = logging.getLogger(__name__)
+# uvicorn настраивает только свои логгеры, а alembic.ini ставит корневому WARN: без собственного
+# уровня не видно создания и удаления runner-контейнеров.
+logging.getLogger("backend").setLevel(logging.INFO)
 SESSION_UNAVAILABLE_MARKERS = (
     "no conversation found",
     "unable to resume",
@@ -305,6 +312,10 @@ async def handle_run_create(
     del websocket
 
     if acceptance.idempotent_replay:
+        return
+
+    if app_state.settings.executor == "runner":
+        await run_via_runner(app_state, acceptance, content, deliver_event)
         return
 
     process: subprocess.Popen[str] | None = None
@@ -846,13 +857,24 @@ def create_app(
             )
         )
         database_ready = False
+        supervisor: asyncio.Task[None] | None = None
+        runner_manager: ContainerManager | None = getattr(app.state, "runner_manager", None)
         try:
             await app.state.database.migrate()
             database_ready = True
             async with app.state.database.session() as session:
                 await reconcile_orphaned_runs(session)
+            if runner_manager is not None:
+                await runner_manager.restore()
+                await runner_manager.bridge.start()
+                supervisor = asyncio.create_task(runner_manager.supervise())
             yield
         finally:
+            if supervisor is not None:
+                supervisor.cancel()
+                await asyncio.gather(supervisor, return_exceptions=True)
+            if runner_manager is not None:
+                await runner_manager.bridge.stop()
             try:
                 tasks = list(app.state.run_tasks)
                 for task in tasks:
@@ -873,6 +895,27 @@ def create_app(
     application.state.run_slot_lock = asyncio.Lock()
     application.state.run_task_count = 0
     application.include_router(history_router)
+
+    if selected_settings.executor == "runner":
+        selected_settings.runner_transport_db.parent.mkdir(parents=True, exist_ok=True)
+        transport = RunnerTransport(selected_settings.runner_transport_db)
+        bridge = RunnerBridge(
+            transport,
+            heartbeat_timeout=selected_settings.runner_heartbeat_timeout_seconds,
+        )
+        application.state.runner_transport = transport
+        application.state.runner_manager = ContainerManager(selected_settings, bridge, transport)
+        # Runner подключается сам: входящий порт у контейнера проекта не нужен.
+        application.include_router(create_runner_router(bridge))
+
+        @application.get("/api/conversations/{conversation_id}/runner")
+        async def runner_status(conversation_id: str) -> dict[str, Any]:
+            manager: ContainerManager = application.state.runner_manager
+            try:
+                project = manager.project_id(conversation_id)
+            except ContainerError:
+                raise HTTPException(status_code=404, detail="Runner not found") from None
+            return await asyncio.to_thread(manager.describe, project)
 
     @application.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:

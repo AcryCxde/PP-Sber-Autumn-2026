@@ -1,19 +1,49 @@
-# Backend и frontend в отдельных контейнерах.
+# Backend и frontend в отдельных контейнерах; под каждый диалог backend поднимает свой
+# runner-контейнер (ctrunner + Core Team Framework), удаляет его после простоя и пересоздаёт
+# из сохранённых томов сессии при следующем сообщении.
 # Настройки шлюза (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, модели) — в .env.gateway, см. .env.gateway.example.
 services:
+  # Только собирает образ runner; контейнеры из него создаёт backend.
+  runner-image:
+    build:
+      context: runner
+    image: coreteams-runner:dev
+    entrypoint: ["true"]
+    restart: "no"
+    network_mode: none
+
   backend:
     build:
       context: .
       dockerfile: backend/Dockerfile
     image: coreteams-backend:dev
     env_file: .env.gateway
+    environment:
+      EXECUTOR: runner
+      RUNNER_IMAGE: coreteams-runner:dev
+      RUNNER_NETWORK: coreteams
+      RUNNER_GATEWAY_URL: ws://backend:8000/v1/runner
+      RUNNER_CONTEXT_DIR: /context
+      # Простой, после которого контейнер удаляется (тома сессии остаются).
+      RUNNER_IDLE_TIMEOUT_SECONDS: ${RUNNER_IDLE_TIMEOUT_SECONDS:-600}
+      # Срок хранения томов с последней активности; 0 — хранить всегда. По умолчанию 30 дней.
+      RUNNER_VOLUME_RETENTION_SECONDS: ${RUNNER_VOLUME_RETENTION_SECONDS:-2592000}
+    # docker.sock принадлежит root:root (0660): группа 0 даёт доступ без запуска backend от root.
+    # Доступ к сокету равен root на хосте — в production нужен docker-socket-proxy.
+    group_add: ["0"]
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${RUNNER_CONTEXT_HOST_DIR:-./runner/evals/fixtures/demo}:/context:ro
       - backend-data:/app/backend/data
       - workspaces:/home/node/.claude-web/workspaces
-      # Транскрипты Claude Code: без них --resume не продолжит диалог после перезапуска.
+      # Транскрипты Claude Code для режима EXECUTOR=cli: без них --resume не продолжит диалог.
       - claude-home:/home/node/.claude
+    networks: [coreteams]
     ports:
       - "8000:8000"
+    depends_on:
+      runner-image:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   frontend:
@@ -22,11 +52,17 @@ services:
     image: coreteams-frontend:dev
     environment:
       BACKEND_URL: http://backend:8000
+    networks: [coreteams]
     depends_on:
       - backend
     ports:
       - "5173:80"
     restart: unless-stopped
+
+networks:
+  # Фиксированное имя: в эту сеть backend подключает runner-контейнеры, чтобы они видели backend:8000.
+  coreteams:
+    name: coreteams
 
 volumes:
   backend-data:
