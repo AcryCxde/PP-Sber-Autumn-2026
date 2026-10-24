@@ -20,17 +20,30 @@ from backend.runner_transport import RunnerTransport, TransportError
 
 
 class RunnerBridge:
-    def __init__(self, transport: RunnerTransport, project_tokens: dict[str, str],
-                 *, poll_seconds: float = 0.1):
-        if not project_tokens or any(not p or not t for p, t in project_tokens.items()):
-            raise ValueError("Explicit non-empty project-scoped tokens required")
-        if len(set(project_tokens.values())) != len(project_tokens):
-            raise ValueError("Each project must have a distinct token")
+    def __init__(self, transport: RunnerTransport, project_tokens: dict[str, str] | None = None,
+                 *, poll_seconds: float = 0.1, heartbeat_timeout: float = 30):
         self.transport = transport
-        self._tokens = dict(project_tokens)
+        self._tokens: dict[str, str] = {}
         self._connections: set[str] = set()
         self._monitor: asyncio.Task[None] | None = None
         self.poll_seconds = poll_seconds
+        self.heartbeat_timeout = heartbeat_timeout
+        for project, token in (project_tokens or {}).items():
+            self.register(project, token)
+
+    def register(self, project: str, token: str) -> None:
+        """Project-scoped token, added at runtime when the gateway provisions a runner."""
+        if not project or not token:
+            raise ValueError("Explicit non-empty project-scoped tokens required")
+        if any(p != project and hmac.compare_digest(t, token) for p, t in self._tokens.items()):
+            raise ValueError("Each project must have a distinct token")
+        self._tokens[project] = token
+
+    def revoke(self, project: str) -> None:
+        self._tokens.pop(project, None)
+
+    def is_connected(self, project: str) -> bool:
+        return project in self._connections
 
     async def start(self) -> None:
         if self._monitor is None:
@@ -44,7 +57,7 @@ class RunnerBridge:
 
     async def _watch(self) -> None:
         while True:
-            self.transport.expire()
+            self.transport.expire(timeout=self.heartbeat_timeout)
             await asyncio.sleep(1)
 
     async def handle(self, websocket: WebSocket) -> None:
@@ -82,11 +95,13 @@ class RunnerBridge:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
-        except (TransportError, ValueError, TimeoutError, WebSocketDisconnect):
+        except WebSocketDisconnect:
+            pass  # runner closed the connection itself (container stopped or restarting)
+        except (TransportError, ValueError, TimeoutError):
             # Do not log frame bodies, prompts, tokens, SDK session identifiers.
             try:
                 await websocket.close(code=1008)
-            except RuntimeError:
+            except Exception:  # peer already gone: uvicorn raises ClientDisconnected
                 pass
         finally:
             for task in tasks:
@@ -103,7 +118,14 @@ class RunnerBridge:
                 raise TransportError("invalid_frame")
             kind = frame.get("type")
             if kind == "event":
-                self.transport.ingest(project, frame.get("journal_seq"), frame.get("event"))
+                try:
+                    self.transport.ingest(project, frame.get("journal_seq"), frame.get("event"))
+                except TransportError as error:
+                    # Run already closed by the gateway (heartbeat_lost, timeout): drop the
+                    # late row, otherwise every reconnect replays it and the project is stuck.
+                    if str(error) != "terminal_run":
+                        raise
+                    self.transport.skip(project, frame.get("journal_seq"))
             elif kind == "heartbeat":
                 self.transport.heartbeat(project, frame)
             elif kind == "command_ack":

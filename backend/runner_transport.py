@@ -438,6 +438,50 @@ class RunnerTransport:
             row = db.execute("SELECT ack FROM commands WHERE id=? AND project=?", (command_id, project)).fetchone()
             return json.loads(row[0]) if row and row[0] else None
 
+    def skip(self, project: str, journal_seq: int) -> None:
+        """Advance the journal cursor past a row the gateway chose not to project."""
+        if type(journal_seq) is not int or journal_seq < 1:
+            raise TransportError("invalid_journal_seq")
+        with self._db() as db:
+            db.execute("UPDATE projects SET cursor=MAX(cursor,?) WHERE id=?", (journal_seq, project))
+
+    def connecting(self, project: str) -> None:
+        """Container (re)start in progress: no heartbeat is owed until the next hello.
+
+        Without this, a project stopped for idleness keeps its stale `seen` and a
+        freshly queued Run would expire before the runner had a chance to connect.
+        """
+        with self._db() as db:
+            db.execute("INSERT OR IGNORE INTO projects(id) VALUES(?)", (project,))
+            db.execute("UPDATE projects SET seen=NULL WHERE id=?", (project,))
+
+    def project_state(self, project: str) -> dict[str, Any]:
+        with self._db() as db:
+            row = db.execute("SELECT seen,phase,health FROM projects WHERE id=?", (project,)).fetchone()
+            return dict(row) if row else {"seen": None, "phase": None, "health": None}
+
+    def active_run(self, project: str) -> dict[str, Any] | None:
+        """The single non-terminal Run of a project, with its pending question if any."""
+        with self._db() as db:
+            row = db.execute("SELECT id,status,question,completion FROM runs WHERE project=? "
+                             "AND status NOT IN ('completed','failed','outcome_unknown')",
+                             (project,)).fetchone()
+            if row is None:
+                return None
+            return {"run_id": row["id"], "status": row["status"],
+                    "question": json.loads(row["question"]) if row["question"] else None,
+                    "awaiting_storage": bool(row["completion"])}
+
+    def abandon(self, project: str, run: str, code: str) -> bool:
+        """Gateway-side terminal outcome when the runner can no longer report one."""
+        with self._db() as db:
+            row = self._run(db, project, run)
+            if row["status"] in TERMINAL:
+                return False
+            self._append(db, _event(project, run, "run.outcome_unknown", {"code": code}), "gateway")
+            db.execute("UPDATE runs SET status='outcome_unknown' WHERE id=?", (run,))
+            return True
+
     def expire(self, *, now: float | None = None, timeout: float = 30) -> list[str]:
         """Only actual expired registered connections, never missing storage config."""
         expired = []
