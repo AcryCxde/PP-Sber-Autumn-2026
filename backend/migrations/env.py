@@ -13,7 +13,8 @@ from backend.db import Base, ensure_sqlite_parent
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # Миграции идут на старте backend: не отключать уже созданные логгеры uvicorn и приложения.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 database_url = config.attributes.get("database_url") or Settings().database_url
 ensure_sqlite_parent(database_url)
