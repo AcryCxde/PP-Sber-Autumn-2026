@@ -7,6 +7,7 @@ __pycache__/
 .env
 .env.*
 !.env.example
+!.env.gateway.example
 .vscode/
 plans/
 backend/data/
@@ -37,3 +38,4 @@ dist-ssr
 *.sw?
 
 .claude/
+*.egg-info/

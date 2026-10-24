@@ -1,0 +1,34 @@
+# Backend и frontend в отдельных контейнерах.
+# Настройки шлюза (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, модели) — в .env.gateway, см. .env.gateway.example.
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: coreteams-backend:dev
+    env_file: .env.gateway
+    volumes:
+      - backend-data:/app/backend/data
+      - workspaces:/home/node/.claude-web/workspaces
+      # Транскрипты Claude Code: без них --resume не продолжит диалог после перезапуска.
+      - claude-home:/home/node/.claude
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: frontend
+    image: coreteams-frontend:dev
+    environment:
+      BACKEND_URL: http://backend:8000
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
+volumes:
+  backend-data:
+  workspaces:
+  claude-home:
