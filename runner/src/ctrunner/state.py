@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Final, final
 
 from ctrunner.fsio import write_json_atomic
-from ctrunner.protocol import JsonValue, MessageCmd
+from ctrunner.protocol import JsonValue, MessageCmd, parse_message
 
 STATE_VERSION: Final = 1
 # Идентификатор подставляется в glob транскрипта: метасимволов в нём быть не может.
@@ -51,7 +51,14 @@ EMPTY: Final = PersistedState(None, None, None, 0, ())
 
 
 def _cmd_json(cmd: MessageCmd) -> dict[str, JsonValue]:
-    return {"id": cmd.id, "text": cmd.text}
+    doc: dict[str, JsonValue] = {"id": cmd.id, "text": cmd.text}
+    if cmd.roles:
+        doc["roles"] = list(cmd.roles)
+    if cmd.stage is not None:
+        doc["stage"] = cmd.stage
+    if cmd.input_files:
+        doc["input_files"] = list(cmd.input_files)
+    return doc
 
 
 def to_json(state: PersistedState) -> dict[str, JsonValue]:
@@ -139,7 +146,8 @@ def _int(doc: dict[str, object], key: str) -> int:
 
 def _cmd(raw: object) -> MessageCmd:
     doc = _object(raw)
-    return MessageCmd(_str(doc, "id"), _str(doc, "text"))
+    # Те же проверки, что на входе: испорченный state не должен нести небезопасный путь в промпт.
+    return parse_message(_str(doc, "id"), doc)
 
 
 def _open_turn(raw: object) -> OpenTurn:

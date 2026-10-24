@@ -8,18 +8,26 @@ import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
-from typing import Final, Protocol, assert_never
+from typing import Final, Protocol, assert_never, final
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher, ProcessError
 
 from ctrunner import __version__
-from ctrunner.checkpoint import Head, clear_stale_lock, commit_turn, read_head, run_git
+from ctrunner.checkpoint import (
+    Head,
+    clear_stale_lock,
+    commit_turn,
+    read_file_facts,
+    read_head,
+    run_git,
+)
 from ctrunner.config import HEALTH_FILE, TOKEN_FILE, ConfigError, RunnerConfig, load_config
 from ctrunner.diag import diag
-from ctrunner.eventlog import EventLog, kinds_of_turn
+from ctrunner.eventlog import EventLog, kinds_of_turn, open_questions
+from ctrunner.gateway import GatewayClient
 from ctrunner.guard import Policy
 from ctrunner.inbox import Inbox
 from ctrunner.probe import ProbeResult, probe
@@ -33,6 +41,7 @@ EX_CONFIG: Final = 78  # sysexits: ошибка конфигурации, рес
 EX_STATE: Final = 65  # sysexits EX_DATAERR: state.json повреждён, рестарт не поможет
 EX_UNAVAILABLE: Final = 1  # сеть или SDK: Docker перезапустит
 PROBE_TIMEOUT_S: Final = 30.0
+GATEWAY_DRAIN_S: Final = 5.0  # сколько ждём досылки хвоста журнала при выходе
 # Docker перезапускает on-failure с задержкой от 100 мс: 5 рестартов проходят за секунды,
 # поэтому кратковременную недоступность cliproxy переживаем внутри процесса.
 PROBE_RETRY_DELAYS_S: Final = (5.0, 10.0, 20.0, 40.0, 60.0)
@@ -177,11 +186,55 @@ async def run_with_resume[S: Launchable](  # noqa: PLR0913 — зависимо�
             return session.crash(error)
 
 
+class LiveForks:
+    """Текущая Session для клиента gateway: при фолбэке resume → fresh сессия пересоздаётся."""
+
+    def __init__(self) -> None:
+        self.session: Session | None = None
+
+    def questions(self, fork_id: str) -> tuple[str, ...] | None:
+        return None if self.session is None else self.session.fork_questions(fork_id)
+
+
+@final
+@dataclass(frozen=True, slots=True)
+class RunningGateway:
+    client: GatewayClient
+    task: asyncio.Task[None]
+
+    async def stop(self, timeout_s: float = GATEWAY_DRAIN_S) -> None:
+        """Дослать хвост журнала (финальные `turn_failed`/`turn_completed`) и закрыть соединение."""
+        self.client.drain()
+        _, pending = await asyncio.wait({self.task}, timeout=timeout_s)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(self.task, return_exceptions=True)
+
+
+def _start_gateway(
+    cfg: RunnerConfig, state: PersistedState, log: EventLog, live: LiveForks
+) -> RunningGateway | None:
+    """Без `GATEWAY_URL` runner автономен: события только в журнале, команды через inbox."""
+    if cfg.gateway_url is None or cfg.gateway_token is None:
+        return None
+    client = GatewayClient(
+        url=cfg.gateway_url, token=cfg.gateway_token, project_id=cfg.project_id,
+        runner_version=__version__, session_id=state.session_id,
+        journal=cfg.runner_dir / "events.jsonl", health_file=HEALTH_FILE,
+        inbox_dir=cfg.runner_dir / "inbox", project_root=str(cfg.project_dir),
+        last_seq=lambda: log.last_seq, fork_questions=live.questions,
+    )  # fmt: skip
+    return RunningGateway(client, asyncio.create_task(client.run()))
+
+
 async def run(cfg: RunnerConfig) -> int:
     await asyncio.to_thread(seed_project, cfg.project_dir, seed=SEED_DIR, ctf=CTF_DIR)
     for directory in (cfg.runner_dir, cfg.claude_dir):
         directory.mkdir(parents=True, exist_ok=True)
-    redactor = Redactor.of([cfg.anthropic_token])
+    redactor = Redactor.of(
+        [cfg.anthropic_token, *([cfg.gateway_token] if cfg.gateway_token else [])]
+    )
+    live = LiveForks()
     events = cfg.runner_dir / "events.jsonl"
     state_file = cfg.runner_dir / STATE_FILE
     with EventLog.open(events, redactor, time.time) as log:
@@ -207,9 +260,12 @@ async def run(cfg: RunnerConfig) -> int:
                 state=session_state,
                 save_state=partial(save_state, state_file),
                 commit=partial(commit_turn, cfg.project_dir),
+                file_facts=partial(read_file_facts, cfg.project_dir),
                 turn_kinds=partial(kinds_of_turn, events),
+                open_questions=partial(open_questions, events),
             )
             asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, session.request_stop)
+            live.session = session
             return session
 
         def open_client(session: Session, resume: str | None) -> ClaudeSDKClient:
@@ -225,14 +281,19 @@ async def run(cfg: RunnerConfig) -> int:
             )
             return ClaudeSDKClient(options=options)
 
-        return await run_with_resume(
-            state,
-            read_head(cfg.project_dir),
-            resumable_session(state, cfg.claude_dir),
-            build_session=build_session,
-            open_client=open_client,
-            redact=redactor.text,
-        )
+        gateway = _start_gateway(cfg, state, log, live)
+        try:
+            return await run_with_resume(
+                state,
+                read_head(cfg.project_dir),
+                resumable_session(state, cfg.claude_dir),
+                build_session=build_session,
+                open_client=open_client,
+                redact=redactor.text,
+            )
+        finally:
+            if gateway is not None:
+                await gateway.stop()
 
 
 def cli() -> None:

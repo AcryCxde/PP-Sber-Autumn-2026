@@ -95,3 +95,35 @@ def test_direct_construction_keeps_invariants(secrets: Path, field: str, value: 
     good = load_config(ENV, secrets)
     with pytest.raises(ConfigError):
         replace(good, **{field: value})  # type: ignore[arg-type]
+
+
+def test_gateway_is_optional(secrets: Path) -> None:
+    cfg = load_config(ENV, secrets)
+    assert cfg.gateway_url is None
+    assert cfg.gateway_token is None
+
+
+def test_gateway_url_requires_secret(secrets: Path) -> None:
+    with pytest.raises(ConfigError, match="gateway_token"):
+        load_config({**ENV, "GATEWAY_URL": "ws://gw:8000/runner"}, secrets)
+
+
+def test_gateway_loaded_and_token_hidden(secrets: Path) -> None:
+    (secrets / "gateway_token").write_text("gw-secret-token\n")
+    cfg = load_config({**ENV, "GATEWAY_URL": "ws://gw:8000/runner"}, secrets)
+    assert cfg.gateway_url == "ws://gw:8000/runner"
+    assert cfg.gateway_token == "gw-secret-token"
+    assert "gw-secret" not in repr(cfg)
+
+
+def test_gateway_url_must_be_websocket(secrets: Path) -> None:
+    (secrets / "gateway_token").write_text("gw-secret-token\n")
+    with pytest.raises(ConfigError, match="GATEWAY_URL"):
+        load_config({**ENV, "GATEWAY_URL": "http://gw:8000"}, secrets)
+
+
+@pytest.mark.parametrize("token", ["short", "gw secret token"])
+def test_gateway_token_must_be_a_single_long_token(secrets: Path, token: str) -> None:
+    (secrets / "gateway_token").write_text(token + "\n")
+    with pytest.raises(ConfigError, match="gateway_token"):
+        load_config({**ENV, "GATEWAY_URL": "ws://gw:8000/runner"}, secrets)

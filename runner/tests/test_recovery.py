@@ -56,3 +56,24 @@ def test_prompt_keeps_task_and_asks_to_check_tree(mode: ResumeMode) -> None:
     assert CMD.text in text
     assert "git status" in text
     assert "git diff" in text
+
+
+@pytest.mark.parametrize("mode", list(ResumeMode))
+def test_prompt_asks_to_repeat_unanswered_questions(mode: ResumeMode) -> None:
+    text = continuation_prompt(Continue("t1", CMD, 1, mode), ["Формат?", "Разделы?"])
+    assert CMD.text in text
+    assert "- Формат?" in text
+    assert "- Разделы?" in text
+    assert "AskUserQuestion" in text
+
+
+def test_prompt_without_questions_has_no_question_block() -> None:
+    text = continuation_prompt(Continue("t1", CMD, 1, ResumeMode.RESUME))
+    assert "AskUserQuestion" not in text
+
+
+def test_prompt_keeps_inputs_block() -> None:
+    cmd = MessageCmd("c1", "собери отчёт", ("методист",), "ревью", ("inputs/a.md",))
+    text = continuation_prompt(Continue("t1", cmd, 1, ResumeMode.RESUME))
+    assert "Роли: методист" in text
+    assert "- inputs/a.md" in text
