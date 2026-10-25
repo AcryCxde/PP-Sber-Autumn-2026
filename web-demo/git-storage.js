@@ -9,6 +9,8 @@ const SAFE_SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT_SHA = /^[a-f0-9]{40}$/;
 
+class UnsafeArtifactTargetError extends Error {}
+
 function git(repository, args, options = {}) {
   return execFileSync("git", ["-C", repository, ...args], {
     encoding: "utf8",
@@ -19,7 +21,7 @@ function git(repository, args, options = {}) {
 
 function assertSegment(value, field) {
   if (typeof value !== "string" || !SAFE_SEGMENT.test(value)) {
-    throw new Error(`${field} содержит недопустимое значение`);
+    throw new UnsafeArtifactTargetError(`${field} содержит недопустимое значение`);
   }
   return value;
 }
@@ -51,6 +53,35 @@ class GitArtifactStorage {
     return `projects/${assertSegment(projectId, "projectId")}/runs/${assertSegment(runId, "runId")}/result.md`;
   }
 
+  validateArtifactTarget(projectId, runId, operationId) {
+    const gitPath = this.artifactPath(projectId, runId);
+    assertSegment(operationId, "operationId");
+    const root = fs.realpathSync(this.repository);
+    const parts = gitPath.split("/");
+    let current = this.repository;
+    for (const [index, part] of parts.entries()) {
+      current = path.join(current, part);
+      let stat;
+      try {
+        stat = fs.lstatSync(current);
+      } catch (error) {
+        if (error.code === "ENOENT") break;
+        throw error;
+      }
+      // lstat detects both symbolic links and Windows directory junctions.
+      if (stat.isSymbolicLink()) throw new UnsafeArtifactTargetError("Ссылки в пути артефакта запрещены");
+      const relative = path.relative(root, fs.realpathSync(current));
+      if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new UnsafeArtifactTargetError("Путь артефакта вышел за пределы хранилища");
+      }
+      const leaf = index === parts.length - 1;
+      if ((!leaf && !stat.isDirectory()) || (leaf && (!stat.isFile() || stat.nlink !== 1))) {
+        throw new UnsafeArtifactTargetError("Небезопасный тип объекта в пути артефакта");
+      }
+    }
+    return gitPath;
+  }
+
   findOperation(operationId) {
     assertSegment(operationId, "operationId");
     const commitSha = git(
@@ -73,7 +104,7 @@ class GitArtifactStorage {
       throw new Error("Контрольная сумма артефакта не совпадает");
     }
 
-    const gitPath = this.artifactPath(projectId, runId);
+    const gitPath = this.validateArtifactTarget(projectId, runId, operationId);
     const existingCommit = this.findOperation(operationId);
     if (existingCommit) {
       const restored = this.readArtifact(existingCommit, gitPath);
@@ -86,8 +117,9 @@ class GitArtifactStorage {
 
     const target = path.join(this.repository, ...gitPath.split("/"));
     fs.mkdirSync(path.dirname(target), { recursive: true });
+    this.validateArtifactTarget(projectId, runId, operationId);
     const temporary = `${target}.tmp-${process.pid}-${crypto.randomUUID()}`;
-    fs.writeFileSync(temporary, content, "utf8");
+    fs.writeFileSync(temporary, content, { encoding: "utf8", flag: "wx" });
     fs.renameSync(temporary, target);
 
     git(this.repository, ["add", "--", gitPath]);
@@ -118,4 +150,4 @@ class GitArtifactStorage {
   }
 }
 
-module.exports = { GitArtifactStorage };
+module.exports = { GitArtifactStorage, UnsafeArtifactTargetError };
