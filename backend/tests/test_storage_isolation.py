@@ -88,8 +88,8 @@ class StorageApi:
             headers={"authorization": f"Bearer {self.token}"},
             body={
                 "projectId": project_id,
-                "runId": run_id or str(uuid4()),
-                "operationId": operation_id or str(uuid4()),
+                "runId": str(uuid4()) if run_id is None else run_id,
+                "operationId": str(uuid4()) if operation_id is None else operation_id,
                 "title": "result.md",
                 "content": content,
                 "contentSha256": hashlib.sha256(content.encode()).hexdigest(),
@@ -177,7 +177,8 @@ def assert_safe_rejection(api: StorageApi, response: Response, *forbidden: str) 
         *forbidden,
     }
     for value in blocked:
-        assert value.lower() not in lowered
+        if value:
+            assert value.lower() not in lowered
 
 
 def save_fixture(api: StorageApi, project_id: str, marker: str) -> dict[str, Any]:
@@ -263,6 +264,7 @@ def test_foreign_run_artifact_download_is_hidden(storage_api: StorageApi) -> Non
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="PPS-132 Storage finding: artifact metadata endpoint is not implemented, so ownership isolation cannot be verified",
 )
 def test_foreign_artifact_metadata_is_rejected_after_owner_positive_control(storage_api: StorageApi) -> None:
@@ -277,6 +279,7 @@ def test_foreign_artifact_metadata_is_rejected_after_owner_positive_control(stor
 
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="PPS-132 Storage finding: artifact versions endpoint is not implemented, so ownership isolation cannot be verified",
 )
 def test_foreign_artifact_versions_are_rejected_after_owner_positive_control(storage_api: StorageApi) -> None:
@@ -301,6 +304,7 @@ def test_foreign_artifact_versions_are_rejected_after_owner_positive_control(sto
 )
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="PPS-132 Storage finding: material routes are not implemented, so material ownership isolation cannot be verified",
 )
 def test_foreign_material_operations_are_rejected_after_owner_positive_control(
@@ -331,6 +335,7 @@ def test_foreign_material_operations_are_rejected_after_owner_positive_control(
 @pytest.mark.parametrize("decision", ["approve", "reject"])
 @pytest.mark.xfail(
     strict=True,
+    raises=AssertionError,
     reason="PPS-132 Storage finding: approval routes are not implemented, so cross-project approval bypass cannot be verified",
 )
 def test_foreign_artifact_approval_is_rejected_after_owner_positive_control(
@@ -364,12 +369,10 @@ def test_artifact_save_rejects_traversal_project_id_without_writes(
 
 @pytest.mark.parametrize(
     "run_id",
-    ["../escape", "%2e%2e%2fescape", "/tmp/escape", "C:\\escape", "alpha/beta"],
-    ids=["dot-dot", "encoded-dot-dot", "absolute-posix", "absolute-windows", "separator"],
-)
-@pytest.mark.xfail(
-    strict=True,
-    reason="PPS-132 Storage finding: invalid runId is rejected only after an attacker-controlled run record is persisted",
+    ["../escape", "%2e%2e%2fescape", "/tmp/escape", "C:\\escape", "alpha/beta",
+     "", "..", "alpha\\beta", "bad\0id", "a" * 129],
+    ids=["dot-dot", "encoded-dot-dot", "absolute-posix", "absolute-windows", "separator",
+         "empty", "dots", "backslash", "nul", "too-long"],
 )
 def test_artifact_save_rejects_traversal_run_id_without_state_mutation(
     storage_api: StorageApi,
@@ -377,26 +380,27 @@ def test_artifact_save_rejects_traversal_run_id_without_state_mutation(
 ) -> None:
     before = storage_api.state()
     response = storage_api.save_artifact(PROJECT_ALPHA, run_id=run_id)
+    assert response.status == 422
     assert_safe_rejection(storage_api, response, run_id)
     assert storage_api.state() == before
 
 
 @pytest.mark.parametrize(
     "operation_id",
-    ["../escape", "%2e%2e%2fescape", "/tmp/escape", "C:\\escape"],
-    ids=["dot-dot", "encoded-dot-dot", "absolute-posix", "absolute-windows"],
-)
-@pytest.mark.xfail(
-    strict=True,
-    reason="PPS-132 Storage finding: invalid operationId remains in storage state after the request is rejected",
+    ["../escape", "%2e%2e%2fescape", "/tmp/escape", "C:\\escape",
+     "", "..", "alpha/beta", "alpha\\beta", "bad\0id", "a" * 129],
+    ids=["dot-dot", "encoded-dot-dot", "absolute-posix", "absolute-windows",
+         "empty", "dots", "slash", "backslash", "nul", "too-long"],
 )
 def test_artifact_save_rejects_traversal_operation_id_without_state_mutation(
     storage_api: StorageApi,
     operation_id: str,
 ) -> None:
+    before = storage_api.state()
     response = storage_api.save_artifact(PROJECT_ALPHA, operation_id=operation_id)
+    assert response.status == 422
     assert_safe_rejection(storage_api, response, operation_id)
-    assert operation_id not in storage_api.state()["operations"]
+    assert storage_api.state() == before
 
 
 @pytest.mark.parametrize(
@@ -416,16 +420,21 @@ def test_download_url_traversal_is_rejected_without_error_leaks(
     assert_safe_rejection(storage_api, response, encoded_id)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="PPS-132 Storage finding: a pre-existing project-directory symlink allows a write outside the artifact repository",
-)
-def test_storage_symlink_cannot_escape_project_prefix(storage_api: StorageApi, tmp_path: Path) -> None:
+@pytest.mark.parametrize("link_part", ["projects", "project", "runs", "run"])
+def test_storage_symlink_cannot_escape_project_prefix(
+    storage_api: StorageApi, tmp_path: Path, link_part: str,
+) -> None:
     outside = tmp_path / "outside-project"
     outside.mkdir()
+    run_id = str(uuid4())
     projects = storage_api.storage_root / "projects"
-    projects.mkdir(exist_ok=True)
-    project_link = projects / PROJECT_ALPHA
+    project_link = {
+        "projects": projects,
+        "project": projects / PROJECT_ALPHA,
+        "runs": projects / PROJECT_ALPHA / "runs",
+        "run": projects / PROJECT_ALPHA / "runs" / run_id,
+    }[link_part]
+    project_link.parent.mkdir(parents=True, exist_ok=True)
     try:
         project_link.symlink_to(outside, target_is_directory=True)
     except OSError:
@@ -440,10 +449,41 @@ def test_storage_symlink_cannot_escape_project_prefix(storage_api: StorageApi, t
         if junction.returncode != 0:
             pytest.skip(f"Directory links are unavailable: {junction.stderr or junction.stdout}")
 
-    run_id = str(uuid4())
+    before = storage_api.state()
     response = storage_api.save_artifact(PROJECT_ALPHA, run_id=run_id)
+    assert response.status == 422
     assert_safe_rejection(storage_api, response, str(outside))
-    assert not (outside / "runs" / run_id / "result.md").exists()
+    assert list(outside.iterdir()) == []
+    assert storage_api.state() == before
+
+
+def test_storage_hardlinked_target_is_rejected_without_changes(storage_api: StorageApi, tmp_path: Path) -> None:
+    outside = tmp_path / "foreign.md"
+    outside.write_text("FOREIGN-CONTENT", encoding="utf-8")
+    run_id = str(uuid4())
+    target = storage_api.storage_root / "projects" / PROJECT_ALPHA / "runs" / run_id / "result.md"
+    target.parent.mkdir(parents=True)
+    os.link(outside, target)
+    before = storage_api.state()
+    response = storage_api.save_artifact(PROJECT_ALPHA, run_id=run_id)
+    assert response.status == 422
+    assert storage_api.state() == before
+    assert outside.read_text(encoding="utf-8") == "FOREIGN-CONTENT"
+    assert_safe_rejection(storage_api, response, str(outside))
+
+
+@pytest.mark.parametrize("foreign_project", [False, True], ids=["same-project", "foreign-project"])
+def test_operation_reuse_does_not_create_another_run(storage_api: StorageApi, foreign_project: bool) -> None:
+    operation_id = str(uuid4())
+    assert storage_api.save_artifact(PROJECT_ALPHA, operation_id=operation_id).status == 201
+    before = storage_api.state()
+    response = storage_api.save_artifact(
+        PROJECT_BETA if foreign_project else PROJECT_ALPHA,
+        operation_id=operation_id,
+    )
+    assert response.status == 409
+    assert storage_api.state() == before
+    assert_safe_rejection(storage_api, response)
 
 
 def test_foreign_rejection_does_not_leak_paths_stack_or_content(storage_api: StorageApi) -> None:
