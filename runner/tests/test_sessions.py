@@ -60,6 +60,8 @@ def test_container_env_allowlist_and_localhost_rewrite() -> None:
     host = {
         "ANTHROPIC_BASE_URL": "http://localhost:8317",
         "ANTHROPIC_AUTH_TOKEN": "sk-real-secret-000",
+        "ARTIFACT_STORAGE_URL": "http://127.0.0.1:4173",
+        "STORAGE_TOKEN": "storage-secret-000",
         "OPENAI_API_KEY": "sk-other-000000",
         "ANTHROPIC_DEFAULT_OPUS_MODEL": "m-opus",
         "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "Opus",
@@ -68,6 +70,7 @@ def test_container_env_allowlist_and_localhost_rewrite() -> None:
     }
     assert container_env(host) == {
         "ANTHROPIC_BASE_URL": "http://host.docker.internal:8317",
+        "ARTIFACT_STORAGE_URL": "http://host.docker.internal:4173",
         "ANTHROPIC_DEFAULT_OPUS_MODEL": "m-opus",
         "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME": "Opus",
         "CLAUDE_CODE_SUBAGENT_MODEL": "m-sub",

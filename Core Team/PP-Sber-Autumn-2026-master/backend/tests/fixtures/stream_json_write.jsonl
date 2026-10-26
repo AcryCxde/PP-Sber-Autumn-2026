@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"fixture-session","cwd":"/workspace/project","model":"fixture-model","tools":["Write"]}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_fixture_write","name":"Write","input":{"file_path":"notes/result.md","content":"fixture content"}}]}}
+{"type":"user","tool_use_result":{"type":"text"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_fixture_write","content":"File created successfully","is_error":false}]}}
+{"type":"result","session_id":"fixture-session","is_error":false,"result":"Done","duration_ms":100,"num_turns":1,"total_cost_usd":0.001}

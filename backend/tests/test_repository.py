@@ -10,6 +10,7 @@ from backend.models import Conversation, Event, Message, Run
 from backend.repository import (
     RunAcceptanceError,
     accept_run,
+    append_artifact,
     append_event,
     create_request,
     finalize_run,
@@ -402,6 +403,47 @@ async def test_terminal_event_is_last_and_rejects_late_append(tmp_path) -> None:
             )
         assert events[-1].id == finalization.terminal_event.id
         assert events[-1].type == "run.completed"
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    ["completed", "failed", "cancelled", "outcome_unknown"],
+)
+async def test_artifact_write_is_rejected_for_terminal_run(
+    tmp_path,
+    terminal_status: str,
+) -> None:
+    database = Database(
+        f"sqlite+aiosqlite:///{(tmp_path / f'terminal-{terminal_status}.db').as_posix()}"
+    )
+    await database.create_schema()
+
+    try:
+        async with database.session() as session:
+            created = await create_request(session, "Finish before artifact")
+        async with database.session() as session:
+            await mark_run_running(session, created.run_id)
+            await finalize_run(
+                session,
+                created.run_id,
+                assistant_content="Done" if terminal_status == "completed" else None,
+                status=terminal_status,
+                exit_code=0 if terminal_status == "completed" else 1,
+                session_id="session-1" if terminal_status == "completed" else None,
+            )
+        async with database.session() as session:
+            with pytest.raises(ValueError, match="already terminal"):
+                await append_artifact(
+                    session,
+                    created.run_id,
+                    path="result.md",
+                    content="# late",
+                    size_bytes=6,
+                    truncated=False,
+                    num_lines=1,
+                )
     finally:
         await database.dispose()
 

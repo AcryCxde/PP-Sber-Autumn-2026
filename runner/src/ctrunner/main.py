@@ -28,6 +28,7 @@ from ctrunner.recovery import CLEAN, Recovery, plan
 from ctrunner.redact import Redactor
 from ctrunner.session import EventSink, SdkClient, Session
 from ctrunner.state import PersistedState, StateCorrupt, load_state, save_state
+from ctrunner.storage import ArtifactStorageClient
 
 EX_CONFIG: Final = 78  # sysexits: ошибка конфигурации, рестарт не поможет
 EX_STATE: Final = 65  # sysexits EX_DATAERR: state.json повреждён, рестарт не поможет
@@ -181,7 +182,10 @@ async def run(cfg: RunnerConfig) -> int:
     await asyncio.to_thread(seed_project, cfg.project_dir, seed=SEED_DIR, ctf=CTF_DIR)
     for directory in (cfg.runner_dir, cfg.claude_dir):
         directory.mkdir(parents=True, exist_ok=True)
-    redactor = Redactor.of([cfg.anthropic_token])
+    secrets = [cfg.anthropic_token]
+    if cfg.artifact_storage_token:
+        secrets.append(cfg.artifact_storage_token)
+    redactor = Redactor.of(secrets)
     events = cfg.runner_dir / "events.jsonl"
     state_file = cfg.runner_dir / STATE_FILE
     with EventLog.open(events, redactor, time.time) as log:
@@ -190,6 +194,14 @@ async def run(cfg: RunnerConfig) -> int:
             None,
             {"project_id": cfg.project_id, "runner_version": __version__},
         )
+        artifact_saver = None
+        if cfg.artifact_storage_url and cfg.artifact_storage_token:
+            artifact_saver = ArtifactStorageClient(
+                base_url=cfg.artifact_storage_url,
+                token=cfg.artifact_storage_token,
+                project_id=cfg.project_id,
+                project_dir=cfg.project_dir,
+            )
         try:
             state = load_state(state_file)
         except StateCorrupt as error:
@@ -208,6 +220,7 @@ async def run(cfg: RunnerConfig) -> int:
                 save_state=partial(save_state, state_file),
                 commit=partial(commit_turn, cfg.project_dir),
                 turn_kinds=partial(kinds_of_turn, events),
+                artifact_saver=artifact_saver,
             )
             asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, session.request_stop)
             return session
