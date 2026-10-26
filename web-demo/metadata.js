@@ -1,5 +1,12 @@
 "use strict";
 
+const terminalRunStatuses = new Set([
+  "completed", "failed", "cancelled", "limit_stopped", "limit_reached",
+  "outcome_unknown", "unknown",
+]);
+
+class TerminalRunError extends Error {}
+
 class MetadataStore {
   constructor(databaseUrl) {
     if (databaseUrl) {
@@ -97,6 +104,14 @@ class MetadataStore {
     try {
       await client.query("BEGIN");
       const projectId = await this.projectId(client, projectSlug);
+      const storedRun = await client.query(
+        "SELECT status FROM runs WHERE id = $1 AND project_id = $2 FOR UPDATE",
+        [run.id, projectId],
+      );
+      if (storedRun.rowCount !== 1) throw new Error("Запуск для подтверждения артефакта не найден");
+      if (terminalRunStatuses.has(storedRun.rows[0].status)) {
+        throw new TerminalRunError("Запись в завершённый запуск запрещена.");
+      }
       await client.query(
         `UPDATE operations SET state = 'confirmed', commit_sha = $2, updated_at = NOW()
          WHERE operation_id = $1 AND state IN ('intent', 'committed', 'confirmed')`,
@@ -147,4 +162,4 @@ class MetadataStore {
   }
 }
 
-module.exports = { MetadataStore };
+module.exports = { MetadataStore, TerminalRunError, terminalRunStatuses };

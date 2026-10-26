@@ -5,7 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { GitArtifactStorage } = require("./git-storage");
-const { MetadataStore } = require("./metadata");
+const { MetadataStore, TerminalRunError, terminalRunStatuses } = require("./metadata");
 
 const root = __dirname;
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
@@ -19,10 +19,6 @@ const artifactStorage = new GitArtifactStorage(
 const metadata = new MetadataStore(process.env.DATABASE_URL);
 const storageToken = process.env.STORAGE_TOKEN || "";
 const subscribers = new Map();
-const terminalRunStatuses = new Set([
-  "completed", "failed", "cancelled", "limit_stopped", "limit_reached",
-  "outcome_unknown", "unknown",
-]);
 let storageQueue = Promise.resolve();
 
 const now = () => new Date().toISOString();
@@ -120,6 +116,9 @@ async function persistArtifact(state, run, { content, title = "итоговый-
       throw new OperationConflictError("Operation-Id уже связан с другим артефактом");
     }
     if (prior?.state === "confirmed" && state.artifacts[prior.artifactId]) return state.artifacts[prior.artifactId];
+    if (terminalRunStatuses.has(run.status)) {
+      throw new TerminalRunError("Запись в завершённый запуск запрещена.");
+    }
 
     const gitPath = artifactStorage.artifactPath(run.projectId, run.id);
     const operation = { operationId: stableOperationId, runId: run.id, projectId: run.projectId, state: "intent", gitPath, contentSha256, createdAt: prior?.createdAt || now(), updatedAt: now() };
@@ -232,7 +231,7 @@ const server = http.createServer(async (req, res) => {
       if (body.contentSha256 !== actualHash) return json(res, 422, { error: "Контрольная сумма не совпадает." });
       const existingRun = state.runs[body.runId];
       if (existingRun && existingRun.projectId !== body.projectId) {
-        return json(res, 403, { error: "Запуск не принадлежит указанному проекту." });
+        return json(res, 409, { error: "Запуск не принадлежит указанному проекту." });
       }
       const priorOperation = state.operations[body.operationId];
       const exactReplay = priorOperation?.state === "confirmed" &&
@@ -265,7 +264,7 @@ const server = http.createServer(async (req, res) => {
         downloadUrl: `/api/projects/${artifact.projectId}/artifacts/${artifact.id}`,
       });
     } catch (error) {
-      if (error instanceof OperationConflictError) {
+      if (error instanceof OperationConflictError || error instanceof TerminalRunError) {
         return json(res, 409, { error: error.message });
       }
       console.error("internal artifact save failed", error);
