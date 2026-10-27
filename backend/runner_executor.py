@@ -5,8 +5,8 @@
 доверенный адаптер хранения: читает байты артефакта из контейнера, сверяет sha256
 и размер, сохраняет снимок и только после этого вызывает confirm_saved.
 
-Вопрос агента (facilitator.question) завершает текущий запрос текстом вопроса;
-следующее сообщение пользователя в диалоге уходит runner ответом на него.
+Вопрос агента переводит тот же публичный Run в waiting_for_input; ответ
+продолжает этот Run, не создавая новый DB/public runId.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from backend.repository import (
     append_event,
     finalize_run,
     mark_run_running,
+    mark_run_waiting_for_input,
 )
 from backend.runner_transport import RunnerTransport, TransportError
 
@@ -63,6 +64,8 @@ async def run_via_runner(
     acceptance: RunAcceptance,
     content: str,
     deliver_event: Callable[[Event], Awaitable[None]],
+    answer: tuple[str, str, dict[str, str]] | None = None,
+    roles: list[str] | None = None, stage: str | None = None, input_files: list[str] | None = None,
 ) -> None:
     manager: ContainerManager = app_state.runner_manager
     transport: RunnerTransport = app_state.runner_transport
@@ -76,6 +79,7 @@ async def run_via_runner(
     transport_run: str | None = None
     keep_transport_run = False
     terminal_error: BaseException | None = None
+    paused = False
 
     async def publish(event_data: dict[str, Any]) -> Event:
         async with database.session() as session:
@@ -136,12 +140,13 @@ async def run_via_runner(
 
         await manager.ensure_running(project)
         active = transport.active_run(project)
-        if active is not None and active["status"] == "waiting_for_input" and active["question"]:
+        if answer is not None:
+            question_id, answer_id, answers = answer
+            if active is None or active["run_id"] != run_id or active["status"] != "waiting_for_input":
+                raise RunnerRunError("unknown_fork")
             transport_run = active["run_id"]
             after_seq = transport.events(project, transport_run)[-1]["seq"]
-            question = active["question"]
-            transport.answer(project, transport_run, run_id, question["question_id"],
-                             {item["text"]: content for item in question["questions"]})
+            transport.answer(project, transport_run, answer_id, question_id, answers)
         else:
             if active is not None:
                 if active["run_id"] in manager.relaying:
@@ -149,7 +154,7 @@ async def run_via_runner(
                 # Хозяина у запуска нет (backend перезапускался): закрыть, иначе проект заблокирован.
                 transport.abandon(project, active["run_id"], "gateway_restarted")
             transport_run, after_seq = run_id, 0
-            transport.message(project, transport_run, run_id, content)
+            transport.message(project, transport_run, run_id, content, roles=roles, stage=stage, input_files=input_files)
 
         manager.relaying.add(transport_run)
         done = False
@@ -167,9 +172,13 @@ async def run_via_runner(
                     usage = payload
                 elif kind == "facilitator.question":
                     text = question_text(payload)
-                    parts.append(text)
-                    await publish(message_created_event(text))
-                    run_status, keep_transport_run, done = "completed", True, True
+                    async with database.session() as session:
+                        stored = await mark_run_waiting_for_input(session, run_id, payload["question_id"], payload["questions"], text)
+                    await deliver_event(stored)
+                    keep_transport_run, paused, done = True, True, True
+                elif kind == "user.answer.accepted":
+                    await publish({"type": "user.answer.accepted", "schema_version": 1,
+                                   "question_id": payload["question_id"], "answers": payload["answers"]})
                 elif kind == "run.completed":
                     run_status, done = "completed", True
                 elif kind == "run.failed":
@@ -194,13 +203,14 @@ async def run_via_runner(
     finally:
         if transport_run is not None:
             manager.relaying.discard(transport_run)
-            if run_status != "completed" and not keep_transport_run and terminal_error is None:
+            if not paused and run_status != "completed" and not keep_transport_run and terminal_error is None:
                 try:
                     transport.abandon(project, transport_run, error_code or "gateway_failed")
                 except TransportError:
                     pass
-        terminal_event = await asyncio.shield(finalize())
+        terminal_event = None if paused else await asyncio.shield(finalize())
 
     if terminal_error is not None:
         raise terminal_error
-    await deliver_event(terminal_event)
+    if terminal_event is not None:
+        await deliver_event(terminal_event)

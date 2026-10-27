@@ -5,24 +5,26 @@ from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import Artifact, Conversation, Event, Message, Run
+from backend.models import Artifact, Conversation, Event, Message, Run, RunAnswerReceipt
 from backend.public_events import (
     SAFE_FAILURE_CODES,
     SAFE_UNKNOWN_CODES,
     TERMINAL_EVENT_TYPES,
     artifact_saved_event,
     context_reset_event,
+    facilitator_question_event,
     run_accepted_event,
     run_started_event,
+    user_answer_accepted_event,
     validate_public_event_data,
 )
 
 
-ACTIVE_RUN_STATUSES = {"pending", "running"}
+ACTIVE_RUN_STATUSES = {"pending", "running", "waiting_for_input"}
 TERMINAL_RUN_STATUSES = {
     "completed",
     "failed",
@@ -418,18 +420,66 @@ async def mark_run_running(session: AsyncSession, run_id: str) -> Event | None:
     run = await session.get(Run, run_id)
     if run is None:
         raise LookupError(f"Run {run_id} was not found")
-    if run.status != "pending":
+    if run.status not in {"pending", "waiting_for_input"}:
         return None
 
+    first_start = run.started_at is None
     run.status = "running"
-    run.started_at = datetime.now(UTC)
-    event = await _append_event_in_transaction(
-        session,
-        run_id,
-        run_started_event(),
-    )
+    if first_start:
+        run.started_at = datetime.now(UTC)
+    event = await _append_event_in_transaction(session, run_id, run_started_event()) if first_start else None
     await session.commit()
     return event
+
+
+async def mark_run_waiting_for_input(
+    session: AsyncSession, run_id: str, question_id: str, questions: list[dict[str, Any]], text: str,
+) -> Event:
+    run = await session.get(Run, run_id)
+    if run is None or run.status != "running":
+        raise ValueError("run is not waiting-capable")
+    message = Message(conversation_id=run.conversation_id, run_id=run.id, role="assistant", kind="question",
+                      sequence=await _next_message_sequence(session, run.conversation_id), content=text)
+    session.add(message)
+    run.status = "waiting_for_input"
+    run.pending_answer_id = None
+    run.pending_question_id = question_id
+    run.pending_question = questions
+    run.pending_answers = None
+    event = await _append_event_in_transaction(session, run_id, facilitator_question_event(question_id, questions))
+    await session.commit()
+    return event
+
+
+async def queue_run_answer(
+    session: AsyncSession, conversation_id: str, run_id: str, question_id: str, answer_id: str, answers: dict[str, str],
+) -> bool:
+    receipt = await session.get(RunAnswerReceipt, answer_id)
+    if receipt is not None:
+        if (receipt.conversation_id != conversation_id or receipt.run_id != run_id or
+                receipt.question_id != question_id or receipt.answers != answers):
+            raise RunAcceptanceError("idempotency_conflict", "Ответ с этим ключом отличается.")
+        return False
+    revision = await session.scalar(select(func.max(Event.seq)).where(Event.run_id == run_id)) or 0
+    result = await session.execute(
+        update(Run).where(Run.id == run_id, Run.conversation_id == conversation_id,
+                          Run.status == "waiting_for_input", Run.pending_question_id == question_id)
+        .values(status="running", pending_answer_id=answer_id, pending_answers=answers, pending_question=None)
+    )
+    if result.rowcount != 1:
+        receipt = await session.get(RunAnswerReceipt, answer_id)
+        if receipt is not None and (receipt.conversation_id == conversation_id and receipt.run_id == run_id
+                                    and receipt.question_id == question_id and receipt.answers == answers):
+            return False
+        run = await session.get(Run, run_id)
+        if run is None or run.conversation_id != conversation_id:
+            raise LookupError("run not found")
+        raise RunAcceptanceError("unknown_fork", "Вопрос больше не актуален.")
+    session.add(RunAnswerReceipt(id=answer_id, conversation_id=conversation_id, run_id=run_id,
+                                  question_id=question_id, answers=answers,
+                                  accepted_revision=revision, accepted_status="running"))
+    await session.commit()
+    return True
 
 
 def _terminal_event_data(
@@ -683,6 +733,28 @@ async def list_run_events(
         run_status=run.status,
         events=list(result),
     )
+
+
+async def read_conversation_run(
+    session: AsyncSession,
+    conversation_id: str,
+    run_id: str,
+) -> tuple[Run, list[Message], int] | None:
+    """Read the legacy facts needed by the narrow project-bridge snapshot."""
+    run = await session.get(Run, run_id)
+    if run is None or run.conversation_id != conversation_id:
+        return None
+    messages = list(
+        await session.scalars(
+            select(Message)
+            .where(Message.run_id == run_id)
+            .order_by(Message.sequence.asc())
+        )
+    )
+    revision = await session.scalar(
+        select(func.max(Event.seq)).where(Event.run_id == run_id)
+    )
+    return run, messages, revision or 0
 
 
 async def list_conversation_events(
