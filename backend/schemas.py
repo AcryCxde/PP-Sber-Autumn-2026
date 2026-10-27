@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ConversationRead(BaseModel):
@@ -37,3 +37,42 @@ class EventRead(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class LegacyProjectCreate(BaseModel):
+    """Narrow bridge input; it is not the full React B project schema."""
+
+    clientProjectId: str = Field(min_length=1, max_length=36)
+    title: str = Field(min_length=1, max_length=200)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LegacyProjectCreated(BaseModel):
+    id: str
+    bridge: Literal["legacy_conversation"]
+
+
+class LegacyRunCreate(BaseModel):
+    """A text-only bridge to the existing legacy run.create lifecycle."""
+
+    content: str = Field(min_length=1, max_length=100_000)
+    contextMode: Literal["resume", "reset"] = "resume"
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LegacyRunMessage(BaseModel):
+    id: str
+    role: Literal["user", "facilitator", "system"]
+    text: str
+    at: datetime
+
+
+class LegacyRunSnapshot(BaseModel):
+    id: str
+    revision: int
+    status: Literal["queued", "running", "completed", "failed", "outcome_unknown"]
+    stageId: str
+    messages: list[LegacyRunMessage]
+    artifacts: list[Any]

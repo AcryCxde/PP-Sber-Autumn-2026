@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from backend import models  # noqa: F401
 from backend.api.history import router as history_router
+from backend.api.projects_adapter import router as projects_adapter_router
 from backend.config import PROJECT_ROOT, Settings
 from backend.containers import ContainerError, ContainerManager
 from backend.db import Database
@@ -251,37 +252,39 @@ async def handle_run_create(
     client_request_id: str,
     content: str,
     context_mode: str,
+    acceptance: RunAcceptance | None = None,
 ) -> None:
     app_state = websocket.app.state
     socket_ref = weakref.ref(websocket)
-    try:
-        async with app_state.database.session() as session:
-            acceptance = await accept_run(
-                session,
-                conversation_id=conversation_id,
+    if acceptance is None:
+        try:
+            async with app_state.database.session() as session:
+                acceptance = await accept_run(
+                    session,
+                    conversation_id=conversation_id,
+                    client_request_id=client_request_id,
+                    content=content,
+                    requested_context_mode=context_mode,
+                )
+        except RunAcceptanceError as error:
+            await send_command_error(
+                websocket,
+                code=error.code,
+                message=error.message,
                 client_request_id=client_request_id,
-                content=content,
-                requested_context_mode=context_mode,
+                conversation_id=conversation_id,
             )
-    except RunAcceptanceError as error:
-        await send_command_error(
-            websocket,
-            code=error.code,
-            message=error.message,
-            client_request_id=client_request_id,
-            conversation_id=conversation_id,
-        )
-        return
-    except Exception:
-        logger.exception("Failed to accept run request %s", client_request_id)
-        await send_command_error(
-            websocket,
-            code="run_acceptance_failed",
-            message="Не удалось создать запрос.",
-            client_request_id=client_request_id,
-            conversation_id=conversation_id,
-        )
-        return
+            return
+        except Exception:
+            logger.exception("Failed to accept run request %s", client_request_id)
+            await send_command_error(
+                websocket,
+                code="run_acceptance_failed",
+                message="Не удалось создать запрос.",
+                client_request_id=client_request_id,
+                conversation_id=conversation_id,
+            )
+            return
 
     socket_available = True
 
@@ -895,6 +898,7 @@ def create_app(
     application.state.run_slot_lock = asyncio.Lock()
     application.state.run_task_count = 0
     application.include_router(history_router)
+    application.include_router(projects_adapter_router)
 
     if selected_settings.executor == "runner":
         selected_settings.runner_transport_db.parent.mkdir(parents=True, exist_ok=True)

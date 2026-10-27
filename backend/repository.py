@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -683,6 +683,28 @@ async def list_run_events(
         run_status=run.status,
         events=list(result),
     )
+
+
+async def read_conversation_run(
+    session: AsyncSession,
+    conversation_id: str,
+    run_id: str,
+) -> tuple[Run, list[Message], int] | None:
+    """Read the legacy facts needed by the narrow project-bridge snapshot."""
+    run = await session.get(Run, run_id)
+    if run is None or run.conversation_id != conversation_id:
+        return None
+    messages = list(
+        await session.scalars(
+            select(Message)
+            .where(Message.run_id == run_id)
+            .order_by(Message.sequence.asc())
+        )
+    )
+    revision = await session.scalar(
+        select(func.max(Event.seq)).where(Event.run_id == run_id)
+    )
+    return run, messages, revision or 0
 
 
 async def list_conversation_events(
