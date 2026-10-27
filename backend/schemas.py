@@ -58,6 +58,16 @@ class LegacyRunCreate(BaseModel):
 
     content: str = Field(min_length=1, max_length=100_000)
     contextMode: Literal["resume", "reset"] = "resume"
+    roles: list[str] | None = None
+    stage: str | None = None
+    input_files: list[str] | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LegacyRunAnswer(BaseModel):
+    questionId: str = Field(min_length=1, max_length=128)
+    answers: dict[str, str] = Field(min_length=1)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -72,7 +82,8 @@ class LegacyRunMessage(BaseModel):
 class LegacyRunSnapshot(BaseModel):
     id: str
     revision: int
-    status: Literal["queued", "running", "completed", "failed", "outcome_unknown"]
+    status: Literal["queued", "running", "waiting_for_input", "completed", "failed", "outcome_unknown"]
     stageId: str
     messages: list[LegacyRunMessage]
     artifacts: list[Any]
+    question: dict[str, Any] | None = None

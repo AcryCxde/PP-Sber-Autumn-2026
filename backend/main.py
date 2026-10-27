@@ -252,6 +252,9 @@ async def handle_run_create(
     client_request_id: str,
     content: str,
     context_mode: str,
+    roles: list[str] | None = None,
+    stage: str | None = None,
+    input_files: list[str] | None = None,
     acceptance: RunAcceptance | None = None,
 ) -> None:
     app_state = websocket.app.state
@@ -318,7 +321,7 @@ async def handle_run_create(
         return
 
     if app_state.settings.executor == "runner":
-        await run_via_runner(app_state, acceptance, content, deliver_event)
+        await run_via_runner(app_state, acceptance, content, deliver_event, roles=roles, stage=stage, input_files=input_files)
         return
 
     process: subprocess.Popen[str] | None = None

@@ -15,8 +15,53 @@ from backend.repository import (
     finalize_run,
     list_run_events,
     mark_run_running,
+    mark_run_waiting_for_input,
+    queue_run_answer,
     reconcile_orphaned_runs,
 )
+
+
+async def test_question_waits_and_answer_keeps_same_run_id(tmp_path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{(tmp_path / 'waiting.db').as_posix()}")
+    await database.create_schema()
+    try:
+        async with database.session() as session:
+            accepted = await accept_run(session, conversation_id=None, client_request_id=str(uuid4()), content="Need a format")
+        async with database.session() as session:
+            await mark_run_running(session, accepted.run_id)
+            question = await mark_run_waiting_for_input(
+                session, accepted.run_id, "q1", [{"text": "Format?", "header": None,
+                "options": [{"label": "md", "description": None}], "multi_select": False, "allow_custom": False}], "Choose a format",
+            )
+        async with database.session() as session:
+            run = await session.get(Run, accepted.run_id)
+            assert run is not None and run.status == "waiting_for_input"
+            assert question.type == "facilitator.question"
+            assert await queue_run_answer(session, accepted.conversation_id, accepted.run_id, "q1", "answer-1", {"Format?": "md"})
+        async with database.session() as session:
+            run = await session.get(Run, accepted.run_id)
+            assert run is not None and run.id == accepted.run_id and run.status == "running"
+            assert not await queue_run_answer(session, accepted.conversation_id, accepted.run_id, "q1", "answer-1", {"Format?": "md"})
+    finally:
+        await database.dispose()
+
+
+async def test_restart_marks_dispatched_answer_without_worker_as_unknown(tmp_path) -> None:
+    database = Database(f"sqlite+aiosqlite:///{(tmp_path / 'restart-answer.db').as_posix()}")
+    await database.create_schema()
+    try:
+        async with database.session() as session:
+            accepted = await accept_run(session, conversation_id=None, client_request_id=str(uuid4()), content="Need a format")
+            await mark_run_running(session, accepted.run_id)
+            await mark_run_waiting_for_input(session, accepted.run_id, "q1", [{"text": "Format?"}], "Choose")
+            await queue_run_answer(session, accepted.conversation_id, accepted.run_id, "q1", "answer-restart", {"Format?": "md"})
+        async with database.session() as session:
+            await reconcile_orphaned_runs(session)
+        async with database.session() as session:
+            run = await session.get(Run, accepted.run_id)
+            assert run is not None and run.status == "outcome_unknown"
+    finally:
+        await database.dispose()
 
 
 async def test_request_lifecycle_is_persisted(tmp_path) -> None:

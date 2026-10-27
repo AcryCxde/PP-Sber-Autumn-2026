@@ -69,8 +69,8 @@ class Run(Base):
             "uq_runs_one_active_per_conversation",
             "conversation_id",
             unique=True,
-            sqlite_where=text("status IN ('pending', 'running')"),
-            postgresql_where=text("status IN ('pending', 'running')"),
+            sqlite_where=text("status IN ('pending', 'running', 'waiting_for_input')"),
+            postgresql_where=text("status IN ('pending', 'running', 'waiting_for_input')"),
         ),
     )
 
@@ -97,6 +97,10 @@ class Run(Base):
     turns: Mapped[int | None] = mapped_column(Integer)
     exit_code: Mapped[int | None] = mapped_column(Integer)
     error: Mapped[str | None] = mapped_column(Text)
+    pending_answer_id: Mapped[str | None] = mapped_column(String(36), unique=True)
+    pending_question_id: Mapped[str | None] = mapped_column(String(128))
+    pending_question: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    pending_answers: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     conversation: Mapped[Conversation] = relationship(back_populates="runs")
     messages: Mapped[list[Message]] = relationship(back_populates="run")
@@ -188,3 +192,15 @@ class Artifact(Base):
     )
 
     run: Mapped[Run] = relationship(back_populates="artifacts")
+
+
+class RunAnswerReceipt(Base):
+    __tablename__ = "run_answer_receipts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    question_id: Mapped[str] = mapped_column(String(128))
+    answers: Mapped[dict[str, Any]] = mapped_column(JSON)
+    accepted_revision: Mapped[int] = mapped_column(Integer)
+    accepted_status: Mapped[str] = mapped_column(String(32))
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

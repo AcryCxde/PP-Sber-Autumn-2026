@@ -11,6 +11,8 @@ PUBLIC_EVENT_TYPES = {
     "run.started",
     "context.reset",
     "message.created",
+    "facilitator.question",
+    "user.answer.accepted",
     "artifact.saved",
     "run.completed",
     "run.failed",
@@ -112,6 +114,20 @@ def project_public_event_data(event_data: Mapping[str, Any]) -> dict[str, Any]:
             projected["role"] = role
         if isinstance(content, str):
             projected["content"] = content
+    elif event_type == "facilitator.question":
+        question_id = event_data.get("question_id")
+        questions = event_data.get("questions")
+        if not isinstance(question_id, str) or not question_id or not isinstance(questions, list):
+            return {"type": "legacy.redacted", "schema_version": EVENT_SCHEMA_VERSION, "redacted": True}
+        projected["question_id"] = question_id
+        projected["questions"] = questions
+    elif event_type == "user.answer.accepted":
+        question_id = event_data.get("question_id")
+        answers = event_data.get("answers")
+        if not isinstance(question_id, str) or not question_id or not isinstance(answers, Mapping):
+            return {"type": "legacy.redacted", "schema_version": EVENT_SCHEMA_VERSION, "redacted": True}
+        projected["question_id"] = question_id
+        projected["answers"] = dict(answers)
     elif event_type == "artifact.saved":
         path = _safe_relative_path(event_data.get("path"))
         if path is None:
@@ -227,6 +243,16 @@ def message_created_event(content: str, *, role: str = "claude") -> dict[str, An
             "content": content,
         }
     )
+
+
+def facilitator_question_event(question_id: str, questions: list[dict[str, Any]]) -> dict[str, Any]:
+    return validate_public_event_data({"type": "facilitator.question", "schema_version": EVENT_SCHEMA_VERSION,
+                                       "question_id": question_id, "questions": questions})
+
+
+def user_answer_accepted_event(question_id: str, answers: Mapping[str, str]) -> dict[str, Any]:
+    return validate_public_event_data({"type": "user.answer.accepted", "schema_version": EVENT_SCHEMA_VERSION,
+                                       "question_id": question_id, "answers": dict(answers)})
 
 
 def artifact_saved_event(
