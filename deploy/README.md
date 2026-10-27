@@ -10,7 +10,7 @@ React B, server storage, версии, receipt и ZIP сюда ещё не вк�
 Нужны Docker Engine, Docker Compose v2, отдельный каталог runner-context и секреты в закрытом окружении хоста.
 
 ```sh
-cp deploy/.env.release.example .env.gateway
+cp deploy/release.env.example .env.gateway
 # заполнить значения из секретного хранилища
 docker compose build
 docker compose up -d
