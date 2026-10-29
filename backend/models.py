@@ -363,6 +363,28 @@ class ProjectFile(Base):
     project: Mapped[Project] = relationship(back_populates="files")
 
 
+class ConversationFile(Base):
+    """Документ, приложенный к свободному диалогу; у проектов — свои ProjectFile."""
+
+    __tablename__ = "conversation_files"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "name", name="uq_conversation_files_name"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+
+
 class RunnerContainer(Base):
     """Экземпляр runner-контейнера диалога: от создания до удаления по простою или вместе с томами.
 

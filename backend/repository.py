@@ -73,6 +73,10 @@ class RunEventPage:
     events: list[Event]
 
 
+# Заголовок пустого диалога, созданного ради вложений; первый запрос заменяет его.
+NEW_CONVERSATION_TITLE = "Новый диалог"
+
+
 def make_title(prompt: str, max_length: int = 80) -> str:
     title = " ".join(prompt.split())
     if len(title) <= max_length:
@@ -282,6 +286,8 @@ async def _accept_run_once(
                 "conversation_context_unavailable",
                 "Сохранённый контекст Claude недоступен. Выполните явный сброс.",
             )
+        if conversation.next_message_seq == 0 and conversation.title == NEW_CONVERSATION_TITLE:
+            conversation.title = make_title(content)
 
     previous_session_id = conversation.claude_session_id
     if requested_context_mode == "reset":

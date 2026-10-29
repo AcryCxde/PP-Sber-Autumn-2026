@@ -18,6 +18,16 @@ import {
   WS_UNAUTHORIZED,
   type User,
 } from './auth';
+import {
+  CHAT_FILE_ACCEPT,
+  chatFileUrl,
+  createConversation,
+  formatFileSize,
+  listChatFiles,
+  removeChatFile,
+  uploadChatFile,
+  type ChatFile,
+} from './chatFiles';
 import { themeToggleLabel, useTheme } from './theme';
 import './App.css';
 
@@ -123,6 +133,8 @@ function App({ user, onLogout }: AppProps) {
   const [prompt, setPrompt] = useState('');
   const [events, setEvents] = useState<EventData[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
+  const [files, setFiles] = useState<ChatFile[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [contextState, setContextState] = useState<ContextState>('new');
@@ -137,6 +149,7 @@ function App({ user, onLogout }: AppProps) {
   const reconnectTimerRef = useRef<number | null>(null);
   const resubscribeTimerRef = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const activeConversationRef = useRef<string | null>(null);
   const activeRunRef = useRef<string | null>(null);
   const replayingRunRef = useRef<string | null>(null);
@@ -207,11 +220,18 @@ function App({ user, onLogout }: AppProps) {
           }
           return { events: [] as PersistedEvent[], unavailable: true };
         });
+      const filesPromise = listChatFiles(conversationId).catch((filesError: unknown) => {
+        if (filesError instanceof UnauthorizedError) {
+          throw filesError;
+        }
+        return [] as ChatFile[];
+      });
       const response = await apiFetch(`/api/conversations/${conversationId}/messages`);
       if (!response.ok) {
         throw new Error('Не удалось загрузить сообщения диалога');
       }
       const messages = (await response.json()) as StoredMessage[];
+      const conversationFiles = await filesPromise;
       if (selectionVersion !== selectionVersionRef.current) {
         return false;
       }
@@ -221,6 +241,7 @@ function App({ user, onLogout }: AppProps) {
       setResetContextOnNextRun(false);
       lastSeqByRunRef.current.clear();
       setArtifacts([]);
+      setFiles(conversationFiles);
       setEvents(messages.map(storedMessageEvent));
 
       const metadata = await metadataPromise;
@@ -639,8 +660,71 @@ function App({ user, onLogout }: AppProps) {
       resubscribeTimerRef.current = null;
     }
     setArtifacts([]);
+    setFiles([]);
     setEvents([]);
     setError(null);
+  };
+
+  const attachFiles = async (list: FileList | null) => {
+    if (!list?.length) {
+      return;
+    }
+    const selectionVersion = selectionVersionRef.current;
+    setIsUploading(true);
+    setError(null);
+    try {
+      let conversationId = activeConversationRef.current;
+      if (!conversationId) {
+        // Документы прикладывают к диалогу, поэтому до первого сообщения создаём пустой.
+        conversationId = await createConversation();
+        if (selectionVersion !== selectionVersionRef.current) {
+          return;
+        }
+        activeConversationRef.current = conversationId;
+        setActiveConversationId(conversationId);
+        window.localStorage.setItem(SELECTED_CONVERSATION_KEY, conversationId);
+        void refreshConversations().catch(() => undefined);
+      }
+      for (const file of Array.from(list)) {
+        try {
+          const next = await uploadChatFile(conversationId, file);
+          if (activeConversationRef.current === conversationId) {
+            setFiles(next);
+          }
+        } catch (uploadError) {
+          if (uploadError instanceof UnauthorizedError) {
+            return;
+          }
+          setError(`${file.name}: ${uploadError instanceof Error ? uploadError.message : 'файл не загружен'}`);
+        }
+      }
+    } catch (createError) {
+      if (!(createError instanceof UnauthorizedError)) {
+        setError(createError instanceof Error ? createError.message : 'Не удалось приложить файлы');
+      }
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const detachFile = async (file: ChatFile) => {
+    const conversationId = activeConversationRef.current;
+    if (!conversationId) {
+      return;
+    }
+    try {
+      const next = await removeChatFile(conversationId, file.id);
+      if (activeConversationRef.current === conversationId) {
+        setFiles(next);
+      }
+    } catch (removeError) {
+      if (!(removeError instanceof UnauthorizedError)) {
+        setError(removeError instanceof Error ? removeError.message : `Не удалось убрать ${file.name}`);
+      }
+    }
   };
 
   const sendPrompt = () => {
@@ -784,7 +868,7 @@ function App({ user, onLogout }: AppProps) {
 
             {artifacts.length > 0 && (
               <div className="artifacts-panel">
-                <div className="panel-title">Файлы сессии</div>
+                <div className="panel-title">Файлы, созданные Claude</div>
                 <div className="artifact-list">
                   {artifacts.map((artifact) => (
                     <div key={`${artifact.run_id}:${artifact.seq}`} className="artifact-item">
@@ -849,7 +933,36 @@ function App({ user, onLogout }: AppProps) {
         </main>
 
         <div className="input-area">
+          {files.length > 0 && activeConversationId && (
+            <ul className="attachment-list" aria-label="Приложенные документы">
+              {files.map((file) => (
+                <li key={file.id} className="attachment-chip">
+                  <a href={chatFileUrl(activeConversationId, file.id)} download title="Скачать исходный файл">
+                    📎 {file.name}
+                  </a>
+                  <span className="attachment-size">{formatFileSize(file.size_bytes)}</span>
+                  <button type="button" onClick={() => void detachFile(file)} aria-label={`Убрать ${file.name}`}>×</button>
+                </li>
+              ))}
+            </ul>
+          )}
           <div className="input-wrapper">
+            <label
+              className={`attach-button ${isUploading || isReplaying ? 'disabled' : ''}`}
+              title="Приложить документы"
+            >
+              {isUploading ? '…' : '📎'}
+              <input
+                ref={fileInputRef}
+                className="file-input"
+                aria-label="Приложить документы"
+                type="file"
+                multiple
+                accept={CHAT_FILE_ACCEPT}
+                disabled={isUploading || isReplaying}
+                onChange={(event) => void attachFiles(event.target.files)}
+              />
+            </label>
             <textarea
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
@@ -860,7 +973,7 @@ function App({ user, onLogout }: AppProps) {
             />
             <button type="button" onClick={sendPrompt} disabled={!prompt.trim() || isRunning || isReplaying || connectionStatus !== 'connected'} aria-label="Отправить запрос">↑</button>
           </div>
-          <div className="input-hint">Enter — отправить · Shift + Enter — новая строка</div>
+          <div className="input-hint">Enter — отправить · Shift + Enter — новая строка · 📎 — документы до 5 МБ, Claude прочитает их из папки materials/</div>
         </div>
       </section>
     </div>

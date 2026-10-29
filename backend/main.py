@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from backend import models  # noqa: F401
 from backend.api.auth import router as auth_router
+from backend.api.conversation_files import router as conversation_files_router
 from backend.api.history import router as history_router
 from backend.api.projects import router as projects_router
 from backend.auth import CurrentUser, owns_conversation, owns_run, websocket_user_id
@@ -21,7 +22,7 @@ from backend.config import PROJECT_ROOT, Settings
 from backend.container_registry import ContainerRegistry
 from backend.containers import ContainerError, ContainerManager
 from backend.db import Database
-from backend.materials import project_materials, write_workspace_materials
+from backend.materials import conversation_materials, materials_note, write_workspace_materials
 from backend.models import Event, Message, Run
 from backend.parser import (
     NormalizedEvent,
@@ -422,9 +423,9 @@ async def handle_run_create(
             acceptance.conversation_id,
             create=True,
         )
-        materials = await project_materials(app_state.database, acceptance.conversation_id)
+        materials = await conversation_materials(app_state.database, acceptance.conversation_id)
         if materials is not None:
-            await asyncio.to_thread(write_workspace_materials, workspace, materials)
+            await asyncio.to_thread(write_workspace_materials, workspace, materials.files)
 
         async with app_state.database.session() as session:
             started_event = await mark_run_running(session, acceptance.run_id)
@@ -432,7 +433,7 @@ async def handle_run_create(
             await deliver_event(started_event)
 
         process = await start_claude(
-            content,
+            content + materials_note(materials),
             str(workspace),
             resume_session_id,
             permission_mode=app_state.settings.claude_permission_mode,
@@ -1038,6 +1039,7 @@ def create_app(
     application.state.run_task_count = 0
     application.include_router(auth_router)
     application.include_router(history_router)
+    application.include_router(conversation_files_router)
     application.include_router(projects_router)
 
     if selected_settings.executor == "runner":

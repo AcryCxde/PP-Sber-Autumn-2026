@@ -3,18 +3,12 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.history import SessionDependency
 from backend.auth import CurrentUser
-from backend.materials import (
-    MAX_FILE_BYTES,
-    MAX_PROJECT_BYTES,
-    MAX_PROJECT_FILES,
-    MaterialError,
-    safe_file_name,
-)
+from backend.materials import MAX_FILE_BYTES, MaterialError, check_upload
 from backend.models import Conversation, Project, ProjectFile
 from backend.projects import (
     ProjectRunError,
@@ -164,27 +158,12 @@ async def upload_file(
     file: Annotated[UploadFile, File()],
 ) -> dict[str, Any]:
     project = await require_project(session, project_id, user)
-    try:
-        name = safe_file_name(file.filename)
-    except MaterialError as error:
-        raise HTTPException(status_code=415, detail=str(error)) from None
-    # Читаем на байт больше лимита, чтобы не держать в памяти слишком большой файл.
     data = await file.read(MAX_FILE_BYTES + 1)
-    if len(data) > MAX_FILE_BYTES:
-        raise HTTPException(status_code=413, detail="Файл больше 5 МБ")
-    if not data:
-        raise HTTPException(status_code=422, detail="Пустой файл")
-    count, total = (
-        await session.execute(
-            select(func.count(ProjectFile.id), func.coalesce(func.sum(ProjectFile.size_bytes), 0))
-            .where(ProjectFile.project_id == project.id)
-        )
-    ).one()
+    try:
+        name = check_upload(file.filename, data, ((item.name, item.size_bytes) for item in project.files))
+    except MaterialError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from None
     existing = next((item for item in project.files if item.name == name), None)
-    if existing is None and count >= MAX_PROJECT_FILES:
-        raise HTTPException(status_code=413, detail="В проекте уже 20 файлов")
-    if total - (existing.size_bytes if existing else 0) + len(data) > MAX_PROJECT_BYTES:
-        raise HTTPException(status_code=413, detail="Материалы проекта больше 20 МБ")
     if existing is not None:
         # Повторная загрузка файла с тем же именем заменяет его.
         await session.delete(existing)

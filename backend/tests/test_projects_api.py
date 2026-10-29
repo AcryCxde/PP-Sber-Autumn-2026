@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
-import backend.api.projects as projects_api
+import backend.materials as materials
 import backend.main as main_module
 from backend.tests.auth_helpers import PASSWORD, sign_in
 from backend.tests.test_history_api import FakeProcess, claude_lines, make_app
@@ -182,7 +182,7 @@ def test_repeated_client_request_replays_without_new_run(tmp_path, claude) -> No
 
 
 def test_upload_rules(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(projects_api, "MAX_FILE_BYTES", 10)
+    monkeypatch.setattr(materials, "MAX_FILE_BYTES", 10)
     app = make_app(tmp_path)
 
     with TestClient(app) as client:

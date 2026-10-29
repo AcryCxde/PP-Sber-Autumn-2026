@@ -300,6 +300,38 @@ def test_project_materials_reach_runner_container(tmp_path):
     assert state["results"][0][0]["content"].startswith("# Карта задачи")
 
 
+def test_chat_documents_reach_runner_container(tmp_path):
+    docker = FakeDocker()
+
+    def script(command, container):
+        return [("run.started", {}),
+                ("message.created", {"role_id": None, "text": "Готово"}),
+                ("run.completed", {})]
+
+    app = make_runner_app(tmp_path, docker)
+    with TestClient(app) as client:
+        sign_in(client)
+        conversation_id = client.post("/api/conversations").json()["id"]
+        client.post(f"/api/conversations/{conversation_id}/files",
+                    files={"file": ("бриф.md", "# Бриф".encode(), "text/markdown")})
+        runner = FakeRunner(app.state.runner_transport, docker, script)
+        runner.start()
+        try:
+            with client.websocket_connect("/ws") as websocket:
+                websocket.send_json({"type": "run.create", "conversation_id": conversation_id,
+                                     "client_request_id": str(uuid4()), "content": "Сделай план"})
+                events = receive_until_terminal(websocket)
+        finally:
+            runner.halt.set()
+
+    assert events[-1]["status"] == "completed"
+    container = docker.containers.get(f"ct-{conversation_id.lower()}")
+    [(_, archive)] = container.archives
+    assert unpack(archive)["materials/бриф.md"][0] == "# Бриф".encode()
+    text = runner.received[0]["text"]
+    assert text.startswith("Сделай план") and "materials/" in text and "бриф.md" in text
+
+
 def test_agent_question_pauses_project_until_answer(tmp_path):
     docker = FakeDocker()
     question = {"text": "С какого подхода начнём?", "header": None, "multi_select": False,

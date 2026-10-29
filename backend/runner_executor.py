@@ -20,7 +20,7 @@ from typing import Any
 from backend.containers import ContainerError, ContainerManager
 from backend.models import Event
 from backend.parser import bounded_file_content
-from backend.materials import MATERIALS_DIR, project_materials
+from backend.materials import MATERIALS_DIR, conversation_materials, materials_note
 from backend.public_events import message_created_event, question_asked_event
 from backend.repository import (
     RunAcceptance,
@@ -136,9 +136,9 @@ async def run_via_runner(
             await deliver_event(started)
 
         await manager.ensure_running(project, run_id=run_id)
-        materials = await project_materials(database, acceptance.conversation_id)
-        if materials:
-            await manager.write_files(project, MATERIALS_DIR, materials)
+        materials = await conversation_materials(database, acceptance.conversation_id)
+        if materials is not None and materials.files:
+            await manager.write_files(project, MATERIALS_DIR, materials.files)
         active = transport.active_run(project)
         if active is not None and active["status"] == "waiting_for_input" and active["question"]:
             transport_run = active["run_id"]
@@ -153,7 +153,7 @@ async def run_via_runner(
                 # Хозяина у запуска нет (backend перезапускался): закрыть, иначе проект заблокирован.
                 transport.abandon(project, active["run_id"], "gateway_restarted")
             transport_run, after_seq = run_id, 0
-            transport.message(project, transport_run, run_id, content)
+            transport.message(project, transport_run, run_id, content + materials_note(materials))
 
         manager.relaying.add(transport_run)
         done = False
