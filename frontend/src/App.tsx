@@ -11,6 +11,14 @@ import {
   type PersistedEvent,
   type StoredMessage,
 } from './events';
+import {
+  apiFetch,
+  notifyUnauthorized,
+  UnauthorizedError,
+  WS_UNAUTHORIZED,
+  type User,
+} from './auth';
+import { themeToggleLabel, useTheme } from './theme';
 import './App.css';
 
 type Conversation = {
@@ -24,7 +32,6 @@ type Conversation = {
 };
 
 type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
-type Theme = 'light' | 'dark';
 type PendingRequest = {
   content: string;
   conversation_id: string | null;
@@ -32,7 +39,6 @@ type PendingRequest = {
 };
 
 const SELECTED_CONVERSATION_KEY = 'claude-web.selected-conversation';
-const THEME_KEY = 'claude-web.theme';
 function websocketUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}/ws`;
@@ -45,18 +51,6 @@ function formatConversationTime(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value));
-}
-
-function initialTheme(): Theme {
-  const documentTheme = document.documentElement.dataset.theme;
-  if (documentTheme === 'light' || documentTheme === 'dark') {
-    return documentTheme;
-  }
-  const saved = window.localStorage.getItem(THEME_KEY);
-  if (saved === 'light' || saved === 'dark') {
-    return saved;
-  }
-  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 }
 
 function storedMessageEvent(message: StoredMessage): EventData {
@@ -104,7 +98,7 @@ async function fetchConversationEvents(
   let offset = 0;
 
   while (true) {
-    const response = await fetch(
+    const response = await apiFetch(
       `/api/conversations/${conversationId}/events?offset=${offset}&limit=500`,
     );
     if (!response.ok) {
@@ -119,8 +113,13 @@ async function fetchConversationEvents(
   }
 }
 
-function App() {
-  const [theme, setTheme] = useState<Theme>(initialTheme);
+type AppProps = {
+  user: User;
+  onLogout: () => void;
+};
+
+function App({ user, onLogout }: AppProps) {
+  const [theme, toggleTheme] = useTheme();
   const [prompt, setPrompt] = useState('');
   const [events, setEvents] = useState<EventData[]>([]);
   const [artifacts, setArtifacts] = useState<Artifact[]>([]);
@@ -174,14 +173,9 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    document.documentElement.style.colorScheme = theme;
-    window.localStorage.setItem(THEME_KEY, theme);
-  }, [theme]);
-
   const refreshConversations = useCallback(async (): Promise<Conversation[]> => {
-    const response = await fetch('/api/conversations?limit=100');
+    // Диалоги проектов живут в «Моих проектах»; здесь — только свободные.
+    const response = await apiFetch('/api/conversations?limit=100&standalone=true');
     if (!response.ok) {
       throw new Error('Не удалось загрузить список диалогов');
     }
@@ -207,8 +201,13 @@ function App() {
     try {
       const metadataPromise = fetchConversationEvents(conversationId)
         .then((events) => ({ events, unavailable: false }))
-        .catch(() => ({ events: [] as PersistedEvent[], unavailable: true }));
-      const response = await fetch(`/api/conversations/${conversationId}/messages`);
+        .catch((metadataError: unknown) => {
+          if (metadataError instanceof UnauthorizedError) {
+            throw metadataError;
+          }
+          return { events: [] as PersistedEvent[], unavailable: true };
+        });
+      const response = await apiFetch(`/api/conversations/${conversationId}/messages`);
       if (!response.ok) {
         throw new Error('Не удалось загрузить сообщения диалога');
       }
@@ -313,6 +312,9 @@ function App() {
       }
       return activeRunId === null || !terminalRunIds.has(activeRunId);
     } catch (loadError) {
+      if (loadError instanceof UnauthorizedError) {
+        return false;
+      }
       if (selectionVersion === selectionVersionRef.current) {
         setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить диалог');
       }
@@ -344,7 +346,7 @@ function App() {
           subscribeToRun(selected.active_run_id);
         }
       } catch (loadError) {
-        if (!cancelled) {
+        if (!cancelled && !(loadError instanceof UnauthorizedError)) {
           setError(loadError instanceof Error ? loadError.message : 'Не удалось загрузить историю');
         }
       } finally {
@@ -576,11 +578,18 @@ function App() {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (closeEvent) => {
         if (wsRef.current !== ws) {
           return;
         }
         wsRef.current = null;
+        if (closeEvent.code === WS_UNAUTHORIZED) {
+          // Сессии нет: переподключение без входа бесполезно.
+          disposed = true;
+          setConnectionStatus('disconnected');
+          notifyUnauthorized();
+          return;
+        }
         if (resubscribeTimerRef.current !== null) {
           window.clearTimeout(resubscribeTimerRef.current);
           resubscribeTimerRef.current = null;
@@ -696,8 +705,8 @@ function App() {
       <aside className="sidebar">
         <div className="sidebar-header">
           <div>
-            <div className="eyebrow">Claude Web</div>
-            <h1>История</h1>
+            <a className="eyebrow back-to-projects" href="#home">← CoreTeams</a>
+            <h1>Свободный диалог</h1>
           </div>
           <button className="new-chat-button" type="button" onClick={startNewConversation} disabled={isRunning || isReplaying} title="Новый диалог">+</button>
         </div>
@@ -728,6 +737,11 @@ function App() {
             </button>
           ))}
         </div>
+
+        <div className="sidebar-account">
+          <span className="account-email" title={user.email}>{user.email}</span>
+          <button className="logout-button" type="button" onClick={onLogout}>Выйти</button>
+        </div>
       </aside>
 
       <section className="app">
@@ -741,8 +755,8 @@ function App() {
             <button
               className="theme-toggle"
               type="button"
-              onClick={() => setTheme((current) => current === 'light' ? 'dark' : 'light')}
-              aria-label={theme === 'light' ? 'Включить тёмную тему' : 'Включить светлую тему'}
+              onClick={toggleTheme}
+              aria-label={themeToggleLabel(theme)}
               title={theme === 'light' ? 'Тёмная тема' : 'Светлая тема'}
             >
               {theme === 'light' ? '☾' : '☀'}
