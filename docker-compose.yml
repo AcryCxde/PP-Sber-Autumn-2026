@@ -2,7 +2,29 @@
 # runner-контейнер (ctrunner + Core Team Framework), удаляет его после простоя и пересоздаёт
 # из сохранённых томов сессии при следующем сообщении.
 # Настройки шлюза (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, модели) — в .env.gateway, см. .env.gateway.example.
+# История, пользователи и проекты — в Postgres (сервис db); пароль базы — в .env, см. .env.example.
 services:
+  # Схему создаёт и обновляет backend миграциями Alembic при старте, init.sql не нужен.
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: coreteams
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Задайте POSTGRES_PASSWORD в .env, см. .env.example}
+      POSTGRES_DB: coreteams
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # Только сеть db: runner-контейнеры с кодом агента в сети coreteams базу не видят.
+    networks: [db]
+    # Для psql и клиентов БД с хоста; наружу порт не открывается.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coreteams -d coreteams"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
   # Только собирает образ runner; контейнеры из него создаёт backend.
   runner-image:
     build:
@@ -19,6 +41,7 @@ services:
     image: coreteams-backend:dev
     env_file: .env.gateway
     environment:
+      DATABASE_URL: postgresql+asyncpg://coreteams:${POSTGRES_PASSWORD}@db:5432/coreteams
       EXECUTOR: runner
       RUNNER_IMAGE: coreteams-runner:dev
       RUNNER_NETWORK: coreteams
@@ -38,10 +61,12 @@ services:
       - workspaces:/home/node/.claude-web/workspaces
       # Транскрипты Claude Code для режима EXECUTOR=cli: без них --resume не продолжит диалог.
       - claude-home:/home/node/.claude
-    networks: [coreteams]
+    networks: [coreteams, db]
     ports:
       - "8000:8000"
     depends_on:
+      db:
+        condition: service_healthy
       runner-image:
         condition: service_completed_successfully
     restart: unless-stopped
@@ -63,8 +88,14 @@ networks:
   # Фиксированное имя: в эту сеть backend подключает runner-контейнеры, чтобы они видели backend:8000.
   coreteams:
     name: coreteams
+  # Отдельная сеть backend ↔ Postgres: runner-контейнеры подключаются только к coreteams.
+  # Не internal — иначе Docker не опубликует порт базы на 127.0.0.1.
+  db:
 
 volumes:
+  postgres-data:
+  # Файл SQLite прежней истории (перенос — python -m backend.transfer_sqlite), секрет
+  # и транспорт шлюза runner.
   backend-data:
   workspaces:
   claude-home:

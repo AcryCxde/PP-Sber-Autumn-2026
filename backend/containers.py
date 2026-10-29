@@ -31,11 +31,14 @@ from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from backend.config import Settings
 from backend.runner_app import RunnerBridge
 from backend.runner_transport import RunnerTransport
+
+if TYPE_CHECKING:
+    from backend.container_registry import ContainerRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +57,7 @@ ENV_DENY = re.compile(r"TOKEN|KEY|SECRET|PASSWORD")
 # Коды выхода ctrunner, после которых перезапуск не поможет (см. runner/README.md).
 FATAL_EXIT_CODES = {65: "runner_state_corrupt", 78: "runner_config_rejected"}
 MAX_ARTIFACT_READ_BYTES = 64 * 1024 * 1024
+MATERIALS_WAIT_SECONDS = 60.0
 # Запись активности в SQLite не чаще раза в минуту: для таймаутов в минутах и днях этого хватает.
 ACTIVITY_WRITE_EVERY_SECONDS = 60.0
 
@@ -81,9 +85,19 @@ def _docker_time(value: str | None) -> float | None:
     return stamp + (float(f"0.{fraction[:6]}") if fraction.isdigit() else 0.0)
 
 
-def _tar_files(files: Mapping[str, bytes], *, mode: int = 0o400) -> bytes:
+def _tar_files(
+    files: Mapping[str, bytes],
+    *,
+    mode: int = 0o400,
+    directories: tuple[str, ...] = (),
+) -> bytes:
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w") as tar:
+        for name in directories:
+            info = tarfile.TarInfo(name)
+            info.type, info.mode, info.mtime = tarfile.DIRTYPE, 0o755, int(time.time())
+            info.uid = info.gid = AGENT_UID
+            tar.addfile(info)
         for name, data in files.items():
             info = tarfile.TarInfo(name)
             info.size, info.mode, info.mtime = len(data), mode, int(time.time())
@@ -130,8 +144,10 @@ class ContainerManager:
         *,
         client: Any = None,
         environ: Mapping[str, str] | None = None,
+        registry: ContainerRegistry | None = None,
     ) -> None:
         self.settings = settings
+        self.registry = registry
         self.bridge = bridge
         self.transport = transport
         self._client = client
@@ -218,29 +234,44 @@ class ContainerManager:
         containers = await asyncio.to_thread(self.list_containers)
         for project in containers:
             self.bridge.register(project, self.token(project))
+        if self.registry is not None:
+            await self.registry.reconcile(set(containers))
         return containers
 
-    async def ensure_running(self, project: str) -> bool:
+    async def ensure_running(self, project: str, *, run_id: str | None = None) -> bool:
         """Создать контейнер проекта из его томов. True — контейнер только что стартовал."""
         async with self._lock(project):
             self.bridge.register(project, self.token(project))
-            started = await asyncio.to_thread(self._ensure_running_sync, project)
-            if started:
+            created = await asyncio.to_thread(self._ensure_running_sync, project)
+            if created is not None:
                 self._starting[project] = time.time()
+                if self.registry is not None:
+                    await self.registry.started(
+                        project,
+                        container_id=getattr(created, "id", None),
+                        name=self.names(project)["container"],
+                        image=self.settings.runner_image,
+                        network=self.settings.runner_network,
+                        run_id=run_id,
+                    )
+            elif run_id is not None and self.registry is not None:
+                await self.registry.attach_run(project, run_id)
             self.touch(project)
-            return started
+            return created is not None
 
-    def _ensure_running_sync(self, project: str) -> bool:
+    def _ensure_running_sync(self, project: str) -> Any:
+        """Новый запущенный контейнер или None, если он уже работал."""
         container = self._get(self.names(project)["container"])
         if container is not None:
             if container.attrs["State"]["Status"] in {"running", "restarting"}:
-                return False
+                return None
             container.remove(force=True)  # остановленный: пересоздать на текущем образе
         self.transport.connecting(project)
         self._provision(project)
-        self._create(project).start()
+        created = self._create(project)
+        created.start()
         logger.info("Runner container for project %s started", project)
-        return True
+        return created
 
     async def retire(self, project: str) -> None:
         """Удалить контейнер, сохранив тома: сессия продолжится при следующем сообщении."""
@@ -252,6 +283,8 @@ class ContainerManager:
                 logger.info("Runner container for project %s removed, volumes kept", project)
             self.bridge.revoke(project)
             self._starting.pop(project, None)
+            if self.registry is not None:
+                await self.registry.stopped(project, status="retired", reason="idle")
 
     async def discard(self, project: str, *, reason: str) -> None:
         """Удалить контейнер и все тома проекта: сброс контекста, удаление диалога, срок хранения."""
@@ -263,6 +296,8 @@ class ContainerManager:
             self.bridge.revoke(project)
             self._starting.pop(project, None)
             self._forget_activity(project)
+            if self.registry is not None:
+                await self.registry.stopped(project, status="discarded", reason=reason)
             logger.info("Runner container and volumes for project %s removed: %s", project, reason)
 
     def _remove_sync(self, project: str) -> None:
@@ -281,6 +316,37 @@ class ContainerManager:
             raise ContainerError("runner_container_missing")
         chunks, _ = await asyncio.to_thread(container.get_archive, str(PROJECT_DIR / path))
         return await asyncio.to_thread(_read_single_file, chunks)
+
+    async def write_files(
+        self,
+        project: str,
+        directory: str,
+        files: Mapping[str, bytes],
+        *,
+        wait_seconds: float = MATERIALS_WAIT_SECONDS,
+    ) -> None:
+        """Кладёт файлы в каталог проекта агента; удалённые ранее файлы остаются на томе.
+
+        Каталог проекта создаёт сам runner (seed_project) сразу после старта, до подключения
+        к gateway. Создавать его раньше нельзя — runner тогда пропустит копирование seed,
+        поэтому ждём его появления. Команда этапа уходит runner уже после записи файлов.
+        """
+        from docker.errors import NotFound
+
+        container = await asyncio.to_thread(self._get, self.names(project)["container"])
+        if container is None:
+            raise ContainerError("runner_container_missing")
+        archive = _tar_files({f"{directory}/{name}": data for name, data in files.items()},
+                             mode=0o644, directories=(directory,))
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                await asyncio.to_thread(container.put_archive, str(PROJECT_DIR), archive)
+                return
+            except NotFound:
+                if time.monotonic() >= deadline:
+                    raise ContainerError("runner_project_missing") from None
+                await asyncio.sleep(0.5)
 
     def list_containers(self) -> list[str]:
         containers = self.client.containers.list(all=True, filters={"label": f"{MANAGED_LABEL}=1"})

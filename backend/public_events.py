@@ -12,6 +12,7 @@ PUBLIC_EVENT_TYPES = {
     "context.reset",
     "message.created",
     "artifact.saved",
+    "question.asked",
     "run.completed",
     "run.failed",
     "run.outcome_unknown",
@@ -80,6 +81,34 @@ def _safe_message(value: Any) -> dict[str, Any] | None:
     return result
 
 
+def _safe_text(value: Any, limit: int) -> str | None:
+    return value[:limit] if isinstance(value, str) and value.strip() else None
+
+
+def _safe_questions(value: Any) -> list[dict[str, Any]] | None:
+    """Вопрос агента: только текст и варианты, без внутренних полей runner."""
+    if not isinstance(value, list) or not value:
+        return None
+    questions = []
+    for item in value[:4]:
+        if not isinstance(item, Mapping) or _safe_text(item.get("text"), 2000) is None:
+            return None
+        options = []
+        for option in item.get("options") or []:
+            if isinstance(option, Mapping) and _safe_text(option.get("label"), 200):
+                options.append({
+                    "label": option["label"][:200],
+                    "description": _safe_text(option.get("description"), 500),
+                })
+        questions.append({
+            "text": item["text"][:2000],
+            "header": _safe_text(item.get("header"), 200),
+            "multi_select": item.get("multi_select") is True,
+            "options": options[:8],
+        })
+    return questions
+
+
 def project_public_event_data(event_data: Mapping[str, Any]) -> dict[str, Any]:
     event_type = str(event_data.get("type", ""))
     schema_version = event_data.get("schema_version")
@@ -126,6 +155,11 @@ def project_public_event_data(event_data: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(value, int) and not isinstance(value, bool):
                 projected[key] = value
         projected["truncated"] = event_data.get("truncated") is True
+    elif event_type == "question.asked":
+        questions = _safe_questions(event_data.get("questions"))
+        if questions is None:
+            return legacy_redacted_event()
+        projected["questions"] = questions
     elif event_type == "run.completed":
         projected["status"] = "completed"
         client_request_id = event_data.get("client_request_id")
@@ -244,6 +278,16 @@ def artifact_saved_event(
             "size_bytes": size_bytes,
             "truncated": truncated,
             "num_lines": num_lines,
+        }
+    )
+
+
+def question_asked_event(questions: Any) -> dict[str, Any]:
+    return validate_public_event_data(
+        {
+            "type": "question.asked",
+            "schema_version": EVENT_SCHEMA_VERSION,
+            "questions": questions,
         }
     )
 

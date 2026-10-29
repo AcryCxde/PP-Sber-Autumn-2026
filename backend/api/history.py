@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.auth import CurrentUser, owns_conversation, owns_run
 from backend.config import Settings
 from backend.dependencies import get_session
 from backend.models import Artifact, Event
@@ -31,6 +32,24 @@ def get_app_settings(request: Request) -> Settings:
 SettingsDependency = Annotated[Settings, Depends(get_app_settings)]
 
 
+async def require_conversation(
+    session: AsyncSession,
+    conversation_id: str,
+    user: CurrentUser,
+) -> None:
+    # Чужой диалог неотличим от несуществующего.
+    if not await owns_conversation(session, conversation_id, user.id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Conversation not found",
+        )
+
+
+async def require_run(session: AsyncSession, run_id: str, user: CurrentUser, detail: str) -> None:
+    if not await owns_run(session, run_id, user.id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+
 def public_event_read(item: Event) -> EventRead:
     projected = project_public_event_data({**item.payload, "type": item.type})
     return EventRead(
@@ -47,7 +66,9 @@ async def remove_conversation(
     conversation_id: str,
     request: Request,
     session: SessionDependency,
+    user: CurrentUser,
 ) -> Response:
+    await require_conversation(session, conversation_id, user)
     outcome = await delete_conversation(session, conversation_id)
     if outcome == "not_found":
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -66,13 +87,17 @@ async def remove_conversation(
 @router.get("/conversations", response_model=list[ConversationRead])
 async def get_conversations(
     session: SessionDependency,
+    user: CurrentUser,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
+    standalone: bool = False,
 ) -> list[ConversationRead]:
     conversations = await list_conversations(
         session,
         limit=limit,
         offset=offset,
+        owner_id=user.id,
+        standalone=standalone,
     )
     active_runs = await get_active_run_ids(
         session,
@@ -93,7 +118,9 @@ async def get_conversations(
 async def get_conversation_messages(
     conversation_id: str,
     session: SessionDependency,
+    user: CurrentUser,
 ) -> list[MessageRead]:
+    await require_conversation(session, conversation_id, user)
     messages = await list_messages(session, conversation_id)
     if messages is None:
         raise HTTPException(
@@ -111,9 +138,11 @@ async def get_conversation_messages(
 async def get_conversation_events(
     conversation_id: str,
     session: SessionDependency,
+    user: CurrentUser,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=500)] = 500,
 ) -> list[EventRead]:
+    await require_conversation(session, conversation_id, user)
     events = await list_conversation_events(
         session,
         conversation_id,
@@ -132,9 +161,11 @@ async def get_conversation_events(
 async def get_run_events(
     run_id: str,
     session: SessionDependency,
+    user: CurrentUser,
     after_seq: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
 ) -> list[EventRead]:
+    await require_run(session, run_id, user, "Run not found")
     page = await list_run_events(
         session,
         run_id,
@@ -156,7 +187,9 @@ async def download_event_file(
     event_seq: int,
     session: SessionDependency,
     settings: SettingsDependency,
+    user: CurrentUser,
 ) -> Response:
+    await require_run(session, run_id, user, "File artifact not found")
     artifact = await session.scalar(
         select(Artifact).where(
             Artifact.run_id == run_id,

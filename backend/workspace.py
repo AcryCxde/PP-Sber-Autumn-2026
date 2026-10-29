@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import BinaryIO
 
+from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 
 PROTECTED_WORKSPACE_PARTS = {".git", ".runner"}
@@ -103,6 +107,53 @@ def release_gateway_lock(handle: BinaryIO) -> None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     finally:
         handle.close()
+
+
+# Ключ advisory-блокировки Postgres: одна база — один процесс gateway.
+GATEWAY_LEASE_KEY = 0x436F72655465616D  # "CoreTeam"
+
+
+async def acquire_gateway_lease(
+    database_url: str,
+    workspace_root: Path,
+) -> Callable[[], Awaitable[None]]:
+    """Не даёт двум backend работать с одной базой: оба восстанавливали бы одни и те же запуски.
+
+    SQLite — блокировка файла рядом с базой. Postgres — сессионная advisory-блокировка
+    на отдельном соединении: она держится, пока соединение открыто, и снимается сама,
+    если процесс упал. Возвращает функцию освобождения.
+    """
+    if make_url(database_url).get_backend_name() != "postgresql":
+        handle = acquire_gateway_lock(gateway_lock_path(database_url, workspace_root))
+
+        async def release_file() -> None:
+            release_gateway_lock(handle)
+
+        return release_file
+
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        connection = await engine.connect()
+        locked = await connection.scalar(
+            text("SELECT pg_try_advisory_lock(:key)"), {"key": GATEWAY_LEASE_KEY}
+        )
+        # Сессионная блокировка переживает commit; транзакцию не держим открытой.
+        await connection.commit()
+    except BaseException:
+        await engine.dispose()
+        raise
+    if not locked:
+        await connection.close()
+        await engine.dispose()
+        raise WorkspaceError("Another gateway process already owns this database")
+
+    async def release_advisory() -> None:
+        try:
+            await connection.close()
+        finally:
+            await engine.dispose()
+
+    return release_advisory
 
 
 def conversation_workspace(

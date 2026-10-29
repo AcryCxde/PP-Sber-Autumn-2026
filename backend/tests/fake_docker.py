@@ -2,6 +2,7 @@
 
 import io
 import tarfile
+from uuid import uuid4
 
 from docker.errors import NotFound
 
@@ -14,6 +15,7 @@ def unpack(archive: bytes) -> dict[str, tuple[bytes, int, int]]:
 class FakeContainer:
     def __init__(self, client, image, name=None, labels=None, **kwargs):
         self.client, self.image, self.name = client, image, name
+        self.id = uuid4().hex
         self.labels = labels or {}
         self.kwargs = kwargs
         self.archives: list[tuple[str, bytes]] = []

@@ -319,7 +319,7 @@ def test_security_migration_redacts_legacy_history(tmp_path) -> None:
         )
         connection.commit()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261012_0006")
 
     with sqlite3.connect(database_path) as connection:
         version = connection.execute(
@@ -364,3 +364,48 @@ def test_security_migration_redacts_legacy_history(tmp_path) -> None:
         "/host/private",
     ):
         assert secret not in serialized
+
+
+def test_migrations_match_models_and_0009_downgrades(tmp_path) -> None:
+    """На SQLite и (с TEST_POSTGRES_URL) на Postgres схема после миграций совпадает с моделями."""
+    import asyncio
+
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+    from sqlalchemy import inspect
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from backend import models  # noqa: F401
+    from backend.db import Base
+    from backend.tests.databases import database_url
+
+    url = database_url(tmp_path / "drift.db")
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.attributes["database_url"] = url
+
+    def inspect_schema(connection):
+        context = MigrationContext.configure(connection, opts={"compare_type": True})
+        diff = compare_metadata(context, Base.metadata)
+        inspector = inspect(connection)
+        return diff, set(inspector.get_table_names()), {
+            column["name"] for column in inspector.get_columns("users")
+        }
+
+    async def snapshot():
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as connection:
+                return await connection.run_sync(inspect_schema)
+        finally:
+            await engine.dispose()
+
+    command.upgrade(config, "head")
+    diff, tables, user_columns = asyncio.run(snapshot())
+    assert diff == []
+    assert "containers" in tables and "role" in user_columns
+
+    command.downgrade(config, "20261027_0008")
+    _, tables, user_columns = asyncio.run(snapshot())
+    assert "containers" not in tables and "role" not in user_columns
+
+    command.upgrade(config, "head")

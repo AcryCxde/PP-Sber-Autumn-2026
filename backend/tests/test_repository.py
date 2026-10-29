@@ -6,10 +6,12 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.db import Database
-from backend.models import Conversation, Event, Message, Run
+from backend.models import Artifact, Conversation, Event, Message, Run
+from backend.tests.databases import database_url
 from backend.repository import (
     RunAcceptanceError,
     accept_run,
+    append_artifact,
     append_event,
     create_request,
     finalize_run,
@@ -20,8 +22,7 @@ from backend.repository import (
 
 
 async def test_request_lifecycle_is_persisted(tmp_path) -> None:
-    database_path = (tmp_path / "repository.db").as_posix()
-    database = Database(f"sqlite+aiosqlite:///{database_path}")
+    database = Database(database_url(tmp_path / "repository.db"))
     await database.create_schema()
 
     try:
@@ -79,8 +80,7 @@ async def test_request_lifecycle_is_persisted(tmp_path) -> None:
 
 
 async def test_multiple_runs_share_conversation_and_resume_session(tmp_path) -> None:
-    database_path = (tmp_path / "multi-turn.db").as_posix()
-    database = Database(f"sqlite+aiosqlite:///{database_path}")
+    database = Database(database_url(tmp_path / "multi-turn.db"))
     await database.create_schema()
 
     try:
@@ -150,8 +150,7 @@ async def test_multiple_runs_share_conversation_and_resume_session(tmp_path) -> 
 
 
 async def test_explicit_context_reset_keeps_chat_and_starts_fresh_session(tmp_path) -> None:
-    database_path = (tmp_path / "context-reset.db").as_posix()
-    database = Database(f"sqlite+aiosqlite:///{database_path}")
+    database = Database(database_url(tmp_path / "context-reset.db"))
     await database.create_schema()
 
     try:
@@ -210,8 +209,7 @@ async def test_explicit_context_reset_keeps_chat_and_starts_fresh_session(tmp_pa
 
 
 async def test_run_acceptance_is_idempotent_and_rejects_busy_conversation(tmp_path) -> None:
-    database_path = (tmp_path / "acceptance.db").as_posix()
-    database = Database(f"sqlite+aiosqlite:///{database_path}")
+    database = Database(database_url(tmp_path / "acceptance.db"))
     await database.create_schema()
 
     try:
@@ -250,8 +248,7 @@ async def test_run_acceptance_is_idempotent_and_rejects_busy_conversation(tmp_pa
 
 
 async def test_concurrent_duplicate_client_request_is_idempotent(tmp_path) -> None:
-    database_path = (tmp_path / "concurrent-idempotency.db").as_posix()
-    database = Database(f"sqlite+aiosqlite:///{database_path}")
+    database = Database(database_url(tmp_path / "concurrent-idempotency.db"))
     await database.create_schema()
 
     try:
@@ -283,8 +280,7 @@ async def test_concurrent_duplicate_client_request_is_idempotent(tmp_path) -> No
 
 
 async def test_events_are_append_only_and_paginated_by_sequence(tmp_path) -> None:
-    database_path = (tmp_path / "events.db").as_posix()
-    database = Database(f"sqlite+aiosqlite:///{database_path}")
+    database = Database(database_url(tmp_path / "events.db"))
     await database.create_schema()
 
     try:
@@ -336,8 +332,7 @@ async def test_events_are_append_only_and_paginated_by_sequence(tmp_path) -> Non
 
 
 async def test_concurrent_event_appends_allocate_unique_sequences(tmp_path) -> None:
-    database_path = (tmp_path / "concurrent-events.db").as_posix()
-    database = Database(f"sqlite+aiosqlite:///{database_path}")
+    database = Database(database_url(tmp_path / "concurrent-events.db"))
     await database.create_schema()
 
     try:
@@ -363,9 +358,7 @@ async def test_concurrent_event_appends_allocate_unique_sequences(tmp_path) -> N
 
 
 async def test_terminal_event_is_last_and_rejects_late_append(tmp_path) -> None:
-    database = Database(
-        f"sqlite+aiosqlite:///{(tmp_path / 'terminal.db').as_posix()}"
-    )
+    database = Database(database_url(tmp_path / "terminal.db"))
     await database.create_schema()
 
     try:
@@ -407,9 +400,7 @@ async def test_terminal_event_is_last_and_rejects_late_append(tmp_path) -> None:
 
 
 async def test_reconcile_orphaned_runs_is_idempotent(tmp_path) -> None:
-    database = Database(
-        f"sqlite+aiosqlite:///{(tmp_path / 'orphaned.db').as_posix()}"
-    )
+    database = Database(database_url(tmp_path / "orphaned.db"))
     await database.create_schema()
 
     try:
@@ -444,9 +435,8 @@ async def test_reconcile_orphaned_runs_is_idempotent(tmp_path) -> None:
         await database.dispose()
 
 
-async def test_sqlite_foreign_keys_cascade_history(tmp_path) -> None:
-    database_path = (tmp_path / "foreign-keys.db").as_posix()
-    database = Database(f"sqlite+aiosqlite:///{database_path}")
+async def test_foreign_keys_cascade_history(tmp_path) -> None:
+    database = Database(database_url(tmp_path / "foreign-keys.db"))
     await database.create_schema()
 
     try:
@@ -470,5 +460,23 @@ async def test_sqlite_foreign_keys_cascade_history(tmp_path) -> None:
             assert await session.get(Run, created.run_id) is None
             assert await session.get(Message, created.message_id) is None
             assert await session.get(Event, stored_event.id) is None
+    finally:
+        await database.dispose()
+
+
+async def test_agent_output_with_nul_is_stored(tmp_path) -> None:
+    # Postgres отвергает NUL в тексте; файл агента с таким байтом не должен ронять запуск.
+    database = Database(database_url(tmp_path / "nul.db"))
+    await database.create_schema()
+    try:
+        async with database.session() as session:
+            created = await create_request(session, "Файл")
+        async with database.session() as session:
+            await append_artifact(
+                session, created.run_id, path="data.bin", content="a\x00b",
+                size_bytes=3, truncated=False, num_lines=1,
+            )
+        async with database.session() as session:
+            assert await session.scalar(select(Artifact.content)) == "a�b"
     finally:
         await database.dispose()

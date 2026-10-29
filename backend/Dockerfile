@@ -4,7 +4,9 @@
 
 FROM node:20-bookworm-slim
 
-ARG CLAUDE_CODE_VERSION=latest
+# 2.1.112 — последняя версия, где CLI — cli.js под Node. С 2.1.113 npm ставит
+# нативный бинарник на Bun, а он требует SSE4.2, которого нет у CPU сервера (qemu64).
+ARG CLAUDE_CODE_VERSION=2.1.112
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

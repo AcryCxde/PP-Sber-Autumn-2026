@@ -20,7 +20,8 @@ from typing import Any
 from backend.containers import ContainerError, ContainerManager
 from backend.models import Event
 from backend.parser import bounded_file_content
-from backend.public_events import message_created_event
+from backend.materials import MATERIALS_DIR, project_materials
+from backend.public_events import message_created_event, question_asked_event
 from backend.repository import (
     RunAcceptance,
     append_artifact,
@@ -134,7 +135,10 @@ async def run_via_runner(
         if started is not None:
             await deliver_event(started)
 
-        await manager.ensure_running(project)
+        await manager.ensure_running(project, run_id=run_id)
+        materials = await project_materials(database, acceptance.conversation_id)
+        if materials:
+            await manager.write_files(project, MATERIALS_DIR, materials)
         active = transport.active_run(project)
         if active is not None and active["status"] == "waiting_for_input" and active["question"]:
             transport_run = active["run_id"]
@@ -169,6 +173,8 @@ async def run_via_runner(
                     text = question_text(payload)
                     parts.append(text)
                     await publish(message_created_event(text))
+                    # Для интерфейса проекта: варианты ответа кнопками, а не только текстом.
+                    await publish(question_asked_event(payload["questions"]))
                     run_status, keep_transport_run, done = "completed", True, True
                 elif kind == "run.completed":
                     run_status, done = "completed", True

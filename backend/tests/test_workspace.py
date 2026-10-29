@@ -94,3 +94,19 @@ def test_artifact_path_rejects_symlink_escape(tmp_path) -> None:
 
     with pytest.raises(WorkspaceError):
         normalize_artifact_path(workspace, str(link / "secret.txt"))
+
+
+async def test_second_gateway_cannot_lease_same_database(tmp_path) -> None:
+    from backend.tests.databases import database_url
+    from backend.workspace import acquire_gateway_lease
+
+    url = database_url(tmp_path / "data" / "history.db")
+    release = await acquire_gateway_lease(url, tmp_path / "workspaces")
+    try:
+        with pytest.raises(WorkspaceError, match="Another gateway process"):
+            await acquire_gateway_lease(url, tmp_path / "workspaces")
+    finally:
+        await release()
+
+    release = await acquire_gateway_lease(url, tmp_path / "workspaces")
+    await release()

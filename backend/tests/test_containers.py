@@ -203,3 +203,44 @@ def test_bridge_tokens_are_dynamic_and_late_events_do_not_break_connection(tmp_p
             with client.websocket_connect("/v1/runner", headers=headers) as ws:
                 ws.send_json(hello)
                 ws.receive_json()
+
+
+def test_materials_wait_until_runner_creates_project_dir(setup):
+    from docker.errors import NotFound
+
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+    attempts = []
+    original = container.put_archive
+
+    def put_archive(path, data):
+        # Первые попытки — до seed_project: каталога /workspace/project ещё нет.
+        attempts.append(path)
+        if len(attempts) < 3:
+            raise NotFound("Could not find the file /workspace/project")
+        return original(path, data)
+
+    container.put_archive = put_archive
+    asyncio.run(manager.write_files("p1", "materials", {"a.md": b"x"}))
+
+    assert len(attempts) == 3
+    [(path, archive)] = container.archives
+    assert path == "/workspace/project" and unpack(archive)["materials/a.md"][0] == b"x"
+
+
+def test_materials_give_up_when_project_dir_never_appears(setup):
+    from docker.errors import NotFound
+
+    from backend.containers import ContainerError
+
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+
+    def put_archive(path, data):
+        raise NotFound("missing")
+
+    container.put_archive = put_archive
+    with pytest.raises(ContainerError, match="runner_project_missing"):
+        asyncio.run(manager.write_files("p1", "materials", {"a.md": b"x"}, wait_seconds=0.6))

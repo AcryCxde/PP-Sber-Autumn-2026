@@ -7,10 +7,14 @@ import time
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 import backend.main as main_module
 from backend.config import Settings
 from backend.db import Database
+from backend.models import RunnerContainer
+from backend.tests.databases import database_url
+from backend.tests.auth_helpers import sign_in
 from backend.tests.fake_docker import FakeDocker, unpack
 
 
@@ -18,7 +22,7 @@ ANTHROPIC_TOKEN = "test-anthropic-token-0123456789"
 
 
 def make_runner_app(tmp_path, docker):
-    database = Database(f"sqlite+aiosqlite:///{(tmp_path / 'data' / 'history.db').as_posix()}")
+    database = Database(database_url(tmp_path / "data" / "history.db"))
     app = main_module.create_app(database, Settings(
         workspace_root=tmp_path / "workspaces",
         executor="runner",
@@ -104,6 +108,7 @@ def test_run_executes_in_per_conversation_runner_container(tmp_path):
 
     app = make_runner_app(tmp_path, docker)
     with TestClient(app) as client:
+        sign_in(client)
         runner = FakeRunner(app.state.runner_transport, docker, script)
         runner.start()
         try:
@@ -147,6 +152,14 @@ def test_run_executes_in_per_conversation_runner_container(tmp_path):
         status = client.get(f"/api/conversations/{conversation}/runner").json()
         assert status["state"] == "running" and status["active_run"] is None
 
+        # Состояние чужого runner недоступно: ответ как для несуществующего.
+        cookies = dict(client.cookies)
+        client.cookies.clear()
+        sign_in(client, "beta@example.com")
+        assert client.get(f"/api/conversations/{conversation}/runner").status_code == 404
+        client.cookies.clear()
+        client.cookies.update(cookies)
+
         # Удаление диалога убирает и контейнер, и тома сессии.
         assert client.delete(f"/api/conversations/{conversation}").status_code == 204
         assert docker.removed_containers == [f"ct-{project}"]
@@ -161,10 +174,13 @@ def test_conversation_from_cli_mode_requires_reset_before_runner(tmp_path):
     docker = FakeDocker()
     app = make_runner_app(tmp_path, docker)
     with TestClient(app) as client:
+        owner_id = sign_in(client)["id"]
+
         async def cli_conversation():
             async with app.state.database.session() as session:
                 accepted = await accept_run(session, conversation_id=None,
-                                            client_request_id=str(uuid4()), content="hi")
+                                            client_request_id=str(uuid4()), content="hi",
+                                            owner_id=owner_id)
             async with app.state.database.session() as session:
                 await finalize_run(session, accepted.run_id, assistant_content="ok",
                                    status="completed", exit_code=0, session_id=str(uuid4()))
@@ -195,6 +211,7 @@ def test_agent_question_is_answered_by_next_message(tmp_path):
 
     app = make_runner_app(tmp_path, docker)
     with TestClient(app) as client:
+        sign_in(client)
         runner = FakeRunner(app.state.runner_transport, docker, script)
         runner.start()
         try:
@@ -208,7 +225,14 @@ def test_agent_question_is_answered_by_next_message(tmp_path):
             runner.halt.set()
 
         assert first[-1]["status"] == "completed"
-        assert "Какой формат?" in first[-2]["content"]
+        assert "Какой формат?" in first[-3]["content"]
+        # Тот же вопрос структурно: интерфейс проекта показывает варианты кнопками.
+        asked = first[-2]
+        assert asked["type"] == "question.asked"
+        assert asked["questions"] == [{
+            "text": "Какой формат?", "header": None, "multi_select": False,
+            "options": [{"label": "md", "description": None}, {"label": "txt", "description": None}],
+        }]
         assert second[-1]["status"] == "completed"
         assert second[-2]["content"] == "Сделал в md"
         answer = runner.received[-1]
@@ -224,12 +248,163 @@ def test_conversation_with_active_run_cannot_be_deleted(tmp_path):
     docker = FakeDocker()
     app = make_runner_app(tmp_path, docker)
     with TestClient(app) as client:
+        owner_id = sign_in(client)["id"]
+
         async def pending_run():
             async with app.state.database.session() as session:
                 accepted = await accept_run(session, conversation_id=None,
-                                            client_request_id=str(uuid4()), content="hi")
+                                            client_request_id=str(uuid4()), content="hi",
+                                            owner_id=owner_id)
             return accepted.conversation_id
 
         conversation = client.portal.call(pending_run)
         assert client.delete(f"/api/conversations/{conversation}").status_code == 409
         assert len(client.get("/api/conversations").json()) == 1
+
+
+def test_project_materials_reach_runner_container(tmp_path):
+    docker = FakeDocker()
+
+    def script(command, container):
+        return [("run.started", {}),
+                ("message.created", {"role_id": None, "text": "# Карта задачи\nготово"}),
+                ("run.completed", {})]
+
+    app = make_runner_app(tmp_path, docker)
+    with TestClient(app) as client:
+        sign_in(client)
+        project = client.post("/api/projects", json={"example": True}).json()
+        client.post(f"/api/projects/{project['id']}/files",
+                    files={"file": ("план.md", "# План".encode(), "text/markdown")})
+        runner = FakeRunner(app.state.runner_transport, docker, script)
+        runner.start()
+        try:
+            with client.websocket_connect("/ws") as websocket:
+                websocket.send_json({"type": "project.run", "project_id": project["id"],
+                                     "client_request_id": str(uuid4()), "kind": "stage"})
+                events = receive_until_terminal(websocket)
+        finally:
+            runner.halt.set()
+        state = client.get(f"/api/projects/{project['id']}").json()
+
+    assert events[-1]["status"] == "completed"
+    container = docker.containers.get(f"ct-{project['conversation_id'].lower()}")
+    [(path, archive)] = container.archives
+    files = unpack(archive)
+    assert path == "/workspace/project"
+    assert files["materials/план.md"][0] == "# План".encode()
+    assert files["materials/план.md"][2] == 1000
+    # Промпт этапа уходит runner сообщением и упоминает материалы.
+    assert "materials/" in runner.received[0]["text"]
+    assert state["phase"] == "review"
+    assert state["results"][0][0]["content"].startswith("# Карта задачи")
+
+
+def test_agent_question_pauses_project_until_answer(tmp_path):
+    docker = FakeDocker()
+    question = {"text": "С какого подхода начнём?", "header": None, "multi_select": False,
+                "allow_custom": True,
+                "options": [{"label": "Небольшая проверка", "description": None}]}
+
+    def script(command, container):
+        if command["kind"] == "message":
+            return [("run.started", {}),
+                    ("facilitator.question", {"question_id": "f1", "questions": [question]})]
+        return [("user.answer.accepted", {"question_id": "f1", "answers": command["answers"]}),
+                ("message.created", {"role_id": None, "text": "# Карта задачи\nс проверкой"}),
+                ("run.completed", {})]
+
+    app = make_runner_app(tmp_path, docker)
+    with TestClient(app) as client:
+        sign_in(client)
+        project = client.post("/api/projects", json={"example": True}).json()
+        runner = FakeRunner(app.state.runner_transport, docker, script)
+        runner.start()
+        try:
+            with client.websocket_connect("/ws") as websocket:
+                websocket.send_json({"type": "project.run", "project_id": project["id"],
+                                     "client_request_id": str(uuid4()), "kind": "stage"})
+                receive_until_terminal(websocket)
+                waiting = client.get(f"/api/projects/{project['id']}").json()
+                websocket.send_json({"type": "project.run", "project_id": project["id"],
+                                     "client_request_id": str(uuid4()), "kind": "answer",
+                                     "text": "Небольшая проверка"})
+                receive_until_terminal(websocket)
+        finally:
+            runner.halt.set()
+        state = client.get(f"/api/projects/{project['id']}").json()
+
+    assert waiting["phase"] == "waiting"
+    assert waiting["question"][0]["options"] == [{"label": "Небольшая проверка", "description": None}]
+    # Вопрос — не версия результата.
+    assert waiting["results"][0] == []
+    assert runner.received[-1]["answers"] == {"С какого подхода начнём?": "Небольшая проверка"}
+    assert state["phase"] == "review"
+    assert [item["content"] for item in state["results"][0]] == ["# Карта задачи\nс проверкой"]
+
+
+def test_deleting_project_removes_its_runner_container_and_volumes(tmp_path):
+    docker = FakeDocker()
+
+    def script(command, container):
+        return [("run.started", {}), ("message.created", {"role_id": None, "text": "# Итог"}),
+                ("run.completed", {})]
+
+    app = make_runner_app(tmp_path, docker)
+    with TestClient(app) as client:
+        sign_in(client)
+        project = client.post("/api/projects", json={"example": True}).json()
+        runner = FakeRunner(app.state.runner_transport, docker, script)
+        runner.start()
+        try:
+            with client.websocket_connect("/ws") as websocket:
+                websocket.send_json({"type": "project.run", "project_id": project["id"],
+                                     "client_request_id": str(uuid4()), "kind": "stage"})
+                receive_until_terminal(websocket)
+        finally:
+            runner.halt.set()
+        records = container_records(client, project["conversation_id"])
+        assert [(item.status, item.last_run_id is not None) for item in records] == [("running", True)]
+        assert records[0].docker_container_id == docker.containers._items[records[0].container_name].id
+        assert records[0].image_tag == "coreteams-runner:dev"
+        assert client.delete(f"/api/projects/{project['id']}").status_code == 204
+        records = container_records(client, project["conversation_id"])
+        assert [(item.status, item.stop_reason) for item in records] == [("discarded", "project_deleted")]
+
+    assert docker.removed_containers == [f"ct-{project['conversation_id'].lower()}"]
+    assert docker.volumes._items == {}
+
+
+def container_records(client, conversation_id):
+    async def load():
+        async with client.app.state.database.session() as session:
+            return list(await session.scalars(
+                select(RunnerContainer).where(RunnerContainer.conversation_id == conversation_id)
+            ))
+
+    return client.portal.call(load)
+
+
+def test_restore_closes_records_of_containers_missing_in_docker(tmp_path):
+    docker = FakeDocker()
+
+    def script(command, container):
+        return [("run.started", {}), ("message.created", {"role_id": None, "text": "готово"}),
+                ("run.completed", {})]
+
+    app = make_runner_app(tmp_path, docker)
+    with TestClient(app) as client:
+        sign_in(client)
+        runner = FakeRunner(app.state.runner_transport, docker, script)
+        runner.start()
+        try:
+            with client.websocket_connect("/ws") as websocket:
+                websocket.send_json(run_command("привет"))
+                conversation_id = receive_until_terminal(websocket)[-1]["conversation_id"]
+        finally:
+            runner.halt.set()
+        # Контейнер удалили в обход backend, например docker rm вручную.
+        docker.containers._items.clear()
+        client.portal.call(app.state.runner_manager.restore)
+        records = container_records(client, conversation_id)
+        assert [(item.status, item.stop_reason) for item in records] == [("gone", "missing_on_restore")]

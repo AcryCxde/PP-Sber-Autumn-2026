@@ -10,19 +10,26 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from sqlalchemy import select
 
 from backend import models  # noqa: F401
+from backend.api.auth import router as auth_router
 from backend.api.history import router as history_router
+from backend.api.projects import router as projects_router
+from backend.auth import CurrentUser, owns_conversation, owns_run, websocket_user_id
 from backend.config import PROJECT_ROOT, Settings
+from backend.container_registry import ContainerRegistry
 from backend.containers import ContainerError, ContainerManager
 from backend.db import Database
-from backend.models import Event
+from backend.materials import project_materials, write_workspace_materials
+from backend.models import Event, Message, Run
 from backend.parser import (
     NormalizedEvent,
     bounded_file_content,
     normalized_event,
     parse_event,
 )
+from backend.projects import ProjectRunError, link_run, owned_project, prepare_run
 from backend.public_events import message_created_event, project_public_event_data
 from backend.repository import (
     TERMINAL_RUN_STATUSES,
@@ -42,11 +49,9 @@ from backend.runner_executor import run_via_runner
 from backend.runner_transport import RunnerTransport
 from backend.workspace import (
     WorkspaceError,
-    acquire_gateway_lock,
+    acquire_gateway_lease,
     conversation_workspace,
-    gateway_lock_path,
     normalize_artifact_path,
-    release_gateway_lock,
     validate_workspace_root,
 )
 
@@ -56,6 +61,8 @@ logger = logging.getLogger(__name__)
 # uvicorn настраивает только свои логгеры, а alembic.ini ставит корневому WARN: без собственного
 # уровня не видно создания и удаления runner-контейнеров.
 logging.getLogger("backend").setLevel(logging.INFO)
+# Код закрытия в диапазоне приложения (4000–4999): клиенту нужно войти заново.
+WS_UNAUTHORIZED = 4401
 SESSION_UNAVAILABLE_MARKERS = (
     "no conversation found",
     "unable to resume",
@@ -251,7 +258,10 @@ async def handle_run_create(
     client_request_id: str,
     content: str,
     context_mode: str,
+    owner_id: str,
+    project_link: tuple[str, int, str] | None = None,
 ) -> None:
+    """project_link: (project_id, stage, kind) — запуск относится к этапу проекта."""
     app_state = websocket.app.state
     socket_ref = weakref.ref(websocket)
     try:
@@ -262,7 +272,10 @@ async def handle_run_create(
                 client_request_id=client_request_id,
                 content=content,
                 requested_context_mode=context_mode,
+                owner_id=owner_id,
             )
+            if project_link is not None:
+                await link_run(session, project_link[0], acceptance.run_id, *project_link[1:])
     except RunAcceptanceError as error:
         await send_command_error(
             websocket,
@@ -409,6 +422,9 @@ async def handle_run_create(
             acceptance.conversation_id,
             create=True,
         )
+        materials = await project_materials(app_state.database, acceptance.conversation_id)
+        if materials is not None:
+            await asyncio.to_thread(write_workspace_materials, workspace, materials)
 
         async with app_state.database.session() as session:
             started_event = await mark_run_running(session, acceptance.run_id)
@@ -555,6 +571,8 @@ async def handle_subscription(
     websocket: WebSocket,
     run_id: str,
     after_seq: int,
+    *,
+    owner_id: str,
 ) -> None:
     page_size = 500
     terminal_statuses = TERMINAL_RUN_STATUSES
@@ -567,12 +585,14 @@ async def handle_subscription(
 
     while True:
         async with websocket.app.state.database.session() as session:
+            # Чужой run отвечает так же, как несуществующий.
+            owned = await owns_run(session, run_id, owner_id)
             page = await list_run_events(
                 session,
                 run_id,
                 after_seq=cursor,
                 limit=page_size,
-            )
+            ) if owned else None
 
         if page is None:
             await send_websocket_payload(
@@ -686,6 +706,8 @@ def start_subscription_task(
     websocket: WebSocket,
     run_id: str,
     after_seq: int,
+    *,
+    owner_id: str,
 ) -> None:
     subscriptions = getattr(websocket, "_gateway_subscriptions", None)
     if subscriptions is None:
@@ -696,7 +718,9 @@ def start_subscription_task(
     if existing is not None:
         existing.cancel()
 
-    task = asyncio.create_task(handle_subscription(websocket, run_id, after_seq))
+    task = asyncio.create_task(
+        handle_subscription(websocket, run_id, after_seq, owner_id=owner_id)
+    )
     subscriptions[run_id] = task
 
     def remove(completed: asyncio.Task[Any]) -> None:
@@ -707,7 +731,12 @@ def start_subscription_task(
     task.add_done_callback(remove)
 
 
-async def dispatch_websocket_message(websocket: WebSocket, raw: str) -> None:
+async def dispatch_websocket_message(
+    websocket: WebSocket,
+    raw: str,
+    *,
+    owner_id: str,
+) -> None:
     try:
         command = json.loads(raw)
     except json.JSONDecodeError:
@@ -727,6 +756,7 @@ async def dispatch_websocket_message(websocket: WebSocket, raw: str) -> None:
                 client_request_id=str(uuid4()),
                 content=content,
                 context_mode="resume",
+                owner_id=owner_id,
             ),
         )
         if not started:
@@ -792,6 +822,7 @@ async def dispatch_websocket_message(websocket: WebSocket, raw: str) -> None:
                 client_request_id=client_request_id,
                 content=content.strip(),
                 context_mode=context_mode,
+                owner_id=owner_id,
             ),
             allow_overflow=allow_overflow,
         )
@@ -804,6 +835,10 @@ async def dispatch_websocket_message(websocket: WebSocket, raw: str) -> None:
                 conversation_id=conversation_id,
                 retryable=True,
             )
+        return
+
+    if command.get("type") == "project.run":
+        await dispatch_project_run(websocket, command, owner_id=owner_id)
         return
 
     if command.get("type") == "run.subscribe":
@@ -826,7 +861,7 @@ async def dispatch_websocket_message(websocket: WebSocket, raw: str) -> None:
             )
             return
 
-        start_subscription_task(websocket, run_id, after_seq)
+        start_subscription_task(websocket, run_id, after_seq, owner_id=owner_id)
         return
 
     await send_command_error(
@@ -834,6 +869,115 @@ async def dispatch_websocket_message(websocket: WebSocket, raw: str) -> None:
         code="invalid_command",
         message="Неизвестный тип команды.",
     )
+
+
+async def dispatch_project_run(
+    websocket: WebSocket,
+    command: dict[str, Any],
+    *,
+    owner_id: str,
+) -> None:
+    """Этап проекта: backend сам собирает запрос к Claude из данных проекта."""
+    project_id = command.get("project_id")
+    client_request_id = command.get("client_request_id")
+    kind = command.get("kind")
+    text = command.get("text")
+    if (
+        not valid_uuid(project_id)
+        or not valid_uuid(client_request_id)
+        or kind not in {"stage", "revision", "answer"}
+        or (text is not None and (not isinstance(text, str) or len(text) > 3000))
+    ):
+        await send_command_error(
+            websocket,
+            code="invalid_command",
+            message="Некорректная команда project.run.",
+            client_request_id=client_request_id if isinstance(client_request_id, str) else None,
+        )
+        return
+
+    state = websocket.app.state
+    async with state.database.session() as session:
+        if await client_request_exists(session, client_request_id):
+            # Повтор после обрыва связи: тот же запуск, промпт не пересобираем.
+            prepared = None
+        else:
+            project = await owned_project(session, project_id, owner_id)
+            if project is None:
+                await send_command_error(
+                    websocket,
+                    code="project_not_found",
+                    message="Проект не найден.",
+                    client_request_id=client_request_id,
+                )
+                return
+            try:
+                prepared = await prepare_run(session, project, kind=kind, text=text)
+            except ProjectRunError as error:
+                await send_command_error(
+                    websocket,
+                    code=error.code,
+                    message=error.message,
+                    client_request_id=client_request_id,
+                    conversation_id=project.conversation_id,
+                )
+                return
+        if prepared is None:
+            existing = await session.scalar(
+                select(Run).where(Run.client_request_id == client_request_id)
+            )
+            if existing is None or not await owns_conversation(session, existing.conversation_id, owner_id):
+                await send_command_error(
+                    websocket,
+                    code="idempotency_conflict",
+                    message="client_request_id уже использован для другого запроса.",
+                    client_request_id=client_request_id,
+                )
+                return
+
+    if prepared is None:
+        started = await start_run_task(
+            websocket,
+            handle_run_create(
+                websocket,
+                conversation_id=existing.conversation_id,
+                client_request_id=client_request_id,
+                content=await replay_content(state, existing.id),
+                context_mode="reset" if existing.context_mode == "reset" else "resume",
+                owner_id=owner_id,
+            ),
+            allow_overflow=True,
+        )
+    else:
+        started = await start_run_task(
+            websocket,
+            handle_run_create(
+                websocket,
+                conversation_id=prepared.conversation_id,
+                client_request_id=client_request_id,
+                content=prepared.content,
+                context_mode=prepared.context_mode,
+                owner_id=owner_id,
+                project_link=(project_id, prepared.stage, kind),
+            ),
+        )
+    if not started:
+        await send_command_error(
+            websocket,
+            code="gateway_busy",
+            message="Достигнут лимит одновременных запусков.",
+            client_request_id=client_request_id,
+            retryable=True,
+        )
+
+
+async def replay_content(state: Any, run_id: str) -> str:
+    """Текст исходного запроса: идемпотентный повтор должен совпасть с ним дословно."""
+    async with state.database.session() as session:
+        content = await session.scalar(
+            select(Message.content).where(Message.run_id == run_id, Message.role == "user")
+        )
+    return content or ""
 
 
 def create_app(
@@ -850,11 +994,9 @@ def create_app(
             project_root=PROJECT_ROOT,
             database_url=app.state.database.url,
         )
-        lock = acquire_gateway_lock(
-            gateway_lock_path(
-                app.state.database.url,
-                app.state.workspace_root,
-            )
+        release_lease = await acquire_gateway_lease(
+            app.state.database.url,
+            app.state.workspace_root,
         )
         database_ready = False
         supervisor: asyncio.Task[None] | None = None
@@ -886,7 +1028,7 @@ def create_app(
                         await reconcile_orphaned_runs(session)
                     await app.state.database.dispose()
             finally:
-                release_gateway_lock(lock)
+                await release_lease()
 
     application = FastAPI(lifespan=lifespan)
     application.state.database = selected_database
@@ -894,7 +1036,9 @@ def create_app(
     application.state.run_tasks = set()
     application.state.run_slot_lock = asyncio.Lock()
     application.state.run_task_count = 0
+    application.include_router(auth_router)
     application.include_router(history_router)
+    application.include_router(projects_router)
 
     if selected_settings.executor == "runner":
         selected_settings.runner_transport_db.parent.mkdir(parents=True, exist_ok=True)
@@ -904,12 +1048,17 @@ def create_app(
             heartbeat_timeout=selected_settings.runner_heartbeat_timeout_seconds,
         )
         application.state.runner_transport = transport
-        application.state.runner_manager = ContainerManager(selected_settings, bridge, transport)
+        application.state.runner_manager = ContainerManager(
+            selected_settings, bridge, transport, registry=ContainerRegistry(selected_database),
+        )
         # Runner подключается сам: входящий порт у контейнера проекта не нужен.
         application.include_router(create_runner_router(bridge))
 
         @application.get("/api/conversations/{conversation_id}/runner")
-        async def runner_status(conversation_id: str) -> dict[str, Any]:
+        async def runner_status(conversation_id: str, user: CurrentUser) -> dict[str, Any]:
+            async with application.state.database.session() as session:
+                if not await owns_conversation(session, conversation_id, user.id):
+                    raise HTTPException(status_code=404, detail="Runner not found")
             manager: ContainerManager = application.state.runner_manager
             try:
                 project = manager.project_id(conversation_id)
@@ -919,12 +1068,17 @@ def create_app(
 
     @application.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
+        # Cookie сессии приходит в рукопожатии: фронтенд на том же origin через прокси.
+        owner_id = await websocket_user_id(websocket)
         await websocket.accept()
+        if owner_id is None:
+            await websocket.close(code=WS_UNAUTHORIZED, reason="Not authenticated")
+            return
 
         try:
             while True:
                 raw = await websocket.receive_text()
-                await dispatch_websocket_message(websocket, raw)
+                await dispatch_websocket_message(websocket, raw, owner_id=owner_id)
         except WebSocketDisconnect:
             pass
         finally:
