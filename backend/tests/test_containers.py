@@ -1,13 +1,15 @@
 """ContainerManager: восстановление токенов, наблюдение, уборка контейнеров и срок хранения томов."""
 
 import asyncio
+import io
+import tarfile
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.config import Settings
-from backend.containers import ContainerManager, _docker_time
+from backend.containers import ContainerError, ContainerManager, _docker_time
 from backend.runner_app import RunnerBridge, create_runner_app
 from backend.runner_transport import RunnerTransport
 from backend.tests.fake_docker import FakeDocker, unpack
@@ -166,6 +168,102 @@ def test_runner_exit_with_rejected_secret_fails_active_run(setup):
     assert status["state"] == "exited" and status["exit_code"] == 78
 
 
+def _archive(path: str, data: bytes) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        info = tarfile.TarInfo(path)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _directory_archive(path: str) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        info = tarfile.TarInfo(path)
+        info.type = tarfile.DIRTYPE
+        tar.addfile(info)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("data", [b"under", b"x" * 8])
+def test_read_file_returns_regular_member_within_limit(setup, data):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    docker.containers.get("ct-p1").files["/workspace/project/artifact.txt"] = data
+
+    assert asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8)) == data
+
+
+def test_read_file_rejects_member_larger_than_limit(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    docker.containers.get("ct-p1").files["/workspace/project/artifact.txt"] = b"x" * 9
+
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
+
+
+def test_read_file_stops_consuming_archive_after_budget(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+    consumed: list[bytes] = []
+    first = b"x" * (8 + 10 * 1024 + 1)
+
+    def get_archive(path):
+        def chunks():
+            consumed.append(first)
+            yield first
+            raise AssertionError("archive generator was consumed after its budget")
+        return chunks(), {"size": 0}
+
+    container.get_archive = get_archive
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
+    assert consumed == [first]
+
+
+def test_read_file_translates_get_archive_failure(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+
+    def get_archive(path):
+        raise RuntimeError("daemon unavailable")
+
+    container.get_archive = get_archive
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
+
+
+def test_read_file_translates_archive_iterator_failure(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+
+    def get_archive(path):
+        def chunks():
+            raise RuntimeError("connection reset")
+            yield b""  # pragma: no cover
+        return chunks(), {"size": 0}
+
+    container.get_archive = get_archive
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
+
+
+@pytest.mark.parametrize("archive", [b"not a tar archive", _directory_archive("directory")])
+def test_read_file_rejects_malformed_or_missing_regular_member(setup, archive):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+    container.get_archive = lambda path: ([archive], {"size": len(archive)})
+
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
+
+
 def test_docker_timestamps():
     assert _docker_time("0001-01-01T00:00:00Z") is None
     assert _docker_time("2026-10-25T10:00:00.123456789Z") == pytest.approx(1792922400.123456)
@@ -195,6 +293,11 @@ def test_bridge_tokens_are_dynamic_and_late_events_do_not_break_connection(tmp_p
                           "last_progress_at": 1.0})
             deadline = time.time() + 5
             while transport.project_state("p1")["phase"] != "idle":
+                assert time.time() < deadline
+                time.sleep(0.01)
+            # Close the protocol session before TestClient tears down its portal.
+            ws.close()
+            while bridge.is_connected("p1"):
                 assert time.time() < deadline
                 time.sleep(0.01)
         assert transport.hello("p1") == 7
