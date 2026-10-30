@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy import (
     JSON,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -53,17 +54,31 @@ class User(Base):
     # Хранится нормализованным (strip + lower): уникальность не зависит от регистра.
     email: Mapped[str] = mapped_column(String(254), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
-    # user | admin; права по роли пока не проверяются.
+    # user | admin; admin открывает /api/admin (панель вовлечённости).
     role: Mapped[str] = mapped_column(String(20), default="user", server_default="user")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
     )
+    # Последний авторизованный запрос; обновляется не чаще раза в несколько минут.
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     sessions: Mapped[list[AuthSession]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )
+
+
+class UserActivityDay(Base):
+    """День (UTC), в который пользователь обращался к API: основа DAU/WAU/MAU и удержания."""
+
+    __tablename__ = "user_activity_days"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    day: Mapped[date] = mapped_column(Date, primary_key=True, index=True)
 
 
 class AuthSession(Base):

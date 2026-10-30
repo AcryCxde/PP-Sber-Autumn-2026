@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from backend import models  # noqa: F401
+from backend.api.admin import router as admin_router
 from backend.api.auth import router as auth_router
 from backend.api.conversation_files import router as conversation_files_router
 from backend.api.history import router as history_router
@@ -1070,6 +1071,7 @@ def create_app(
     application.state.run_slot_lock = asyncio.Lock()
     application.state.run_task_count = 0
     application.include_router(auth_router)
+    application.include_router(admin_router)
     application.include_router(history_router)
     application.include_router(conversation_files_router)
     application.include_router(projects_router)

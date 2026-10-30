@@ -822,6 +822,11 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
           <a className="text-btn" href="/chat/">
             Свободный чат
           </a>
+          {user.role === "admin" ? (
+            <a className="text-btn" href="#admin">
+              Админка
+            </a>
+          ) : null}
         </nav>
         <span className="account">
           <span title={user.email}>{user.email}</span>

@@ -78,6 +78,8 @@ services:
       RUNNER_IDLE_TIMEOUT_SECONDS: ${RUNNER_IDLE_TIMEOUT_SECONDS:-600}
       # Срок хранения томов с последней активности; 0 — хранить всегда. По умолчанию 30 дней.
       RUNNER_VOLUME_RETENTION_SECONDS: ${RUNNER_VOLUME_RETENTION_SECONDS:-2592000}
+      # Email через запятую, которым открыта панель вовлечённости (#admin).
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
     # docker.sock принадлежит root:root (0660): группа 0 даёт доступ без запуска backend от root.
     # Доступ к сокету равен root на хосте — в production нужен docker-socket-proxy.
     group_add: ["0"]

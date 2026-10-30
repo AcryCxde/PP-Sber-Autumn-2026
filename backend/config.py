@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     auth_session_ttl_seconds: int = Field(default=14 * 86400, gt=0)
     # true за HTTPS; по http браузер не вернёт Secure-cookie и вход не сработает.
     auth_cookie_secure: bool = False
+    # Email через запятую: эти аккаунты получают роль admin при входе (панель вовлечённости).
+    admin_emails: str = ""
 
     # "cli" — claude подпроцессом в контейнере backend; "runner" — контейнер ctrunner на сессию.
     executor: Literal["cli", "runner"] = "cli"
