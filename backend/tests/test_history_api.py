@@ -756,7 +756,7 @@ def test_interrupted_resumed_run_invalidates_session_context(tmp_path, monkeypat
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(main_module, "start_claude", fake_start_claude)
-    monkeypatch.setattr(main_module, "append_artifact", fail_artifact_save)
+    monkeypatch.setattr(main_module, "save_agent_file", fail_artifact_save)
     app = make_app(tmp_path)
 
     with TestClient(app) as client:

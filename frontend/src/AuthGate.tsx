@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import Shell from './coreteams/Shell';
+import App from './App';
 import {
   authenticate,
   fetchCurrentUser,
@@ -40,7 +40,7 @@ function AuthScreen({
   return (
     <div className="auth-shell">
       <form className="auth-card" onSubmit={(event) => void submit(event)}>
-        <div className="eyebrow">Claude Web</div>
+        <div className="eyebrow">CoreTeams · свободный чат</div>
         <h1>{isLogin ? 'Вход' : 'Регистрация'}</h1>
         {notice && <div className="auth-notice">{notice}</div>}
 
@@ -143,7 +143,7 @@ function AuthGate() {
     );
   }
   // key: смена пользователя пересоздаёт чат вместе с сокетом и всем состоянием.
-  return <Shell key={user.id} user={user} onLogout={() => void handleLogout()} />;
+  return <App key={user.id} user={user} onLogout={() => void handleLogout()} />;
 }
 
 export default AuthGate;

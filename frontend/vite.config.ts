@@ -4,7 +4,9 @@ import { defineConfig } from 'vite'
 // BACKEND_URL — для dev-сервера рядом с уже запущенным docker-стеком на 8000.
 const backendUrl = process.env.BACKEND_URL ?? 'http://127.0.0.1:8000'
 
+// Свободный чат открывается по /chat/; на / — рабочее пространство web-product.
 export default defineConfig({
+  base: '/chat/',
   plugins: [react()],
   server: {
     proxy: {

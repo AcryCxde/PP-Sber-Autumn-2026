@@ -27,6 +27,16 @@ server {
         proxy_send_timeout 1h;
     }
 
+    # Свободный чат (этот каталог frontend), собран с base /chat/.
+    location /chat/ {
+        try_files $uri $uri/ /chat/index.html;
+    }
+
+    # Рабочее пространство web-product; прежний адрес /product/ ведёт сюда же.
+    location = /product/ {
+        return 301 /;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }

@@ -1,20 +1,32 @@
 # syntax=docker/dockerfile:1
-# Frontend: статическая сборка Vite за nginx; /api и /ws проксируются в backend.
-# Контекст сборки — каталог frontend.
+# Frontend: статические сборки Vite за nginx; /api и /ws проксируются в backend.
+# Рабочее пространство web-product (контракт V2) — /, свободный чат из этого каталога — /chat/.
+# Контекст сборки — корень репозитория.
 
 FROM node:20-bookworm-slim AS build
 
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
-COPY . .
+COPY frontend/ .
 RUN npm run build
+
+# web-product требует Node 22.12+ и собирается pnpm по своему lockfile.
+FROM node:22-bookworm-slim AS product
+
+WORKDIR /app
+RUN npm install -g pnpm@10
+COPY web-product/package.json web-product/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web-product/ .
+RUN pnpm build
 
 FROM nginx:1.27-alpine
 
 ENV BACKEND_URL=http://backend:8000
 
-COPY nginx.conf.template /etc/nginx/templates/default.conf.template
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY --from=product /app/dist /usr/share/nginx/html
+COPY --from=build /app/dist /usr/share/nginx/html/chat
 
 EXPOSE 80

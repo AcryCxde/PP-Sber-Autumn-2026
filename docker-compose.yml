@@ -25,6 +25,29 @@ services:
       retries: 30
     restart: unless-stopped
 
+  # S3-совместимое хранилище файлов, созданных агентом (backend/storage.py): SeaweedFS в режиме
+  # mini (один процесс, S3 на 8333). Образы MinIO больше не публикуются открыто.
+  # Ключи — в .env, см. .env.example; без них S3 отклоняет запросы (403).
+  s3:
+    image: chrislusf/seaweedfs:4.50
+    command: ["mini", "-dir=/data", "-master.telemetry=false"]
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?Задайте S3_ACCESS_KEY в .env, см. .env.example}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:?Задайте S3_SECRET_KEY в .env, см. .env.example}
+    volumes:
+      - s3-data:/data
+    # Как и база, только в сети db: runner-контейнеры с кодом агента хранилище не видят.
+    networks: [db]
+    # S3 с хоста для отладки (aws cli, boto3) — только на 127.0.0.1.
+    ports:
+      - "127.0.0.1:${S3_PORT:-8333}:8333"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8333/healthz"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
   # Только собирает образ runner; контейнеры из него создаёт backend.
   runner-image:
     build:
@@ -42,6 +65,10 @@ services:
     env_file: .env.gateway
     environment:
       DATABASE_URL: postgresql+asyncpg://coreteams:${POSTGRES_PASSWORD}@db:5432/coreteams
+      S3_ENDPOINT_URL: http://s3:8333
+      S3_BUCKET: coreteams-artifacts
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
       EXECUTOR: runner
       RUNNER_IMAGE: coreteams-runner:dev
       RUNNER_NETWORK: coreteams
@@ -67,13 +94,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      s3:
+        condition: service_healthy
       runner-image:
         condition: service_completed_successfully
     restart: unless-stopped
 
   frontend:
     build:
-      context: frontend
+      context: .
+      dockerfile: frontend/Dockerfile
     image: coreteams-frontend:dev
     environment:
       BACKEND_URL: http://backend:8000
@@ -94,6 +124,7 @@ networks:
 
 volumes:
   postgres-data:
+  s3-data:
   # Файл SQLite прежней истории (перенос — python -m backend.transfer_sqlite), секрет
   # и транспорт шлюза runner.
   backend-data:

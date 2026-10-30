@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Artifact, Conversation, Event, Message, Project, Run
+from backend.storage import StoredFile
 from backend.public_events import (
     SAFE_FAILURE_CODES,
     SAFE_UNKNOWN_CODES,
@@ -642,7 +643,9 @@ async def append_artifact(
     size_bytes: int | None,
     truncated: bool,
     num_lines: int | None,
+    stored: StoredFile | None = None,
 ) -> Event:
+    """stored — исходные байты в объектном хранилище; тогда файл скачивается целиком."""
     event = await _append_event_in_transaction(
         session,
         run_id,
@@ -661,6 +664,9 @@ async def append_artifact(
             content=content,
             size_bytes=size_bytes,
             truncated=truncated,
+            storage_key=stored.key if stored else None,
+            sha256=stored.sha256 if stored else None,
+            content_type=stored.content_type if stored else None,
         )
     )
     await session.commit()

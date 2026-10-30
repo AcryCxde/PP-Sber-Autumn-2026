@@ -98,3 +98,17 @@ def test_event_ids_do_not_depend_on_facts() -> None:
     assert [d.payload["artifact_id"] for d in with_facts] == [
         d.payload["artifact_id"] for d in without
     ]
+
+
+def test_files_created_without_write_tool_become_artifacts() -> None:
+    files: JsonValue = {
+        "a.md": {"size_bytes": 1, "sha256": SHA256},
+        "report.docx": {"size_bytes": 2048, "sha256": "c" * 64},
+        "materials/brief.pdf": {"size_bytes": 10, "sha256": "d" * 64},
+        ".claude/settings.json": {"size_bytes": 5, "sha256": "e" * 64},
+    }
+    found = artifacts({"sha": "abc", "files": files})
+    by_path = {d.payload["path"]: d for d in found}
+    assert sorted(by_path) == ["a.md", "b.md", "report.docx"]
+    assert by_path["report.docx"].payload["size_bytes"] == 2048
+    assert by_path["report.docx"].payload["role_id"] is None

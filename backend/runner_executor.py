@@ -19,12 +19,11 @@ from typing import Any
 
 from backend.containers import ContainerError, ContainerManager
 from backend.models import Event
-from backend.parser import bounded_file_content
+from backend.artifact_files import save_agent_file
 from backend.materials import MATERIALS_DIR, conversation_materials, materials_note
 from backend.public_events import message_created_event, question_asked_event
 from backend.repository import (
     RunAcceptance,
-    append_artifact,
     append_event,
     finalize_run,
     mark_run_running,
@@ -90,15 +89,8 @@ async def run_via_runner(
             raise RunnerRunError("artifact_hash_mismatch")
         if "size_bytes" in payload and len(data) != payload["size_bytes"]:
             raise RunnerRunError("artifact_size_mismatch")
-        text = data.decode("utf-8", errors="replace")
-        bounded, size_bytes, truncated = bounded_file_content(
-            text, max_bytes=app_state.settings.artifact_max_download_bytes,
-        )
-        async with database.session() as session:
-            stored = await append_artifact(
-                session, run_id, path=payload["path"], content=bounded,
-                size_bytes=size_bytes, truncated=truncated, num_lines=text.count("\n") + 1,
-            )
+        # Байты как есть: бинарные файлы (docx, pdf, картинки) не перекодируются в текст.
+        stored = await save_agent_file(app_state, run_id, payload["path"], data)
         await deliver_event(stored)
         transport.confirm_saved(project, transport_run, payload["artifact_id"], {
             "artifact_id": payload["artifact_id"],
