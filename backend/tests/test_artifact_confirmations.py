@@ -286,6 +286,74 @@ async def test_terminal_confirmation_failure_notifies_the_waiting_runner_relay(t
         await database.dispose()
 
 
+async def test_failed_terminal_abandon_is_retried_after_conflict(tmp_path) -> None:
+    database = Database(database_url(tmp_path / "retry-terminal-abandon.db"))
+    await database.create_schema()
+    try:
+        run_id, project_id = await create_run_and_project(database)
+        await add_confirmation(database, run_id, project_id, "artifact-1")
+        transport = RecordingTransport([TransportError("storage_receipt_conflict")])
+
+        def unavailable(*args: object) -> None:
+            raise RuntimeError("transport unavailable")
+
+        transport.abandon = unavailable  # type: ignore[method-assign]
+        first = await reconcile_artifact_confirmations(
+            database, transport, confirmation_settings(), now=datetime.now(UTC),
+        )
+        assert first.conflicted == 1
+        async with database.session() as session:
+            row = await session.scalar(select(ArtifactConfirmation))
+            assert not row.abandon_delivered
+
+        abandoned: list[tuple[str, str, str]] = []
+        transport.abandon = lambda project, run, code: abandoned.append((project, run, code))  # type: ignore[method-assign]
+        await reconcile_artifact_confirmations(
+            database, transport, confirmation_settings(),
+            now=datetime.now(UTC) + timedelta(seconds=6),
+        )
+
+        assert abandoned == [(project_id, run_id, "artifact_confirmation_failed")]
+        async with database.session() as session:
+            row = await session.scalar(select(ArtifactConfirmation))
+            assert row.abandon_delivered
+    finally:
+        await database.dispose()
+
+
+async def test_terminal_confirmation_failure_replaces_pending_unknown_code(tmp_path) -> None:
+    database = Database(database_url(tmp_path / "pending-unknown.db"))
+    await database.create_schema()
+    try:
+        run_id, project_id = await create_run_and_project(database)
+        await add_confirmation(database, run_id, project_id, "artifact-1")
+        async with database.session() as session:
+            await finalize_run(
+                session,
+                run_id,
+                assistant_content=None,
+                status="outcome_unknown",
+                exit_code=None,
+                error_code="artifact_confirmation_pending",
+            )
+
+        result = await reconcile_artifact_confirmations(
+            database,
+            RecordingTransport([TransportError("storage_receipt_conflict")]),
+            confirmation_settings(),
+            now=datetime.now(UTC),
+        )
+
+        assert len(result.terminal_events) == 1
+        assert result.terminal_events[0].payload["error_code"] == "artifact_confirmation_failed"
+        async with database.session() as session:
+            run = await session.get(Run, run_id)
+            assert run is not None
+            assert run.error_code == "artifact_confirmation_failed"
+    finally:
+        await database.dispose()
+
+
 async def test_terminal_confirmation_failure_abandons_transport_for_terminal_backend_run(
     tmp_path,
 ) -> None:
@@ -326,7 +394,8 @@ async def test_terminal_confirmation_failure_abandons_transport_for_terminal_bac
             database, transport, confirmation_settings(), now=datetime.now(UTC),
         )
 
-        assert result.terminal_events == ()
+        assert len(result.terminal_events) == 1
+        assert result.terminal_events[0].payload["error_code"] == "artifact_confirmation_failed"
         assert transport.status(project_id, run_id)["status"] == "outcome_unknown"
         assert transport.active_run(project_id) is None
     finally:

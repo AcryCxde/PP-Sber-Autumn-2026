@@ -896,6 +896,57 @@ async def claim_due_artifact_confirmations(
     return claims
 
 
+async def claim_pending_artifact_abandons(
+    session: AsyncSession,
+    *,
+    limit: int,
+) -> list[ArtifactConfirmationClaim]:
+    """Claim bounded terminal transport notices not confirmed as delivered."""
+    candidate_ids = list(await session.scalars(
+        select(ArtifactConfirmation.id)
+        .where(
+            ArtifactConfirmation.status == "conflicted",
+            ArtifactConfirmation.abandon_delivered.is_(False),
+        )
+        .order_by(ArtifactConfirmation.updated_at, ArtifactConfirmation.id)
+        .limit(limit),
+    ))
+    return [
+        ArtifactConfirmationClaim(
+            id=confirmation.id,
+            run_id=confirmation.run_id,
+            project_id=confirmation.project_id,
+            transport_run_id=confirmation.transport_run_id,
+            artifact_id=confirmation.artifact_id,
+            receipt=MappingProxyType(dict(confirmation.receipt)),
+            attempts=confirmation.attempts,
+            claimed_at=confirmation.claimed_at or datetime.now(UTC),
+            created_at=confirmation.created_at,
+            recovered_exhausted_claim=False,
+        )
+        for confirmation_id in candidate_ids
+        if (confirmation := await session.get(ArtifactConfirmation, confirmation_id)) is not None
+    ]
+
+
+async def mark_artifact_abandon_delivered(
+    session: AsyncSession,
+    claim: ArtifactConfirmationClaim,
+) -> bool:
+    changed = await session.scalar(
+        update(ArtifactConfirmation)
+        .where(
+            ArtifactConfirmation.id == claim.id,
+            ArtifactConfirmation.status == "conflicted",
+            ArtifactConfirmation.abandon_delivered.is_(False),
+        )
+        .values(abandon_delivered=True, updated_at=datetime.now(UTC))
+        .returning(ArtifactConfirmation.id)
+    )
+    await session.commit()
+    return changed is not None
+
+
 async def mark_artifact_confirmation_confirmed(
     session: AsyncSession,
     claim: ArtifactConfirmationClaim,
@@ -1001,8 +1052,26 @@ async def finalize_artifact_confirmation_failure(
 ) -> Event | None:
     """Terminally mark the owning run unknown when artifact delivery cannot converge."""
     run = await session.get(Run, run_id)
-    if run is None or run.status in TERMINAL_RUN_STATUSES:
+    if run is None:
         return None
+    if run.status in TERMINAL_RUN_STATUSES:
+        if not (
+            run.status == "outcome_unknown"
+            and run.error_code == "artifact_confirmation_pending"
+        ):
+            return None
+        conversation = await session.get(Conversation, run.conversation_id)
+        if conversation is None:
+            raise LookupError(f"Conversation {run.conversation_id} was not found")
+        run.error_code = "artifact_confirmation_failed"
+        terminal_event = await _append_event_in_transaction(
+            session,
+            run_id,
+            _terminal_event_data(run, conversation, None),
+            allow_terminal=True,
+        )
+        await session.commit()
+        return terminal_event
     finalization = await finalize_run(
         session,
         run_id,
