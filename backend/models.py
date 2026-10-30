@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
@@ -168,6 +169,10 @@ class Run(Base):
         back_populates="run",
         cascade="all, delete-orphan",
     )
+    artifact_confirmations: Mapped[list[ArtifactConfirmation]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
 
 
 class Message(Base):
@@ -251,6 +256,59 @@ class Artifact(Base):
     )
 
     run: Mapped[Run] = relationship(back_populates="artifacts")
+
+
+class ArtifactConfirmation(Base):
+    __tablename__ = "artifact_confirmations"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'confirming', 'confirmed', 'conflicted')",
+            name="ck_artifact_confirmations_status",
+        ),
+        UniqueConstraint(
+            "run_id",
+            "artifact_id",
+            name="uq_artifact_confirmations_run_artifact",
+        ),
+        Index(
+            "ix_artifact_confirmations_status_next_attempt_at",
+            "status",
+            "next_attempt_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    transport_run_id: Mapped[str] = mapped_column(String(36))
+    artifact_id: Mapped[str] = mapped_column(String(64))
+    source_event_seq: Mapped[int] = mapped_column(Integer)
+    version_id: Mapped[str] = mapped_column(String(100))
+    receipt: Mapped[dict[str, Any]] = mapped_column(JSON)
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error_category: Mapped[str | None] = mapped_column(String(64))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    abandon_delivered: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+    run: Mapped[Run] = relationship(back_populates="artifact_confirmations")
 
 
 def empty_answers() -> list[list[str]]:

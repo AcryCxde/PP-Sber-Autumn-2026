@@ -6,7 +6,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
 from backend.db import Database
-from backend.models import Artifact, Conversation, Event, Message, Run
+from backend.models import Artifact, ArtifactConfirmation, Conversation, Event, Message, Run
 from backend.tests.databases import database_url
 from backend.repository import (
     RunAcceptanceError,
@@ -395,6 +395,38 @@ async def test_terminal_event_is_last_and_rejects_late_append(tmp_path) -> None:
             )
         assert events[-1].id == finalization.terminal_event.id
         assert events[-1].type == "run.completed"
+    finally:
+        await database.dispose()
+
+
+async def test_reconcile_orphaned_runs_keeps_retryable_artifact_confirmation(tmp_path) -> None:
+    database = Database(database_url(tmp_path / "orphaned-confirmation.db"))
+    await database.create_schema()
+
+    try:
+        async with database.session() as session:
+            created = await create_request(session, "Interrupted")
+        async with database.session() as session:
+            await mark_run_running(session, created.run_id)
+            session.add(ArtifactConfirmation(
+                run_id=created.run_id,
+                project_id="project-1",
+                transport_run_id=created.run_id,
+                artifact_id="artifact-1",
+                source_event_seq=1,
+                version_id="v1",
+                receipt={"artifact_id": "artifact-1", "version_id": "v1", "size_bytes": 1,
+                         "download": "/artifact"},
+                sha256="a" * 64,
+                size_bytes=1,
+                status="pending",
+            ))
+            await session.commit()
+        async with database.session() as session:
+            assert await reconcile_orphaned_runs(session) == []
+        async with database.session() as session:
+            run = await session.get(Run, created.run_id)
+            assert run is not None and run.status == "running"
     finally:
         await database.dispose()
 
