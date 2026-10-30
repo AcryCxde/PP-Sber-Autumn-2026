@@ -28,7 +28,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("project_id", sa.String(length=36), nullable=False),
-        sa.Column("artifact_id", sa.String(length=36), nullable=False),
+        sa.Column("artifact_id", sa.String(length=64), nullable=False),
         sa.Column("source_event_seq", sa.Integer(), nullable=False),
         sa.Column("version_id", sa.String(length=100), nullable=False),
         sa.Column("receipt", sa.JSON(), nullable=False),

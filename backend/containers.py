@@ -332,7 +332,10 @@ class ContainerManager:
         container = await asyncio.to_thread(self._get, self.names(project)["container"])
         if container is None:
             raise ContainerError("runner_container_missing")
-        chunks, _ = await asyncio.to_thread(container.get_archive, str(PROJECT_DIR / path))
+        try:
+            chunks, _ = await asyncio.to_thread(container.get_archive, str(PROJECT_DIR / path))
+        except Exception as error:
+            raise ContainerError("artifact_unreadable") from error
         return await asyncio.to_thread(_read_single_file, chunks, max_bytes=max_bytes)
 
     async def write_files(
