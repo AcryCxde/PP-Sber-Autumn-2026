@@ -7,7 +7,7 @@ from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import exists, select, update
+from sqlalchemy import case, exists, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -94,6 +94,7 @@ class ArtifactConfirmationClaim:
     attempts: int
     claimed_at: datetime
     created_at: datetime
+    recovered_exhausted_claim: bool
 
 
 # Заголовок пустого диалога, созданного ради вложений; первый запрос заменяет его.
@@ -833,24 +834,42 @@ async def claim_due_artifact_confirmations(
         (ArtifactConfirmation.status == "confirming")
         & (ArtifactConfirmation.claimed_at <= lease_expires_at)
     )
-    candidate_ids = list(await session.scalars(
-        select(ArtifactConfirmation.id)
-        .where(due, ArtifactConfirmation.attempts < max_attempts)
+    candidates = (await session.execute(
+        select(
+            ArtifactConfirmation.id,
+            ArtifactConfirmation.status,
+            ArtifactConfirmation.attempts,
+        )
+        .where(
+            due,
+            (ArtifactConfirmation.attempts < max_attempts)
+            | (
+                (ArtifactConfirmation.status == "confirming")
+                & (ArtifactConfirmation.attempts == max_attempts)
+            ),
+        )
         .order_by(ArtifactConfirmation.next_attempt_at, ArtifactConfirmation.created_at, ArtifactConfirmation.id)
         .limit(limit),
-    ))
+    )).all()
     claims: list[ArtifactConfirmationClaim] = []
-    for confirmation_id in candidate_ids:
+    for confirmation_id, prior_status, prior_attempts in candidates:
         claimed = await session.scalar(
             update(ArtifactConfirmation)
             .where(
                 ArtifactConfirmation.id == confirmation_id,
-                ArtifactConfirmation.attempts < max_attempts,
                 due,
+                (ArtifactConfirmation.attempts < max_attempts)
+                | (
+                    (ArtifactConfirmation.status == "confirming")
+                    & (ArtifactConfirmation.attempts == max_attempts)
+                ),
             )
             .values(
                 status="confirming",
-                attempts=ArtifactConfirmation.attempts + 1,
+                attempts=case(
+                    (ArtifactConfirmation.attempts < max_attempts, ArtifactConfirmation.attempts + 1),
+                    else_=ArtifactConfirmation.attempts,
+                ),
                 claimed_at=now,
                 next_attempt_at=None,
                 error_category=None,
@@ -869,6 +888,9 @@ async def claim_due_artifact_confirmations(
                 attempts=claimed.attempts,
                 claimed_at=now,
                 created_at=claimed.created_at,
+                recovered_exhausted_claim=(
+                    prior_status == "confirming" and prior_attempts == max_attempts
+                ),
             ))
     await session.commit()
     return claims

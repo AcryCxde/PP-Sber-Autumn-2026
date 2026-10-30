@@ -361,6 +361,34 @@ async def test_concurrent_claims_are_disjoint_and_stale_claim_is_recovered(tmp_p
         await database.dispose()
 
 
+async def test_stale_final_claim_is_terminalized_without_an_extra_transport_attempt(tmp_path) -> None:
+    database = Database(database_url(tmp_path / "stale-final-claim.db"))
+    await database.create_schema()
+    try:
+        run_id, project_id = await create_run_and_project(database)
+        start = datetime.now(UTC)
+        await add_confirmation(
+            database, run_id, project_id, "artifact-1", status="confirming",
+            claimed_at=start, attempts=3,
+        )
+
+        transport = RecordingTransport()
+        result = await reconcile_artifact_confirmations(
+            database, transport, confirmation_settings(),
+            now=start + timedelta(seconds=6),
+        )
+
+        assert transport.calls == []
+        assert (result.claimed, result.conflicted, result.rescheduled) == (1, 1, 0)
+        async with database.session() as session:
+            row = await session.scalar(select(ArtifactConfirmation))
+            assert (row.status, row.attempts, row.error_category) == (
+                "conflicted", 3, "attempts_exhausted",
+            )
+    finally:
+        await database.dispose()
+
+
 async def test_batch_completion_and_attempt_cap(tmp_path) -> None:
     database = Database(database_url(tmp_path / "batch.db"))
     await database.create_schema()
