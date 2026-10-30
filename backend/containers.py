@@ -56,7 +56,8 @@ ENV_ALLOW = re.compile(
 ENV_DENY = re.compile(r"TOKEN|KEY|SECRET|PASSWORD")
 # Коды выхода ctrunner, после которых перезапуск не поможет (см. runner/README.md).
 FATAL_EXIT_CODES = {65: "runner_state_corrupt", 78: "runner_config_rejected"}
-MAX_ARTIFACT_READ_BYTES = 64 * 1024 * 1024
+# Docker returns a tar stream; an empty POSIX tar archive alone occupies 10 KiB.
+TAR_ARCHIVE_OVERHEAD_BYTES = 10 * 1024
 MATERIALS_WAIT_SECONDS = 60.0
 # Запись активности в SQLite не чаще раза в минуту: для таймаутов в минутах и днях этого хватает.
 ACTIVITY_WRITE_EVERY_SECONDS = 60.0
@@ -123,16 +124,33 @@ def _tar_directory(root: Path) -> bytes:
     return buffer.getvalue()
 
 
-def _read_single_file(chunks: Any) -> bytes:
-    raw = b"".join(chunks)
-    with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
-        member = next((m for m in tar.getmembers() if m.isfile()), None)
-        if member is None or member.size > MAX_ARTIFACT_READ_BYTES:
-            raise ContainerError("artifact_unreadable")
-        stream = tar.extractfile(member)
-        if stream is None:
-            raise ContainerError("artifact_unreadable")
-        return stream.read()
+def _read_single_file(chunks: Any, *, max_bytes: int) -> bytes:
+    """Extract one regular file without buffering more than its limit plus tar overhead."""
+    budget = max_bytes + TAR_ARCHIVE_OVERHEAD_BYTES
+    raw = bytearray()
+    try:
+        for chunk in chunks:
+            if len(chunk) > budget - len(raw):
+                raise ContainerError("artifact_unreadable")
+            raw.extend(chunk)
+        with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
+            member = next((member for member in tar if member.isfile()), None)
+            if member is None or member.size > max_bytes:
+                raise ContainerError("artifact_unreadable")
+            stream = tar.extractfile(member)
+            if stream is None:
+                raise ContainerError("artifact_unreadable")
+            data = stream.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise ContainerError("artifact_unreadable")
+            return data
+    except ContainerError:
+        raise
+    except (tarfile.TarError, OSError, ValueError) as error:
+        raise ContainerError("artifact_unreadable") from error
+    except Exception as error:
+        # Docker's lazy archive iterator can fail after get_archive() has returned.
+        raise ContainerError("artifact_unreadable") from error
 
 
 class ContainerManager:
@@ -310,12 +328,12 @@ class ContainerManager:
             if volume is not None:
                 volume.remove(force=True)
 
-    async def read_file(self, project: str, path: str) -> bytes:
+    async def read_file(self, project: str, path: str, *, max_bytes: int) -> bytes:
         container = await asyncio.to_thread(self._get, self.names(project)["container"])
         if container is None:
             raise ContainerError("runner_container_missing")
         chunks, _ = await asyncio.to_thread(container.get_archive, str(PROJECT_DIR / path))
-        return await asyncio.to_thread(_read_single_file, chunks)
+        return await asyncio.to_thread(_read_single_file, chunks, max_bytes=max_bytes)
 
     async def write_files(
         self,
