@@ -47,6 +47,7 @@ async def test_stage_runner_artifact_persists_exact_utf8_snapshot(
                 session,
                 run_id,
                 project_id=project_id,
+                transport_run_id=run_id,
                 artifact_id="artifact-1",
                 path="result.txt",
                 content=content,
@@ -115,6 +116,7 @@ async def test_stage_runner_artifact_rejects_invalid_input_without_writes(
                     session,
                     run_id,
                     project_id=project_id,
+                    transport_run_id=run_id,
                     artifact_id="artifact-1",
                     path="result.txt",
                     content=content,
@@ -144,6 +146,7 @@ async def test_stage_runner_artifact_caller_rollback_leaves_no_rows(tmp_path) ->
                 session,
                 run_id,
                 project_id=project_id,
+                transport_run_id=run_id,
                 artifact_id="artifact-1",
                 path="result.txt",
                 content="atomic",
@@ -170,6 +173,7 @@ async def test_duplicate_artifact_identity_is_idempotent_and_conflicts_are_rejec
         source_bytes = b"duplicate"
         kwargs = {
             "project_id": project_id,
+            "transport_run_id": run_id,
             "artifact_id": "artifact-1",
             "path": "result.txt",
             "content": "duplicate",

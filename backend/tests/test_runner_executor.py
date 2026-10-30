@@ -331,6 +331,7 @@ def test_runner_startup_reconciles_before_orphaning_awaiting_storage(tmp_path, m
             confirmation = ArtifactConfirmation(
                 run_id=run.id,
                 project_id=project_id,
+                transport_run_id=run.id,
                 artifact_id="artifact-1",
                 source_event_seq=1,
                 version_id="v1",
@@ -415,7 +416,8 @@ def test_runner_startup_conflict_never_false_completes(tmp_path, monkeypatch):
             await session.flush()
             project_id = conversation.id.lower()
             session.add(ArtifactConfirmation(
-                run_id=run.id, project_id=project_id, artifact_id="artifact-1", source_event_seq=1,
+                run_id=run.id, project_id=project_id, transport_run_id=run.id,
+                artifact_id="artifact-1", source_event_seq=1,
                 version_id="v1", receipt={"artifact_id": "artifact-1", "version_id": "v1",
                                              "size_bytes": 1, "download": "/artifact"},
                 sha256="a" * 64, size_bytes=1,
@@ -530,8 +532,9 @@ def test_conversation_from_cli_mode_requires_reset_before_runner(tmp_path):
         assert docker.started == []
 
 
-def test_agent_question_is_answered_by_next_message(tmp_path):
+def test_agent_question_answer_confirms_artifact_on_original_transport_run(tmp_path):
     docker = FakeDocker()
+    data = b"# Result\n"
     question = {"text": "Какой формат?", "header": None, "multi_select": False, "allow_custom": True,
                 "options": [{"label": "md", "description": None}, {"label": "txt", "description": None}]}
 
@@ -539,8 +542,12 @@ def test_agent_question_is_answered_by_next_message(tmp_path):
         if command["kind"] == "message":
             return [("run.started", {}),
                     ("facilitator.question", {"question_id": "f1", "questions": [question]})]
+        container.files["/workspace/project/result.md"] = data
         return [("user.answer.accepted", {"question_id": "f1", "answers": command["answers"]}),
                 ("message.created", {"role_id": None, "text": "Сделал в md"}),
+                ("artifact.created", {"artifact_id": "result", "path": "result.md", "commit_sha": "v1",
+                                      "role_id": None, "size_bytes": len(data),
+                                      "sha256": hashlib.sha256(data).hexdigest()}),
                 ("run.completed", {})]
 
     app = make_runner_app(tmp_path, docker)
@@ -568,10 +575,15 @@ def test_agent_question_is_answered_by_next_message(tmp_path):
             "options": [{"label": "md", "description": None}, {"label": "txt", "description": None}],
         }]
         assert second[-1]["status"] == "completed"
-        assert second[-2]["content"] == "Сделал в md"
+        assert any(event.get("content") == "Сделал в md" for event in second)
         answer = runner.received[-1]
         assert answer["kind"] == "fork_answer" and answer["answers"] == {"Какой формат?": "md"}
         assert answer["id"] == second[0]["run_id"]
+        first_transport_run_id = runner.received[0]["id"]
+        assert first_transport_run_id != second[0]["run_id"]
+        assert [event["type"] for event in app.state.runner_transport.events(
+            conversation.lower(), first_transport_run_id,
+        )][-2:] == ["artifact.saved", "run.completed"]
         # Один контейнер на диалог: второй запрос не создавал новый.
         assert len(docker.started) == 1
 
