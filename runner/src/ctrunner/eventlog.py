@@ -112,9 +112,14 @@ class OpenFork:
 
 
 def open_forks(path: Path, turn_id: str) -> tuple[OpenFork, ...]:
-    """Развилки хода без ответа. `turn_interrupted` обнуляет набор: предыдущее восстановление
-    уже обработало их, поэтому при старте процесса остаются ровно вопросы, висевшие при падении."""
+    """Развилки хода без ответа.
+
+    После `turn_interrupted` открытые развилки переносятся в следующий запуск. Первый новый
+    `fork_question` заменяет перенесённые развилки; последующие вопросы в этой попытке дополняют
+    набор.
+    """
     opened: dict[str, OpenFork] = {}
+    carried = False
     try:
         with path.open(encoding="utf-8") as f:
             for line in f:
@@ -123,11 +128,14 @@ def open_forks(path: Path, turn_id: str) -> tuple[OpenFork, ...]:
                     continue
                 kind, payload = row.get("kind"), row.get("payload")
                 if kind == EventKind.TURN_INTERRUPTED:
-                    opened.clear()
+                    carried = True
                 elif isinstance(payload, dict) and isinstance(
                     fork_id := payload.get("fork_id"), str
                 ):
                     if kind == EventKind.FORK_QUESTION:
+                        if carried:
+                            opened.clear()
+                            carried = False
                         opened[fork_id] = OpenFork(
                             fork_id, question_texts(payload.get("questions"))
                         )
