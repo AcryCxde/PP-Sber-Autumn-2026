@@ -56,8 +56,9 @@ ENV_ALLOW = re.compile(
 ENV_DENY = re.compile(r"TOKEN|KEY|SECRET|PASSWORD")
 # Коды выхода ctrunner, после которых перезапуск не поможет (см. runner/README.md).
 FATAL_EXIT_CODES = {65: "runner_state_corrupt", 78: "runner_config_rejected"}
-# Docker returns a tar stream; an empty POSIX tar archive alone occupies 10 KiB.
-TAR_ARCHIVE_OVERHEAD_BYTES = 10 * 1024
+# Docker returns a tar stream. Bound metadata and archive growth independently of payload.
+TAR_METADATA_BYTES = 64 * 1024
+TAR_ARCHIVE_TRAILER_BYTES = 1024
 MATERIALS_WAIT_SECONDS = 60.0
 # Запись активности в SQLite не чаще раза в минуту: для таймаутов в минутах и днях этого хватает.
 ACTIVITY_WRITE_EVERY_SECONDS = 60.0
@@ -124,24 +125,50 @@ def _tar_directory(root: Path) -> bytes:
     return buffer.getvalue()
 
 
+class _BoundedTarStream:
+    """Read a Docker archive incrementally without retaining its metadata."""
+
+    def __init__(self, chunks: Any, budget: int) -> None:
+        self._chunks = iter(chunks)
+        self._budget = budget
+        self._read = 0
+        self._remaining = memoryview(b"")
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            raise ContainerError("artifact_unreadable")
+        while len(self._remaining) < size:
+            chunk = next(self._chunks, None)
+            if chunk is None:
+                break
+            if not isinstance(chunk, bytes) or len(chunk) > self._budget - self._read:
+                raise ContainerError("artifact_unreadable")
+            self._read += len(chunk)
+            self._remaining = memoryview(self._remaining.tobytes() + chunk)
+        result = self._remaining[:size].tobytes()
+        self._remaining = self._remaining[len(result):]
+        return result
+
+
 def _read_single_file(chunks: Any, *, max_bytes: int) -> bytes:
-    """Extract one regular file without buffering more than its limit plus tar overhead."""
-    budget = max_bytes + TAR_ARCHIVE_OVERHEAD_BYTES
-    raw = bytearray()
+    """Extract exactly one regular file with bounded streamed tar metadata and payload."""
+    budget = max_bytes + TAR_METADATA_BYTES + TAR_ARCHIVE_TRAILER_BYTES
     try:
-        for chunk in chunks:
-            if len(chunk) > budget - len(raw):
-                raise ContainerError("artifact_unreadable")
-            raw.extend(chunk)
-        with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
-            member = next((member for member in tar if member.isfile()), None)
-            if member is None or member.size > max_bytes:
-                raise ContainerError("artifact_unreadable")
-            stream = tar.extractfile(member)
-            if stream is None:
-                raise ContainerError("artifact_unreadable")
-            data = stream.read(max_bytes + 1)
-            if len(data) > max_bytes:
+        stream = _BoundedTarStream(chunks, budget)
+        with tarfile.open(fileobj=stream, mode="r|*") as tar:
+            data: bytes | None = None
+            for member in tar:
+                if not member.isfile():
+                    continue
+                if data is not None or member.size > max_bytes:
+                    raise ContainerError("artifact_unreadable")
+                member_stream = tar.extractfile(member)
+                if member_stream is None:
+                    raise ContainerError("artifact_unreadable")
+                data = member_stream.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    raise ContainerError("artifact_unreadable")
+            if data is None:
                 raise ContainerError("artifact_unreadable")
             return data
     except ContainerError:

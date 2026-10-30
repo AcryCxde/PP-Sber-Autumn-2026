@@ -79,6 +79,31 @@ async def reconcile_artifact_confirmations(
     conflicted_confirmation_ids: set[str] = set()
     terminal_events: list[Event] = []
     for claim in claims:
+        if claim.recovered_exhausted_claim:
+            async with database.session() as session:
+                changed = await mark_artifact_confirmation_conflicted(
+                    session, claim, category="attempts_exhausted",
+                )
+            conflicted += int(changed)
+            if changed:
+                conflicted_confirmation_ids.add(claim.id)
+                async with database.session() as session:
+                    terminal_event = await finalize_artifact_confirmation_failure(session, claim.run_id)
+                if terminal_event is not None:
+                    terminal_events.append(terminal_event)
+                await asyncio.to_thread(
+                    transport.abandon,
+                    claim.project_id,
+                    claim.transport_run_id,
+                    "artifact_confirmation_failed",
+                )
+            logger.warning(
+                "Artifact confirmation stale final claim exhausted",
+                extra={"confirmation_id": claim.id, "run_id": claim.run_id,
+                       "category": "attempts_exhausted", "attempt": claim.attempts,
+                       "age_seconds": _age_seconds(claimed_at, claim.created_at)},
+            )
+            continue
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(
