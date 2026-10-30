@@ -283,6 +283,7 @@ class ArtifactConfirmation(Base):
         index=True,
     )
     project_id: Mapped[str] = mapped_column(String(36), index=True)
+    transport_run_id: Mapped[str] = mapped_column(String(36))
     artifact_id: Mapped[str] = mapped_column(String(64))
     source_event_seq: Mapped[int] = mapped_column(Integer)
     version_id: Mapped[str] = mapped_column(String(100))

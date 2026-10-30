@@ -33,7 +33,7 @@ async def add_confirmation(
 ) -> str:
     async with database.session() as session:
         confirmation = ArtifactConfirmation(
-            run_id=run_id, project_id=project_id, artifact_id=artifact_id,
+            run_id=run_id, project_id=project_id, transport_run_id=run_id, artifact_id=artifact_id,
             source_event_seq=1, version_id="v1",
             receipt={"artifact_id": artifact_id, "version_id": "v1", "size_bytes": 1,
                      "download": "/artifact"},
@@ -79,7 +79,7 @@ async def test_confirmation_unique_per_run_and_artifact(tmp_path) -> None:
         await add_confirmation(database, run_id, project_id, "artifact-1")
         async with database.session() as session:
             session.add(ArtifactConfirmation(
-                run_id=run_id, project_id=project_id, artifact_id="artifact-1",
+                run_id=run_id, project_id=project_id, transport_run_id=run_id, artifact_id="artifact-1",
                 source_event_seq=2, version_id="v2", receipt={}, sha256="b" * 64, size_bytes=2,
             ))
             with pytest.raises(IntegrityError):

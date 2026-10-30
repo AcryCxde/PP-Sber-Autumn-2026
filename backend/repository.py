@@ -88,6 +88,7 @@ class ArtifactConfirmationClaim:
     id: str
     run_id: str
     project_id: str
+    transport_run_id: str
     artifact_id: str
     receipt: Mapping[str, object]
     attempts: int
@@ -674,6 +675,7 @@ async def stage_runner_artifact(
     run_id: str,
     *,
     project_id: str,
+    transport_run_id: str,
     artifact_id: str,
     path: str,
     content: str,
@@ -706,6 +708,7 @@ async def stage_runner_artifact(
     if existing_confirmation is not None:
         if (
             existing_confirmation.project_id != project_id
+            or existing_confirmation.transport_run_id != transport_run_id
             or existing_confirmation.version_id != version_id
             or existing_confirmation.sha256 != sha256
             or existing_confirmation.size_bytes != len(source_bytes)
@@ -753,6 +756,7 @@ async def stage_runner_artifact(
     confirmation = ArtifactConfirmation(
         run_id=run_id,
         project_id=project_id,
+        transport_run_id=transport_run_id,
         artifact_id=artifact_id,
         source_event_seq=event.seq,
         version_id=version_id,
@@ -775,6 +779,7 @@ async def stage_runner_artifact(
             Event.type,
             Event.payload,
             ArtifactConfirmation.project_id,
+            ArtifactConfirmation.transport_run_id,
             ArtifactConfirmation.artifact_id,
             ArtifactConfirmation.version_id,
             ArtifactConfirmation.receipt,
@@ -793,7 +798,7 @@ async def stage_runner_artifact(
     row = persisted.one_or_none()
     expected = (
         run_id, event.seq, path, content, len(source_bytes), False,
-        "artifact.saved", event.payload, project_id, artifact_id, version_id,
+        "artifact.saved", event.payload, project_id, transport_run_id, artifact_id, version_id,
         receipt, sha256, len(source_bytes), "pending",
     )
     if row is None or tuple(row) != expected:
@@ -858,6 +863,7 @@ async def claim_due_artifact_confirmations(
                 id=claimed.id,
                 run_id=claimed.run_id,
                 project_id=claimed.project_id,
+                transport_run_id=claimed.transport_run_id,
                 artifact_id=claimed.artifact_id,
                 receipt=MappingProxyType(dict(claimed.receipt)),
                 attempts=claimed.attempts,

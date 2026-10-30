@@ -84,7 +84,7 @@ async def reconcile_artifact_confirmations(
                 asyncio.to_thread(
                     transport.confirm_saved,
                     claim.project_id,
-                    claim.run_id,
+                    claim.transport_run_id,
                     claim.artifact_id,
                     dict(claim.receipt),
                 ),
@@ -111,7 +111,7 @@ async def reconcile_artifact_confirmations(
                     await asyncio.to_thread(
                         transport.abandon,
                         claim.project_id,
-                        claim.run_id,
+                        claim.transport_run_id,
                         "artifact_confirmation_failed",
                     )
                 logger.warning(
@@ -152,7 +152,7 @@ async def reconcile_artifact_confirmations(
                 await asyncio.to_thread(
                     transport.abandon,
                     claim.project_id,
-                    claim.run_id,
+                    claim.transport_run_id,
                     "artifact_confirmation_failed",
                 )
             logger.warning(

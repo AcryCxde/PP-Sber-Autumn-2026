@@ -108,6 +108,7 @@ async def run_via_runner(
                     session,
                     run_id,
                     project_id=project,
+                    transport_run_id=transport_run,
                     artifact_id=payload["artifact_id"],
                     path=payload["path"],
                     content=content,

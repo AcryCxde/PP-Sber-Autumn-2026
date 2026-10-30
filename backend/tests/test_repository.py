@@ -411,6 +411,7 @@ async def test_reconcile_orphaned_runs_keeps_retryable_artifact_confirmation(tmp
             session.add(ArtifactConfirmation(
                 run_id=created.run_id,
                 project_id="project-1",
+                transport_run_id=created.run_id,
                 artifact_id="artifact-1",
                 source_event_seq=1,
                 version_id="v1",
