@@ -64,13 +64,18 @@ async def _deliver_terminal_abandon(
     database: Database,
     transport: RunnerTransport,
     claim: ArtifactConfirmationClaim,
+    *,
+    timeout_seconds: float,
 ) -> None:
     try:
-        await asyncio.to_thread(
-            transport.abandon,
-            claim.project_id,
-            claim.transport_run_id,
-            "artifact_confirmation_failed",
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                transport.abandon,
+                claim.project_id,
+                claim.transport_run_id,
+                "artifact_confirmation_failed",
+            ),
+            timeout=timeout_seconds,
         )
     except Exception:
         logger.exception(
@@ -108,21 +113,35 @@ async def reconcile_artifact_confirmations(
             session, limit=settings.artifact_confirmation_batch_size,
         )
     for abandon_claim in abandon_claims:
-        await _deliver_terminal_abandon(database, transport, abandon_claim)
+        await _deliver_terminal_abandon(
+            database,
+            transport,
+            abandon_claim,
+            timeout_seconds=settings.artifact_confirmation_timeout_seconds,
+        )
     for claim in claims:
         if claim.recovered_exhausted_claim:
             async with database.session() as session:
                 changed = await mark_artifact_confirmation_conflicted(
                     session, claim, category="attempts_exhausted",
                 )
+                terminal_event = (
+                    await finalize_artifact_confirmation_failure(
+                        session, claim.run_id, commit=False,
+                    )
+                    if changed else None
+                )
+                if changed:
+                    await session.commit()
             conflicted += int(changed)
             if changed:
                 conflicted_confirmation_ids.add(claim.id)
-                async with database.session() as session:
-                    terminal_event = await finalize_artifact_confirmation_failure(session, claim.run_id)
                 if terminal_event is not None:
                     terminal_events.append(terminal_event)
-                await _deliver_terminal_abandon(database, transport, claim)
+                await _deliver_terminal_abandon(
+                    database, transport, claim,
+                    timeout_seconds=settings.artifact_confirmation_timeout_seconds,
+                )
             logger.warning(
                 "Artifact confirmation stale final claim exhausted",
                 extra={"confirmation_id": claim.id, "run_id": claim.run_id,
@@ -150,16 +169,23 @@ async def reconcile_artifact_confirmations(
                     changed = await mark_artifact_confirmation_conflicted(
                         session, claim, category=category,
                     )
+                    terminal_event = (
+                        await finalize_artifact_confirmation_failure(
+                            session, claim.run_id, commit=False,
+                        )
+                        if changed else None
+                    )
+                    if changed:
+                        await session.commit()
                 conflicted += int(changed)
                 if changed:
                     conflicted_confirmation_ids.add(claim.id)
-                    async with database.session() as session:
-                        terminal_event = await finalize_artifact_confirmation_failure(
-                            session, claim.run_id,
-                        )
                     if terminal_event is not None:
                         terminal_events.append(terminal_event)
-                    await _deliver_terminal_abandon(database, transport, claim)
+                    await _deliver_terminal_abandon(
+                        database, transport, claim,
+                        timeout_seconds=settings.artifact_confirmation_timeout_seconds,
+                    )
                 logger.warning(
                     "Artifact confirmation conflicted",
                     extra={"confirmation_id": claim.id, "run_id": claim.run_id,
@@ -172,12 +198,17 @@ async def reconcile_artifact_confirmations(
         else:
             async with database.session() as session:
                 changed = await mark_artifact_confirmation_confirmed(session, claim)
+                terminal_event = (
+                    await finalize_artifact_confirmation_success(
+                        session, claim.run_id, commit=False,
+                    )
+                    if changed else None
+                )
+                if changed:
+                    await session.commit()
             confirmed += int(changed)
-            if changed:
-                async with database.session() as session:
-                    terminal_event = await finalize_artifact_confirmation_success(session, claim.run_id)
-                if terminal_event is not None:
-                    terminal_events.append(terminal_event)
+            if terminal_event is not None:
+                terminal_events.append(terminal_event)
             logger.info(
                 "Artifact confirmation delivered",
                 extra={"confirmation_id": claim.id, "run_id": claim.run_id,
@@ -191,16 +222,23 @@ async def reconcile_artifact_confirmations(
                 changed = await mark_artifact_confirmation_conflicted(
                     session, claim, category="attempts_exhausted",
                 )
+                terminal_event = (
+                    await finalize_artifact_confirmation_failure(
+                        session, claim.run_id, commit=False,
+                    )
+                    if changed else None
+                )
+                if changed:
+                    await session.commit()
             conflicted += int(changed)
             if changed:
                 conflicted_confirmation_ids.add(claim.id)
-                async with database.session() as session:
-                    terminal_event = await finalize_artifact_confirmation_failure(
-                        session, claim.run_id,
-                    )
                 if terminal_event is not None:
                     terminal_events.append(terminal_event)
-                await _deliver_terminal_abandon(database, transport, claim)
+                await _deliver_terminal_abandon(
+                    database, transport, claim,
+                    timeout_seconds=settings.artifact_confirmation_timeout_seconds,
+                )
             logger.warning(
                 "Artifact confirmation attempts exhausted",
                 extra={"confirmation_id": claim.id, "run_id": claim.run_id,

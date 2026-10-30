@@ -549,6 +549,7 @@ async def finalize_run(
     turns: int | None = None,
     error: str | None = None,
     error_code: str | None = None,
+    commit: bool = True,
 ) -> RunFinalization:
     del error
     if status not in TERMINAL_RUN_STATUSES:
@@ -578,7 +579,8 @@ async def finalize_run(
                 _terminal_event_data(run, conversation, assistant_message),
                 allow_terminal=True,
             )
-            await session.commit()
+            if commit:
+                await session.commit()
         return RunFinalization(
             assistant_message=assistant_message,
             terminal_event=terminal_event,
@@ -651,7 +653,8 @@ async def finalize_run(
         _terminal_event_data(run, conversation, assistant_message),
         allow_terminal=True,
     )
-    await session.commit()
+    if commit:
+        await session.commit()
     return RunFinalization(
         assistant_message=assistant_message,
         terminal_event=terminal_event,
@@ -962,7 +965,6 @@ async def mark_artifact_confirmation_confirmed(
                 error_category=None, updated_at=datetime.now(UTC))
         .returning(ArtifactConfirmation.id)
     )
-    await session.commit()
     return changed is not None
 
 
@@ -984,7 +986,6 @@ async def mark_artifact_confirmation_conflicted(
                 error_category=category, updated_at=datetime.now(UTC))
         .returning(ArtifactConfirmation.id)
     )
-    await session.commit()
     return changed is not None
 
 
@@ -1048,6 +1049,8 @@ async def append_artifact(
 async def finalize_artifact_confirmation_success(
     session: AsyncSession,
     run_id: str,
+    *,
+    commit: bool = True,
 ) -> Event | None:
     """Promote a terminal run withheld solely for pending artifact delivery."""
     run = await session.get(Run, run_id)
@@ -1085,13 +1088,16 @@ async def finalize_artifact_confirmation_success(
         _terminal_event_data(run, conversation, assistant_message),
         allow_terminal=True,
     )
-    await session.commit()
+    if commit:
+        await session.commit()
     return terminal_event
 
 
 async def finalize_artifact_confirmation_failure(
     session: AsyncSession,
     run_id: str,
+    *,
+    commit: bool = True,
 ) -> Event | None:
     """Terminally mark the owning run unknown when artifact delivery cannot converge."""
     run = await session.get(Run, run_id)
@@ -1113,7 +1119,8 @@ async def finalize_artifact_confirmation_failure(
             _terminal_event_data(run, conversation, None),
             allow_terminal=True,
         )
-        await session.commit()
+        if commit:
+            await session.commit()
         return terminal_event
     finalization = await finalize_run(
         session,
@@ -1123,6 +1130,7 @@ async def finalize_artifact_confirmation_failure(
         exit_code=run.exit_code,
         session_id=None,
         error_code="artifact_confirmation_failed",
+        commit=commit,
     )
     return finalization.terminal_event
 
