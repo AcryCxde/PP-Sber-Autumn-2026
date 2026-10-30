@@ -89,7 +89,7 @@ def continuation_prompt(step: Continue, asked: Sequence[str] = ()) -> str:
 def _unanswered_block(asked: Sequence[str]) -> str:
     if not asked:
         return ""
-    listed = "\n".join(f"- {question}" for question in asked)
+    listed = "\n".join(f"- {' '.join(question.split())}" for question in asked)
     return (
         "\n\nПеред прерыванием ты задал пользователю вопросы через AskUserQuestion, "
         f"ответ получен не был:\n{listed}\n"
