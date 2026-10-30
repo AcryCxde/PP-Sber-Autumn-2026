@@ -297,6 +297,7 @@ class ArtifactConfirmation(Base):
         DateTime(timezone=True),
     )
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    abandon_delivered: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,

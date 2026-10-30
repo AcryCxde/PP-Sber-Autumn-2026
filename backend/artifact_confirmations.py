@@ -11,7 +11,9 @@ from typing import TYPE_CHECKING
 from backend.repository import (
     ArtifactConfirmationClaim,
     claim_due_artifact_confirmations,
+    claim_pending_artifact_abandons,
     finalize_artifact_confirmation_failure,
+    mark_artifact_abandon_delivered,
     mark_artifact_confirmation_conflicted,
     mark_artifact_confirmation_confirmed,
     reschedule_artifact_confirmation,
@@ -57,6 +59,28 @@ def _age_seconds(now: datetime, created_at: datetime) -> float:
     return max(0.0, (now - created_at).total_seconds())
 
 
+async def _deliver_terminal_abandon(
+    database: Database,
+    transport: RunnerTransport,
+    claim: ArtifactConfirmationClaim,
+) -> None:
+    try:
+        await asyncio.to_thread(
+            transport.abandon,
+            claim.project_id,
+            claim.transport_run_id,
+            "artifact_confirmation_failed",
+        )
+    except Exception:
+        logger.exception(
+            "Artifact confirmation terminal transport abandon failed",
+            extra={"confirmation_id": claim.id, "run_id": claim.run_id},
+        )
+    else:
+        async with database.session() as session:
+            await mark_artifact_abandon_delivered(session, claim)
+
+
 async def reconcile_artifact_confirmations(
     database: Database,
     transport: RunnerTransport,
@@ -78,6 +102,12 @@ async def reconcile_artifact_confirmations(
     confirmed = conflicted = rescheduled = 0
     conflicted_confirmation_ids: set[str] = set()
     terminal_events: list[Event] = []
+    async with database.session() as session:
+        abandon_claims = await claim_pending_artifact_abandons(
+            session, limit=settings.artifact_confirmation_batch_size,
+        )
+    for abandon_claim in abandon_claims:
+        await _deliver_terminal_abandon(database, transport, abandon_claim)
     for claim in claims:
         if claim.recovered_exhausted_claim:
             async with database.session() as session:
@@ -91,12 +121,7 @@ async def reconcile_artifact_confirmations(
                     terminal_event = await finalize_artifact_confirmation_failure(session, claim.run_id)
                 if terminal_event is not None:
                     terminal_events.append(terminal_event)
-                await asyncio.to_thread(
-                    transport.abandon,
-                    claim.project_id,
-                    claim.transport_run_id,
-                    "artifact_confirmation_failed",
-                )
+                await _deliver_terminal_abandon(database, transport, claim)
             logger.warning(
                 "Artifact confirmation stale final claim exhausted",
                 extra={"confirmation_id": claim.id, "run_id": claim.run_id,
@@ -133,12 +158,7 @@ async def reconcile_artifact_confirmations(
                         )
                     if terminal_event is not None:
                         terminal_events.append(terminal_event)
-                    await asyncio.to_thread(
-                        transport.abandon,
-                        claim.project_id,
-                        claim.transport_run_id,
-                        "artifact_confirmation_failed",
-                    )
+                    await _deliver_terminal_abandon(database, transport, claim)
                 logger.warning(
                     "Artifact confirmation conflicted",
                     extra={"confirmation_id": claim.id, "run_id": claim.run_id,
@@ -174,12 +194,7 @@ async def reconcile_artifact_confirmations(
                     )
                 if terminal_event is not None:
                     terminal_events.append(terminal_event)
-                await asyncio.to_thread(
-                    transport.abandon,
-                    claim.project_id,
-                    claim.transport_run_id,
-                    "artifact_confirmation_failed",
-                )
+                await _deliver_terminal_abandon(database, transport, claim)
             logger.warning(
                 "Artifact confirmation attempts exhausted",
                 extra={"confirmation_id": claim.id, "run_id": claim.run_id,
