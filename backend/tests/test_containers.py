@@ -224,6 +224,19 @@ def test_read_file_stops_consuming_archive_after_budget(setup):
     assert consumed == [first]
 
 
+def test_read_file_translates_get_archive_failure(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+
+    def get_archive(path):
+        raise RuntimeError("daemon unavailable")
+
+    container.get_archive = get_archive
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
+
+
 def test_read_file_translates_archive_iterator_failure(setup):
     manager, _, docker = setup
     asyncio.run(manager.ensure_running("p1"))

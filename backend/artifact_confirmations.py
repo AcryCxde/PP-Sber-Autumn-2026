@@ -149,12 +149,12 @@ async def reconcile_artifact_confirmations(
                     )
                 if terminal_event is not None:
                     terminal_events.append(terminal_event)
-                    await asyncio.to_thread(
-                        transport.abandon,
-                        claim.project_id,
-                        claim.run_id,
-                        "artifact_confirmation_failed",
-                    )
+                await asyncio.to_thread(
+                    transport.abandon,
+                    claim.project_id,
+                    claim.run_id,
+                    "artifact_confirmation_failed",
+                )
             logger.warning(
                 "Artifact confirmation attempts exhausted",
                 extra={"confirmation_id": claim.id, "run_id": claim.run_id,
