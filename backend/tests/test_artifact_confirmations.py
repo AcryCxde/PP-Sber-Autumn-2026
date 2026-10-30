@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from backend.artifact_confirmations import reconcile_artifact_confirmations
 from backend.config import Settings
 from backend.db import Database
-from backend.models import ArtifactConfirmation, Conversation, Project, Run, User
+from backend.models import ArtifactConfirmation, Conversation, Event, Project, Run, User
 from backend.repository import claim_due_artifact_confirmations, finalize_run
 from backend.runner_transport import RunnerTransport, TransportError
 from backend.tests.databases import database_url
@@ -317,6 +317,47 @@ async def test_failed_terminal_abandon_is_retried_after_conflict(tmp_path) -> No
         async with database.session() as session:
             row = await session.scalar(select(ArtifactConfirmation))
             assert row.abandon_delivered
+    finally:
+        await database.dispose()
+
+
+async def test_successful_confirmation_promotes_pending_terminal_run(tmp_path) -> None:
+    database = Database(database_url(tmp_path / "pending-success.db"))
+    await database.create_schema()
+    try:
+        run_id, project_id = await create_run_and_project(database)
+        await add_confirmation(database, run_id, project_id, "artifact-1")
+        async with database.session() as session:
+            await finalize_run(
+                session,
+                run_id,
+                assistant_content="completed response",
+                status="completed",
+                exit_code=0,
+                session_id="runner-session",
+            )
+
+        result = await reconcile_artifact_confirmations(
+            database, RecordingTransport(), confirmation_settings(), now=datetime.now(UTC),
+        )
+
+        assert result.confirmed == 1
+        async with database.session() as session:
+            run = await session.get(Run, run_id)
+            conversation = await session.get(Conversation, run.conversation_id)
+            assert run is not None
+            assert (run.status, run.error_code, run.claude_session_id) == (
+                "completed", None, "runner-session",
+            )
+            assert (conversation.context_state, conversation.claude_session_id) == (
+                "active", "runner-session",
+            )
+            terminal_events = list(await session.scalars(
+                select(Event).where(Event.run_id == run_id).order_by(Event.seq)
+            ))
+            assert [event.type for event in terminal_events[-2:]] == [
+                "run.outcome_unknown", "run.completed",
+            ]
     finally:
         await database.dispose()
 
