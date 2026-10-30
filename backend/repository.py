@@ -603,7 +603,6 @@ async def finalize_run(
         if confirmation_pending:
             status = "outcome_unknown"
             error_code = "artifact_confirmation_pending"
-            session_id = None
 
     if assistant_content:
         assistant_message = Message(
@@ -1044,6 +1043,50 @@ async def append_artifact(
     )
     await session.commit()
     return event
+
+
+async def finalize_artifact_confirmation_success(
+    session: AsyncSession,
+    run_id: str,
+) -> Event | None:
+    """Promote a terminal run withheld solely for pending artifact delivery."""
+    run = await session.get(Run, run_id)
+    if (
+        run is None
+        or run.status != "outcome_unknown"
+        or run.error_code != "artifact_confirmation_pending"
+    ):
+        return None
+    confirmation_pending = await session.scalar(
+        select(
+            exists().where(
+                ArtifactConfirmation.run_id == run.id,
+                ArtifactConfirmation.status.in_(("pending", "confirming")),
+            )
+        )
+    )
+    if confirmation_pending:
+        return None
+    conversation = await session.get(Conversation, run.conversation_id)
+    if conversation is None:
+        raise LookupError(f"Conversation {run.conversation_id} was not found")
+    assistant_message = await session.scalar(
+        select(Message).where(Message.run_id == run.id, Message.role == "assistant")
+    )
+    run.status = "completed"
+    run.error_code = None
+    if run.claude_session_id:
+        conversation.claude_session_id = run.claude_session_id
+        conversation.context_state = "active"
+    conversation.updated_at = datetime.now(UTC)
+    terminal_event = await _append_event_in_transaction(
+        session,
+        run_id,
+        _terminal_event_data(run, conversation, assistant_message),
+        allow_terminal=True,
+    )
+    await session.commit()
+    return terminal_event
 
 
 async def finalize_artifact_confirmation_failure(

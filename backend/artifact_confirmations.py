@@ -13,6 +13,7 @@ from backend.repository import (
     claim_due_artifact_confirmations,
     claim_pending_artifact_abandons,
     finalize_artifact_confirmation_failure,
+    finalize_artifact_confirmation_success,
     mark_artifact_abandon_delivered,
     mark_artifact_confirmation_conflicted,
     mark_artifact_confirmation_confirmed,
@@ -172,6 +173,11 @@ async def reconcile_artifact_confirmations(
             async with database.session() as session:
                 changed = await mark_artifact_confirmation_confirmed(session, claim)
             confirmed += int(changed)
+            if changed:
+                async with database.session() as session:
+                    terminal_event = await finalize_artifact_confirmation_success(session, claim.run_id)
+                if terminal_event is not None:
+                    terminal_events.append(terminal_event)
             logger.info(
                 "Artifact confirmation delivered",
                 extra={"confirmation_id": claim.id, "run_id": claim.run_id,
