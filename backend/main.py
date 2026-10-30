@@ -17,6 +17,7 @@ from backend.api.auth import router as auth_router
 from backend.api.conversation_files import router as conversation_files_router
 from backend.api.history import router as history_router
 from backend.api.projects import router as projects_router
+from backend.artifact_confirmations import reconcile_artifact_confirmations
 from backend.auth import CurrentUser, owns_conversation, owns_run, websocket_user_id
 from backend.config import PROJECT_ROOT, Settings
 from backend.container_registry import ContainerRegistry
@@ -670,6 +671,24 @@ def _log_background_task(task: asyncio.Task[Any]) -> None:
         logger.exception("Background gateway task failed")
 
 
+async def reconcile_artifact_confirmations_periodically(app: FastAPI) -> None:
+    """Deliver durable storage receipts until runner-mode shutdown."""
+    while True:
+        try:
+            await reconcile_artifact_confirmations(
+                app.state.database,
+                app.state.runner_transport,
+                app.state.settings,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Artifact confirmation reconciliation failed")
+        await asyncio.sleep(
+            app.state.settings.artifact_confirmation_reconcile_interval_seconds
+        )
+
+
 async def start_run_task(
     websocket: WebSocket,
     coroutine: Any,
@@ -1001,18 +1020,31 @@ def create_app(
         )
         database_ready = False
         supervisor: asyncio.Task[None] | None = None
+        confirmation_reconciler: asyncio.Task[None] | None = None
         runner_manager: ContainerManager | None = getattr(app.state, "runner_manager", None)
         try:
             await app.state.database.migrate()
             database_ready = True
+            if runner_manager is not None:
+                await runner_manager.restore()
+                await reconcile_artifact_confirmations(
+                    app.state.database,
+                    app.state.runner_transport,
+                    app.state.settings,
+                )
             async with app.state.database.session() as session:
                 await reconcile_orphaned_runs(session)
             if runner_manager is not None:
-                await runner_manager.restore()
                 await runner_manager.bridge.start()
                 supervisor = asyncio.create_task(runner_manager.supervise())
+                confirmation_reconciler = asyncio.create_task(
+                    reconcile_artifact_confirmations_periodically(app)
+                )
             yield
         finally:
+            if confirmation_reconciler is not None:
+                confirmation_reconciler.cancel()
+                await asyncio.gather(confirmation_reconciler, return_exceptions=True)
             if supervisor is not None:
                 supervisor.cancel()
                 await asyncio.gather(supervisor, return_exceptions=True)

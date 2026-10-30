@@ -17,14 +17,14 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from backend.artifact_confirmations import reconcile_artifact_confirmations
 from backend.containers import ContainerError, ContainerManager
 from backend.models import Event
-from backend.parser import bounded_file_content
 from backend.materials import MATERIALS_DIR, conversation_materials, materials_note
 from backend.public_events import message_created_event, question_asked_event
 from backend.repository import (
     RunAcceptance,
-    append_artifact,
+    stage_runner_artifact,
     append_event,
     finalize_run,
     mark_run_running,
@@ -85,27 +85,48 @@ async def run_via_runner(
         return stored
 
     async def save_artifact(payload: dict[str, Any]) -> None:
-        data = await manager.read_file(project, payload["path"])
-        if "sha256" in payload and hashlib.sha256(data).hexdigest() != payload["sha256"]:
-            raise RunnerRunError("artifact_hash_mismatch")
-        if "size_bytes" in payload and len(data) != payload["size_bytes"]:
-            raise RunnerRunError("artifact_size_mismatch")
-        text = data.decode("utf-8", errors="replace")
-        bounded, size_bytes, truncated = bounded_file_content(
-            text, max_bytes=app_state.settings.artifact_max_download_bytes,
-        )
-        async with database.session() as session:
-            stored = await append_artifact(
-                session, run_id, path=payload["path"], content=bounded,
-                size_bytes=size_bytes, truncated=truncated, num_lines=text.count("\n") + 1,
+        try:
+            data = await manager.read_file(
+                project, payload["path"], max_bytes=app_state.settings.artifact_max_download_bytes,
             )
-        await deliver_event(stored)
-        transport.confirm_saved(project, transport_run, payload["artifact_id"], {
-            "artifact_id": payload["artifact_id"],
-            "version_id": payload["commit_sha"],
-            "size_bytes": len(data),
-            "download": f"/api/runs/{run_id}/events/{stored.seq}/file",
-        })
+        except ContainerError as error:
+            raise RunnerRunError("container_read") from error
+        actual_size = len(data)
+        actual_sha256 = hashlib.sha256(data).hexdigest()
+        if "size_bytes" in payload and actual_size != payload["size_bytes"]:
+            raise RunnerRunError("size")
+        if "sha256" in payload and actual_sha256 != payload["sha256"]:
+            raise RunnerRunError("hash")
+        try:
+            content = data.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as error:
+            raise RunnerRunError("encoding") from error
+
+        try:
+            async with database.session() as session:
+                staged = await stage_runner_artifact(
+                    session,
+                    run_id,
+                    project_id=project,
+                    artifact_id=payload["artifact_id"],
+                    path=payload["path"],
+                    content=content,
+                    source_bytes=data,
+                    version_id=payload["commit_sha"],
+                    sha256=actual_sha256,
+                    max_bytes=app_state.settings.artifact_max_download_bytes,
+                )
+                await session.commit()
+        except Exception as error:
+            raise RunnerRunError("database") from error
+
+        if staged.created:
+            await deliver_event(staged.event)
+        result = await reconcile_artifact_confirmations(
+            database, transport, app_state.settings,
+        )
+        if staged.confirmation_id in result.conflicted_confirmation_ids:
+            raise RunnerRunError("transport_conflict")
 
     async def finalize() -> Event:
         async with database.session() as session:

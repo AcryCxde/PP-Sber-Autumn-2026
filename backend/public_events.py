@@ -26,6 +26,12 @@ TERMINAL_EVENT_TYPES = {
 }
 SAFE_FAILURE_CODES = {
     "artifact_save_failed",
+    "container_read",
+    "database",
+    "encoding",
+    "hash",
+    "size",
+    "transport_conflict",
     "backend_task_cancelled",
     "claude_cli_failed",
     "claude_request_failed",
@@ -34,6 +40,8 @@ SAFE_FAILURE_CODES = {
     "result_error",
 }
 SAFE_UNKNOWN_CODES = {
+    "artifact_confirmation_failed",
+    "artifact_confirmation_pending",
     "backend_restarted",
     "heartbeat_lost",
     "claude_session_state_uncertain",
