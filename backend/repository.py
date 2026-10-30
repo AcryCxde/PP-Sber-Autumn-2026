@@ -1,3 +1,4 @@
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,6 +37,10 @@ class RunAcceptanceError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class ArtifactPersistenceError(RuntimeError):
+    """The database snapshot does not match the bytes being acknowledged."""
 
 
 @dataclass(frozen=True)
@@ -642,6 +647,7 @@ async def append_artifact(
     size_bytes: int | None,
     truncated: bool,
     num_lines: int | None,
+    expected_sha256: str | None = None,
 ) -> Event:
     event = await _append_event_in_transaction(
         session,
@@ -663,7 +669,25 @@ async def append_artifact(
             truncated=truncated,
         )
     )
-    await session.commit()
+    try:
+        if expected_sha256 is not None:
+            await session.flush()
+            # Select columns, not an ORM instance: force an actual database readback.
+            snapshot = (await session.execute(
+                select(Artifact.content, Artifact.size_bytes, Artifact.truncated, Artifact.path)
+                .where(Artifact.run_id == run_id, Artifact.event_seq == event.seq)
+            )).one_or_none()
+            if (snapshot is None or not isinstance(snapshot.content, str)
+                    or snapshot.truncated or snapshot.path != path
+                    or snapshot.size_bytes != size_bytes
+                    or len(snapshot.content.encode("utf-8")) != size_bytes
+                    or hashlib.sha256(snapshot.content.encode("utf-8")).hexdigest() != expected_sha256):
+                raise ArtifactPersistenceError("Artifact persistence verification failed")
+        await session.commit()
+    except Exception:
+        # The snapshot and artifact.saved event are one transaction: no false saved history.
+        await session.rollback()
+        raise
     return event
 
 
