@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -64,11 +65,15 @@ class RecordingTransport:
 
 
 def confirmation_settings(**kwargs: object) -> Settings:
-    return Settings(
-        artifact_confirmation_batch_size=10, artifact_confirmation_max_attempts=3,
-        artifact_confirmation_timeout_seconds=1, artifact_confirmation_lease_seconds=5,
-        artifact_confirmation_max_retry_delay_seconds=30, **kwargs,
-    )
+    values = {
+        "artifact_confirmation_batch_size": 10,
+        "artifact_confirmation_max_attempts": 3,
+        "artifact_confirmation_timeout_seconds": 1,
+        "artifact_confirmation_lease_seconds": 5,
+        "artifact_confirmation_max_retry_delay_seconds": 30,
+    }
+    values.update(kwargs)
+    return Settings(**values)
 
 
 async def test_confirmation_unique_per_run_and_artifact(tmp_path) -> None:
@@ -317,6 +322,104 @@ async def test_failed_terminal_abandon_is_retried_after_conflict(tmp_path) -> No
         async with database.session() as session:
             row = await session.scalar(select(ArtifactConfirmation))
             assert row.abandon_delivered
+    finally:
+        await database.dispose()
+
+
+async def test_confirmed_state_rolls_back_when_owning_run_finalization_crashes(
+    tmp_path, monkeypatch,
+) -> None:
+    database = Database(database_url(tmp_path / "atomic-success.db"))
+    await database.create_schema()
+    try:
+        run_id, project_id = await create_run_and_project(database)
+        await add_confirmation(database, run_id, project_id, "artifact-1")
+        async with database.session() as session:
+            await finalize_run(
+                session, run_id, assistant_content=None, status="outcome_unknown",
+                exit_code=None, error_code="artifact_confirmation_pending",
+            )
+
+        async def finalization_crash(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("crash between confirmation and finalization")
+
+        monkeypatch.setattr(
+            "backend.artifact_confirmations.finalize_artifact_confirmation_success",
+            finalization_crash,
+        )
+        with pytest.raises(RuntimeError, match="crash between confirmation"):
+            await reconcile_artifact_confirmations(
+                database, RecordingTransport(), confirmation_settings(), now=datetime.now(UTC),
+            )
+
+        async with database.session() as session:
+            row = await session.scalar(select(ArtifactConfirmation))
+            run = await session.get(Run, run_id)
+            assert row.status == "confirming"
+            assert (run.status, run.error_code) == (
+                "outcome_unknown", "artifact_confirmation_pending",
+            )
+    finally:
+        await database.dispose()
+
+
+async def test_conflicted_state_rolls_back_when_owning_run_finalization_crashes(
+    tmp_path, monkeypatch,
+) -> None:
+    database = Database(database_url(tmp_path / "atomic-failure.db"))
+    await database.create_schema()
+    try:
+        run_id, project_id = await create_run_and_project(database)
+        await add_confirmation(database, run_id, project_id, "artifact-1")
+
+        async def finalization_crash(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("crash between conflict and finalization")
+
+        monkeypatch.setattr(
+            "backend.artifact_confirmations.finalize_artifact_confirmation_failure",
+            finalization_crash,
+        )
+        with pytest.raises(RuntimeError, match="crash between conflict"):
+            await reconcile_artifact_confirmations(
+                database,
+                RecordingTransport([TransportError("storage_receipt_conflict")]),
+                confirmation_settings(),
+                now=datetime.now(UTC),
+            )
+
+        async with database.session() as session:
+            row = await session.scalar(select(ArtifactConfirmation))
+            run = await session.get(Run, run_id)
+            assert row.status == "confirming"
+            assert run.status == "pending"
+    finally:
+        await database.dispose()
+
+
+async def test_terminal_abandon_timeout_does_not_block_reconciliation(tmp_path) -> None:
+    database = Database(database_url(tmp_path / "abandon-timeout.db"))
+    await database.create_schema()
+    try:
+        run_id, project_id = await create_run_and_project(database)
+        await add_confirmation(database, run_id, project_id, "artifact-1")
+        transport = RecordingTransport([TransportError("storage_receipt_conflict")])
+
+        def blocked_abandon(*_args: object) -> None:
+            import time
+            time.sleep(0.2)
+
+        transport.abandon = blocked_abandon  # type: ignore[method-assign]
+        await asyncio.wait_for(
+            reconcile_artifact_confirmations(
+                database, transport,
+                confirmation_settings(artifact_confirmation_timeout_seconds=0.01),
+                now=datetime.now(UTC),
+            ),
+            timeout=0.1,
+        )
+        async with database.session() as session:
+            row = await session.scalar(select(ArtifactConfirmation))
+            assert (row.status, row.abandon_delivered) == ("conflicted", False)
     finally:
         await database.dispose()
 
