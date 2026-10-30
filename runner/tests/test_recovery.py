@@ -67,6 +67,12 @@ def test_prompt_asks_to_repeat_unanswered_questions(mode: ResumeMode) -> None:
     assert "AskUserQuestion" in text
 
 
+def test_prompt_renders_embedded_question_whitespace_as_one_bullet() -> None:
+    text = continuation_prompt(Continue("t1", CMD, 1, ResumeMode.RESUME), ["Формат?\n  Markdown"])
+    assert "- Формат? Markdown" in text
+    assert "\n  Markdown" not in text
+
+
 def test_prompt_without_questions_has_no_question_block() -> None:
     text = continuation_prompt(Continue("t1", CMD, 1, ResumeMode.RESUME))
     assert "AskUserQuestion" not in text
