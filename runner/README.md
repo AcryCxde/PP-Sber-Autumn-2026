@@ -70,7 +70,7 @@ uv run sessions rm demo-a --volume
 
 | Команда | Что делает |
 |---|---|
-| `secrets init <id>` | записывает `$ANTHROPIC_AUTH_TOKEN` в файл секрета проекта |
+| `secrets init <id>` | записывает `$ANTHROPIC_AUTH_TOKEN` в файл секрета проекта; если задан `$GATEWAY_AUTH_TOKEN`, то и секрет `gateway_token` |
 | `start <id> [--data DIR] [--stall-after S] [--image IMG]` | создаёт том `proj-<id>` и запускает `ct-<id>` с изоляцией |
 | `send <id> <text>` | задача агенту; во время хода ставится в очередь |
 | `answer <id> <fork_id> <label>...` | ответ на развилку `fork_question`, метки по порядку вопросов |
@@ -78,7 +78,13 @@ uv run sessions rm demo-a --volume
 | `logs <id> [-f]` | журнал `events.jsonl` |
 | `stop` / `restart` / `rm [--volume]` `<id>` | жизненный цикл контейнера |
 
-`<id>` — `[a-z0-9][a-z0-9-]{0,39}`. В контейнер из окружения уходят только адрес шлюза и имена моделей; ключи — только файлом.
+`<id>` — `[a-z0-9][a-z0-9-]{0,39}`. В контейнер из окружения уходят только адрес шлюза (`ANTHROPIC_BASE_URL`), адрес gateway (`GATEWAY_URL`) и имена моделей; ключи — только файлом.
+
+## Gateway
+
+Если задан `GATEWAY_URL` (`ws://` или `wss://`), runner сам подключается к gateway и отправляет события v0, heartbeat; команды (`message`, `fork_answer`, `stop`) приходят по тому же соединению и складываются в inbox. Секрет `gateway_token` обязателен вместе с `GATEWAY_URL`: на хосте `export GATEWAY_AUTH_TOKEN=…` перед `sessions secrets init`, `sessions start` без секрета не стартует. Без `GATEWAY_URL` runner автономен. Формат кадров — [protocol.md](../docs/2.4/protocol.md), требования к серверу — [events-v0.md, раздел 11](../docs/contracts/events-v0.md).
+
+`localhost` в `GATEWAY_URL` заменяется на `host.docker.internal`: это работает на Docker Desktop (macOS, Windows); на Linux контейнеру нужен `--add-host host.docker.internal:host-gateway`, которого `sessions` не добавляет.
 
 ## Живость
 
@@ -133,9 +139,9 @@ Runner переживает рестарт контейнера (`docker kill`, 
 | не записался `state.json` | runner падает (выход 1, `turn_failed` best-effort): без состояния восстановление не гарантируется |
 | `state.json` повреждён | `turn_failed{state_corrupt}`, выход 65: исправить или удалить файл вручную (теряется информация о прерванном ходе и очереди) |
 
-## Ограничения этапа 1
+## Ограничения
 
-- Нет гейтвея: сессия видна через `sessions logs/status`, команды — через inbox.
+- Настоящий gateway с серверной частью ещё не подключён: клиент runner проверен фейковым gateway (`evals/fake_gateway.py`). Без `GATEWAY_URL` сессия видна через `sessions logs/status`, команды — через inbox.
 - Проверка путей в Bash — эвристика; граница изоляции — монтирование (в контейнере только свой том).
 - Агент может прочитать ключ cliproxy из окружения CLI через Bash — поэтому ключ свой на проект и отзывается ротацией.
 - Исходящий трафик не фильтруется.
@@ -161,6 +167,7 @@ source ~/.config/brotherhood/env.zsh && uv run pytest evals -m e2e -q
 | `test_start` | старт с тестовым проектом, полный ход до `turn_completed` |
 | `test_isolation` | выход через symlink в `/workspace/.runner` → `access_denied`, содержимое не утекло, чужой том не виден |
 | `test_stall` | `--stall-after 30` + `sleep 200` → `health: stalled` и Docker `unhealthy` |
+| `test_question` | вопрос → ответ через фейковый gateway: тот же Run (один `run.started`), `unknown_fork` для устаревшего вопроса, `artifact.created`; вариант с `docker kill` во время ожидания — повторный вопрос и завершение того же Run |
 | `test_restart` | `docker kill` + `docker start` посреди хода → `turn_interrupted` → `turn_resumed` → `turn_completed`, новый `checkpoint` (ручной kill не запускает `on-failure`, поэтому контейнер поднимается вручную) |
 
 Без env шлюза e2e пропускаются.

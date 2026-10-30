@@ -35,6 +35,12 @@ def put(directory: Path, raw: Mapping[str, JsonValue]) -> Path:
     return target
 
 
+def has_command(directory: Path, command_id: str) -> bool:
+    """Команда с этим `id` уже принята: ждёт в очереди или обработана."""
+    paths = [*directory.glob("[!.]*.json"), *(directory / PROCESSED).glob("*.json")]
+    return any(_command_id(path) == command_id for path in paths)
+
+
 @final
 @dataclass(frozen=True, slots=True)
 class Delivery:

@@ -5,11 +5,11 @@ from decimal import Decimal
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import exists, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import Artifact, Conversation, Event, Message, Run
+from backend.models import Artifact, Conversation, Event, Message, Project, Run
 from backend.public_events import (
     SAFE_FAILURE_CODES,
     SAFE_UNKNOWN_CODES,
@@ -71,6 +71,10 @@ class RunEventPage:
     conversation_id: str
     run_status: str
     events: list[Event]
+
+
+# Заголовок пустого диалога, созданного ради вложений; первый запрос заменяет его.
+NEW_CONVERSATION_TITLE = "Новый диалог"
 
 
 def make_title(prompt: str, max_length: int = 80) -> str:
@@ -151,7 +155,16 @@ async def _existing_acceptance(
     requested_conversation_id: str | None,
     requested_content: str,
     requested_context_mode: str,
+    owner_id: str | None = None,
 ) -> RunAcceptance:
+    if owner_id is not None:
+        conversation = await session.get(Conversation, run.conversation_id)
+        if conversation is None or conversation.owner_id != owner_id:
+            # Тот же ответ, что и при несовпадении запроса: чужой run не раскрывается.
+            raise RunAcceptanceError(
+                "idempotency_conflict",
+                "client_request_id уже использован для другого запроса.",
+            )
     user_message = await session.scalar(
         select(Message)
         .where(Message.run_id == run.id, Message.role == "user")
@@ -211,6 +224,7 @@ async def _accept_run_once(
     client_request_id: str,
     content: str,
     requested_context_mode: str = "resume",
+    owner_id: str | None = None,
 ) -> RunAcceptance:
     existing_run = await session.scalar(
         select(Run).where(Run.client_request_id == client_request_id)
@@ -222,6 +236,7 @@ async def _accept_run_once(
             requested_conversation_id=conversation_id,
             requested_content=content,
             requested_context_mode=requested_context_mode,
+            owner_id=owner_id,
         )
 
     if requested_context_mode not in {"resume", "reset"}:
@@ -235,6 +250,7 @@ async def _accept_run_once(
                 "Нельзя сбросить контекст нового диалога.",
             )
         conversation = Conversation(
+            owner_id=owner_id,
             title=make_title(content),
             context_state="new",
             next_message_seq=0,
@@ -243,7 +259,11 @@ async def _accept_run_once(
         await session.flush()
     else:
         conversation = await session.get(Conversation, conversation_id)
-        if conversation is None or conversation.status == "deleted":
+        if (
+            conversation is None
+            or conversation.status == "deleted"
+            or (owner_id is not None and conversation.owner_id != owner_id)
+        ):
             raise RunAcceptanceError(
                 "conversation_not_found",
                 "Диалог не найден.",
@@ -266,6 +286,8 @@ async def _accept_run_once(
                 "conversation_context_unavailable",
                 "Сохранённый контекст Claude недоступен. Выполните явный сброс.",
             )
+        if conversation.next_message_seq == 0 and conversation.title == NEW_CONVERSATION_TITLE:
+            conversation.title = make_title(content)
 
     previous_session_id = conversation.claude_session_id
     if requested_context_mode == "reset":
@@ -358,7 +380,9 @@ async def accept_run(
     client_request_id: str,
     content: str,
     requested_context_mode: str = "resume",
+    owner_id: str | None = None,
 ) -> RunAcceptance:
+    """owner_id: владелец нового диалога; существующий диалог и повтор запроса должны быть его."""
     try:
         return await _accept_run_once(
             session,
@@ -366,6 +390,7 @@ async def accept_run(
             client_request_id=client_request_id,
             content=content,
             requested_context_mode=requested_context_mode,
+            owner_id=owner_id,
         )
     except IntegrityError:
         await session.rollback()
@@ -380,6 +405,7 @@ async def accept_run(
                 requested_conversation_id=conversation_id,
                 requested_content=content,
                 requested_context_mode=requested_context_mode,
+                owner_id=owner_id,
             )
 
         if conversation_id is not None:
@@ -400,12 +426,15 @@ async def accept_run(
 async def create_request(
     session: AsyncSession,
     prompt: str,
+    *,
+    owner_id: str | None = None,
 ) -> CreatedRequest:
     accepted = await accept_run(
         session,
         conversation_id=None,
         client_request_id=str(uuid4()),
         content=prompt,
+        owner_id=owner_id,
     )
     return CreatedRequest(
         conversation_id=accepted.conversation_id,
@@ -712,10 +741,17 @@ async def list_conversations(
     *,
     limit: int,
     offset: int,
+    owner_id: str | None = None,
+    standalone: bool = False,
 ) -> list[Conversation]:
+    query = select(Conversation).where(Conversation.status != "deleted")
+    if owner_id is not None:
+        query = query.where(Conversation.owner_id == owner_id)
+    if standalone:
+        # Диалоги проектов показываются в «Моих проектах», а не в свободном чате.
+        query = query.where(~exists().where(Project.conversation_id == Conversation.id))
     result = await session.scalars(
-        select(Conversation)
-        .where(Conversation.status != "deleted")
+        query
         .order_by(Conversation.updated_at.desc(), Conversation.id.desc())
         .limit(limit)
         .offset(offset)
@@ -752,3 +788,22 @@ async def list_messages(
         .order_by(Message.sequence.asc())
     )
     return list(result)
+
+
+async def delete_conversation(session: AsyncSession, conversation_id: str) -> str:
+    """Мягкое удаление: диалог пропадает из списков. Возвращает deleted | not_found | busy."""
+    conversation = await session.get(Conversation, conversation_id)
+    if conversation is None or conversation.status == "deleted":
+        return "not_found"
+    active_run = await session.scalar(
+        select(Run.id).where(
+            Run.conversation_id == conversation.id,
+            Run.status.in_(ACTIVE_RUN_STATUSES),
+        )
+    )
+    if active_run is not None:
+        return "busy"
+    conversation.status = "deleted"
+    conversation.updated_at = datetime.now(UTC)
+    await session.commit()
+    return "deleted"

@@ -59,7 +59,34 @@ python -m pip install -e ".[test]"
 cp backend/.env.example .env
 ```
 
-По умолчанию используется SQLite-база `backend/data/history.db`. Каталог и база создаются автоматически и игнорируются Git.
+По умолчанию при локальном запуске используется SQLite-база `backend/data/history.db`. Каталог и база создаются автоматически и игнорируются Git.
+
+В docker compose backend работает с Postgres 16 (сервис `db`). Пароль задаётся в `.env` в корне репозитория (шаблон — `.env.example`); без `POSTGRES_PASSWORD` compose не запустится. Схему создают те же миграции Alembic.
+
+```bash
+cp .env.example .env
+```
+
+Для локального backend на Postgres укажите, например:
+
+```dotenv
+DATABASE_URL=postgresql+asyncpg://coreteams:<пароль>@127.0.0.1:5432/coreteams
+```
+
+Перенос истории из прежнего SQLite-файла в пустой Postgres (backend остановлен; исходный файл не меняется):
+
+```bash
+docker compose stop backend
+docker compose run --rm --no-deps backend sh -c 'python -m backend.transfer_sqlite /app/backend/data/history.db "$DATABASE_URL"'
+docker compose up -d backend
+```
+
+Тесты по умолчанию идут на SQLite. Чтобы прогнать их на Postgres, укажите сервер, где тестовому пользователю разрешено `CREATE DATABASE`; каждый тест получает свою временную базу:
+
+```bash
+docker run -d --name coreteams-pg-test -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -p 127.0.0.1:55432:5432 postgres:16-alpine
+TEST_POSTGRES_URL=postgresql+asyncpg://test:test@127.0.0.1:55432/test python -m pytest -q backend/tests
+```
 
 Для Claude Code CLI используется безопасный режим:
 
@@ -80,6 +107,15 @@ MAX_CONCURRENT_RUNS=4
 
 Каждый conversation использует подкаталог `<WORKSPACE_ROOT>/<conversation_id>`. Backend откажется стартовать, если workspace пересекается с gateway или каталогом БД.
 
+API и `/ws` доступны только после входа: пользователь регистрируется по email и паролю (не короче 8 символов) на экране входа, backend выдаёт httpOnly-cookie сессии. Каждый видит только свои диалоги и проекты. Диалоги, созданные до миграции `20261027_0007`, остаются без владельца и скрыты от всех.
+
+```dotenv
+AUTH_SESSION_TTL_SECONDS=1209600
+AUTH_COOKIE_SECURE=false
+```
+
+`AUTH_COOKIE_SECURE=true` нужен, когда приложение открывают по HTTPS; по http браузер не вернёт Secure-cookie и вход не сработает.
+
 ## 3. Подготовка frontend
 
 ```bash
@@ -96,7 +132,7 @@ cd ..
 python -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Используйте один worker. Backend удерживает OS file lock рядом с SQLite и не запускает второй process на той же БД: startup reconciliation активных run безопасен только при единственном владельце executor.
+Используйте один worker. Backend не запускает второй process на той же БД: с SQLite он удерживает OS file lock рядом с файлом базы, с Postgres — advisory lock на отдельном соединении. Startup reconciliation активных run безопасен только при единственном владельце executor.
 
 При старте backend автоматически применяет Alembic migrations.
 
@@ -135,19 +171,23 @@ http://localhost:5173
 
 ## 6. Быстрая проверка
 
-Backend history API:
+Без входа API отвечает `401`:
 
 ```bash
-curl http://localhost:8000/api/conversations
+curl -i http://localhost:8000/api/auth/me
 ```
 
-Ожидаемый ответ для новой базы:
+Регистрация и запрос с полученной cookie:
 
-```json
-[]
+```bash
+curl -c cookies.txt -H "content-type: application/json" -d '{"email":"demo@example.com","password":"demo-password"}' http://localhost:8000/api/auth/register
 ```
 
-После отправки запроса через frontend должны появиться записи в списке conversations и сообщения выбранного диалога.
+```bash
+curl -b cookies.txt http://localhost:8000/api/projects
+```
+
+Ожидаемый ответ для нового пользователя — `[]`. Во frontend после регистрации откроется главная страница CoreTeams; созданный проект и его запуски появятся в списке проектов.
 
 ## 7. Запуск тестов
 

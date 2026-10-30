@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from ctrunner.sessions import RunSpec, container_env, run_args
+from ctrunner import sessions
+from ctrunner.sessions import RunSpec, _write_secret, container_env, run_args
 
 
 def spec(**overrides: object) -> RunSpec:
@@ -77,3 +78,47 @@ def test_container_env_allowlist_and_localhost_rewrite() -> None:
 def test_container_env_keeps_remote_host() -> None:
     env = container_env({"ANTHROPIC_BASE_URL": "https://proxy.example:443"})
     assert env == {"ANTHROPIC_BASE_URL": "https://proxy.example:443"}
+
+
+def test_container_env_passes_gateway_url_with_localhost_rewrite() -> None:
+    env = container_env(
+        {"GATEWAY_URL": "ws://localhost:8000/runner", "GATEWAY_AUTH_TOKEN": "x" * 12}
+    )
+    assert env == {"GATEWAY_URL": "ws://host.docker.internal:8000/runner"}
+
+
+def test_write_secret_is_private(tmp_path: Path) -> None:
+    path = _write_secret(tmp_path / "p", "gateway_token", "gw-secret-token")
+    assert path.read_text() == "gw-secret-token\n"
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.parent.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.fixture
+def secrets_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr(sessions, "SECRETS_ROOT", tmp_path)
+    (tmp_path / "demo-a").mkdir()
+    (tmp_path / "demo-a" / "anthropic_token").write_text("sk-test-0123456789\n")
+    return tmp_path
+
+
+def test_start_requires_gateway_token_when_gateway_url_is_set(
+    secrets_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GATEWAY_URL", "ws://localhost:8000/runner")
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(sessions, "_docker", lambda *args, **_: calls.append(args))
+    with pytest.raises(SystemExit, match="sessions secrets init demo-a"):
+        sessions._start("demo-a", None, 720.0, "img")
+    assert calls == []  # контейнер не создан
+
+
+def test_start_with_gateway_token_runs_docker(
+    secrets_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GATEWAY_URL", "ws://localhost:8000/runner")
+    (secrets_root / "demo-a" / "gateway_token").write_text("gw-secret-token\n")
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(sessions, "_docker", lambda *args, **_: calls.append(args))
+    sessions._start("demo-a", None, 720.0, "img")
+    assert [c[0] for c in calls] == ["volume", "run"]

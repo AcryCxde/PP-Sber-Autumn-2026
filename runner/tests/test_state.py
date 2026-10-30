@@ -100,3 +100,24 @@ def test_session_id_shape() -> None:
     assert is_session_id("749df2fe-1b50-4c46-92f3-e2cdf0ce322d")
     assert not is_session_id("../x")
     assert not is_session_id("")
+
+
+def test_message_inputs_survive_roundtrip(tmp_path: Path) -> None:
+    cmd = MessageCmd("c1", "go", ("методист",), "ревью", ("inputs/a.md",))
+    state = PersistedState(None, OpenTurn("c1", cmd), None, 0, (cmd,))
+    path = tmp_path / "state.json"
+    save_state(path, state)
+    assert load_state(path) == state
+
+
+def test_command_without_inputs_keeps_old_state_format() -> None:
+    doc = to_json(PersistedState(None, None, None, 0, (MessageCmd("c1", "go"),)))
+    assert doc["queue"] == [{"id": "c1", "text": "go"}]
+    assert parse_state(doc).queue == (MessageCmd("c1", "go"),)
+
+
+def test_state_with_unsafe_input_path_is_corrupt() -> None:
+    doc = to_json(PersistedState(None, None, None, 0, (MessageCmd("c1", "go"),)))
+    doc["queue"] = [{"id": "c1", "text": "go", "input_files": ["../x"]}]
+    with pytest.raises(StateCorrupt):
+        parse_state(doc)

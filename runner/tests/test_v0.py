@@ -67,6 +67,7 @@ def test_happy_journal_maps_to_public_lifecycle() -> None:
         "message.created",
         "role.completed",
         "message.created",
+        "usage.reported",
         "artifact.created",
         "run.completed",
     ]
@@ -116,6 +117,24 @@ def test_process_crash_is_not_terminal_and_run_continues() -> None:
 def test_legacy_sdk_crashed_without_fatal_flag_is_not_terminal() -> None:
     drafts = rows(started(), row(2, "turn_failed", {"reason": "sdk_crashed"}))
     assert types(drafts) == ["run.started", "progress.updated"]
+
+
+def test_resume_limit_after_crash_is_terminal() -> None:
+    drafts = rows(
+        started(),
+        row(2, "turn_failed", {"reason": "sdk_crashed", "fatal": True}),
+        row(3, "turn_interrupted", {}),
+        row(4, "turn_failed", {"reason": "resume_limit"}),
+    )
+    assert types(drafts) == ["run.started", "progress.updated", "progress.updated", "run.failed"]
+    assert drafts[-1].payload == {"code": "resume_limit", "retryable": True}
+
+
+def test_disk_full_process_crash_is_interrupted_not_failed() -> None:
+    """Падение процесса не исход хода: `run.failed{disk_full}` даёт только отказ commit."""
+    drafts = rows(started(), row(2, "turn_failed", {"reason": "disk_full", "fatal": True}))
+    assert types(drafts) == ["run.started", "progress.updated"]
+    assert drafts[-1].payload == {"stage": "interrupted"}
 
 
 @pytest.mark.parametrize(

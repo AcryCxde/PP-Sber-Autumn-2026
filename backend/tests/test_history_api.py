@@ -12,7 +12,9 @@ import backend.main as main_module
 from backend.api.history import download_event_file
 from backend.config import Settings
 from backend.db import Database
-from backend.models import Event, Run
+from backend.tests.databases import database_url
+from backend.tests.auth_helpers import make_user, sign_in
+from backend.models import Event, Run, User
 from backend.repository import accept_run, create_request
 
 
@@ -102,8 +104,7 @@ class DisconnectingWebSocket(RecordingWebSocket):
 
 
 def make_database(tmp_path) -> Database:
-    database_path = (tmp_path / "data" / "history.db").as_posix()
-    return Database(f"sqlite+aiosqlite:///{database_path}")
+    return Database(database_url(tmp_path / "data" / "history.db"))
 
 
 def make_app(
@@ -297,6 +298,7 @@ def test_app_permission_mode_is_used_for_cli(tmp_path, monkeypatch) -> None:
     app = make_app(tmp_path, permission_mode="plan")
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("Use plan mode"))
             for _ in range(4):
@@ -309,6 +311,7 @@ def test_history_endpoints_are_empty_for_new_database(tmp_path) -> None:
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         assert client.get("/api/conversations").json() == []
         assert client.get("/api/conversations/missing/messages").status_code == 404
         assert client.get("/api/runs/missing/events").status_code == 404
@@ -332,6 +335,7 @@ def test_websocket_request_is_saved_to_history(tmp_path, monkeypatch) -> None:
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             command = run_command("Remember this request")
             websocket.send_json(command)
@@ -384,6 +388,7 @@ def test_workspace_error_finalizes_accepted_run(tmp_path, monkeypatch) -> None:
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("Cannot prepare workspace"))
             accepted = websocket.receive_json()
@@ -413,6 +418,7 @@ def test_result_only_answer_is_persisted_and_published(tmp_path, monkeypatch) ->
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("Return only result"))
             events = [websocket.receive_json() for _ in range(4)]
@@ -450,6 +456,7 @@ def test_zero_exit_without_result_has_unknown_outcome(tmp_path, monkeypatch) -> 
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("Truncated stream"))
             events = [websocket.receive_json() for _ in range(4)]
@@ -484,6 +491,7 @@ def test_created_file_can_be_downloaded_from_recorded_event(tmp_path, monkeypatc
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("Create a file"))
             accepted = websocket.receive_json()
@@ -522,6 +530,7 @@ def test_app_artifact_limit_controls_snapshot_and_download(tmp_path, monkeypatch
     app = make_app(tmp_path, artifact_max_download_bytes=1)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("Create a large file"))
             accepted = websocket.receive_json()
@@ -559,6 +568,7 @@ def test_file_download_uses_persisted_snapshot_not_live_path(tmp_path, monkeypat
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("Create a file"))
             accepted = websocket.receive_json()
@@ -579,10 +589,11 @@ def test_file_download_uses_persisted_snapshot_not_live_path(tmp_path, monkeypat
 async def test_unregistered_legacy_file_snapshot_is_not_downloadable(tmp_path) -> None:
     database = make_database(tmp_path)
     await database.create_schema()
+    owner_id = await make_user(database)
 
     try:
         async with database.session() as session:
-            created = await create_request(session, "Legacy file")
+            created = await create_request(session, "Legacy file", owner_id=owner_id)
 
         async with database.session() as session:
             run = await session.get(Run, created.run_id)
@@ -611,6 +622,7 @@ async def test_unregistered_legacy_file_snapshot_is_not_downloadable(tmp_path) -
                     2,
                     session,
                     Settings(workspace_root=tmp_path / "workspaces"),
+                    await session.get(User, owner_id),
                 )
 
         assert error.value.status_code == 404
@@ -635,6 +647,7 @@ def test_multiple_websocket_requests_resume_same_conversation(tmp_path, monkeypa
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("First turn"))
             first_accepted = websocket.receive_json()
@@ -696,6 +709,7 @@ def test_resume_failure_on_stderr_requires_context_reset(tmp_path, monkeypatch) 
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("First turn"))
             first = websocket.receive_json()
@@ -746,6 +760,7 @@ def test_interrupted_resumed_run_invalidates_session_context(tmp_path, monkeypat
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("First turn"))
             first = websocket.receive_json()
@@ -770,6 +785,7 @@ def test_interrupted_resumed_run_invalidates_session_context(tmp_path, monkeypat
 async def test_disconnected_socket_does_not_cancel_accepted_run(tmp_path, monkeypatch) -> None:
     database = make_database(tmp_path)
     await database.create_schema()
+    owner_id = await make_user(database)
 
     async def fake_start_claude(
         prompt: str,
@@ -792,6 +808,7 @@ async def test_disconnected_socket_does_not_cancel_accepted_run(tmp_path, monkey
             client_request_id=request_id,
             content="Keep running",
             context_mode="resume",
+            owner_id=owner_id,
         )
 
         async with database.session() as session:
@@ -834,6 +851,7 @@ def test_duplicate_client_request_does_not_start_second_process(tmp_path, monkey
     command = run_command("Once")
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(command)
             accepted = websocket.receive_json()
@@ -907,6 +925,7 @@ def test_internal_cli_data_never_reaches_public_history(tmp_path, monkeypatch) -
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("Keep internals private"))
             public_events = [websocket.receive_json() for _ in range(4)]
@@ -995,6 +1014,7 @@ def test_failed_or_outside_write_does_not_create_artifact(tmp_path, monkeypatch)
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("Try unsafe writes"))
             events = [websocket.receive_json() for _ in range(4)]
@@ -1024,6 +1044,7 @@ def test_rest_and_websocket_replay_events(tmp_path, monkeypatch) -> None:
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
+        sign_in(client)
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("Replay this"))
             accepted = websocket.receive_json()
@@ -1053,10 +1074,11 @@ def test_rest_and_websocket_replay_events(tmp_path, monkeypatch) -> None:
 async def test_websocket_replay_reads_all_pages(tmp_path) -> None:
     database = make_database(tmp_path)
     await database.create_schema()
+    owner_id = await make_user(database)
 
     try:
         async with database.session() as session:
-            created = await create_request(session, "Large replay")
+            created = await create_request(session, "Large replay", owner_id=owner_id)
 
         async with database.session() as session:
             run = await session.get(Run, created.run_id)
@@ -1075,7 +1097,9 @@ async def test_websocket_replay_reads_all_pages(tmp_path) -> None:
             await session.commit()
 
         websocket = RecordingWebSocket(database, tmp_path / "workspaces")
-        await main_module.handle_subscription(websocket, created.run_id, after_seq=0)
+        await main_module.handle_subscription(
+            websocket, created.run_id, after_seq=0, owner_id=owner_id
+        )
 
         assert len(websocket.messages) == 503
         assert websocket.messages[0]["type"] == "run.accepted"
@@ -1107,6 +1131,7 @@ async def test_run_task_admission_limit_is_enforced(tmp_path) -> None:
 async def test_idempotent_retry_is_allowed_at_run_capacity(tmp_path) -> None:
     database = make_database(tmp_path)
     await database.create_schema()
+    owner_id = await make_user(database)
     request_id = str(uuid4())
 
     try:
@@ -1116,6 +1141,7 @@ async def test_idempotent_retry_is_allowed_at_run_capacity(tmp_path) -> None:
                 conversation_id=None,
                 client_request_id=request_id,
                 content="Existing request",
+                owner_id=owner_id,
             )
 
         websocket = RecordingWebSocket(database, tmp_path / "workspaces")
@@ -1130,6 +1156,7 @@ async def test_idempotent_retry_is_allowed_at_run_capacity(tmp_path) -> None:
                     client_request_id=request_id,
                 )
             ),
+            owner_id=owner_id,
         )
         await asyncio.gather(*websocket.app.state.run_tasks)
 
@@ -1143,10 +1170,11 @@ async def test_idempotent_retry_is_allowed_at_run_capacity(tmp_path) -> None:
 async def test_blank_legacy_websocket_request_is_rejected(tmp_path) -> None:
     database = make_database(tmp_path)
     await database.create_schema()
+    owner_id = await make_user(database)
 
     try:
         websocket = RecordingWebSocket(database, tmp_path / "workspaces")
-        await main_module.dispatch_websocket_message(websocket, "   \n")
+        await main_module.dispatch_websocket_message(websocket, "   \n", owner_id=owner_id)
 
         async with database.session() as session:
             runs = list(await session.scalars(select(Run)))
@@ -1170,10 +1198,11 @@ async def test_blank_legacy_websocket_request_is_rejected(tmp_path) -> None:
 async def test_subscription_deadline_applies_to_full_backlog_pages(tmp_path) -> None:
     database = make_database(tmp_path)
     await database.create_schema()
+    owner_id = await make_user(database)
 
     try:
         async with database.session() as session:
-            created = await create_request(session, "Large bounded replay")
+            created = await create_request(session, "Large bounded replay", owner_id=owner_id)
             run = await session.get(Run, created.run_id)
             assert run is not None
             run.status = "completed"
@@ -1191,7 +1220,9 @@ async def test_subscription_deadline_applies_to_full_backlog_pages(tmp_path) -> 
 
         websocket = SlowRecordingWebSocket(database, tmp_path / "workspaces")
         websocket.app.state.settings.subscription_window_seconds = 0.01
-        await main_module.handle_subscription(websocket, created.run_id, after_seq=0)
+        await main_module.handle_subscription(
+            websocket, created.run_id, after_seq=0, owner_id=owner_id
+        )
 
         complete = websocket.messages[-1]
         assert complete["type"] == "replay.complete"
@@ -1207,10 +1238,11 @@ async def test_nonterminal_subscription_is_bounded_and_does_not_block_commands(
 ) -> None:
     database = make_database(tmp_path)
     await database.create_schema()
+    owner_id = await make_user(database)
 
     try:
         async with database.session() as session:
-            created = await create_request(session, "Bounded replay")
+            created = await create_request(session, "Bounded replay", owner_id=owner_id)
             run = await session.get(Run, created.run_id)
             assert run is not None
             run.status = "running"
@@ -1227,10 +1259,12 @@ async def test_nonterminal_subscription_is_bounded_and_does_not_block_commands(
                     "after_seq": 1,
                 }
             ),
+            owner_id=owner_id,
         )
         await main_module.dispatch_websocket_message(
             websocket,
             json.dumps({"type": "unknown.command"}),
+            owner_id=owner_id,
         )
 
         assert any(message["type"] == "command.error" for message in websocket.messages)
@@ -1247,10 +1281,11 @@ async def test_nonterminal_subscription_is_bounded_and_does_not_block_commands(
 async def test_websocket_replay_waits_for_running_run_to_finish(tmp_path) -> None:
     database = make_database(tmp_path)
     await database.create_schema()
+    owner_id = await make_user(database)
 
     try:
         async with database.session() as session:
-            created = await create_request(session, "Running replay")
+            created = await create_request(session, "Running replay", owner_id=owner_id)
             run = await session.get(Run, created.run_id)
             assert run is not None
             run.status = "running"
@@ -1258,7 +1293,9 @@ async def test_websocket_replay_waits_for_running_run_to_finish(tmp_path) -> Non
 
         websocket = RecordingWebSocket(database, tmp_path / "workspaces")
         subscription = asyncio.create_task(
-            main_module.handle_subscription(websocket, created.run_id, after_seq=1)
+            main_module.handle_subscription(
+                websocket, created.run_id, after_seq=1, owner_id=owner_id
+            )
         )
         await asyncio.sleep(0.05)
         assert not subscription.done()

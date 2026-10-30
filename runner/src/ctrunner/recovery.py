@@ -1,10 +1,12 @@
 """Планировщик восстановления: что делать с ходом, застигнутым рестартом. Без ввода-вывода."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, assert_never, final
 
 from ctrunner.checkpoint import Head
+from ctrunner.prompt import task_prompt
 from ctrunner.protocol import MessageCmd
 from ctrunner.state import PersistedState
 
@@ -65,8 +67,9 @@ def plan(state: PersistedState, head: Head, *, resumable: bool) -> Recovery:
     return Continue(turn.turn_id, turn.cmd, state.autoresume_count + 1, mode)
 
 
-def continuation_prompt(step: Continue) -> str:
-    """Задача повторяется целиком в обоих режимах: модель могла не успеть её увидеть."""
+def continuation_prompt(step: Continue, asked: Sequence[str] = ()) -> str:
+    """Задача повторяется целиком в обоих режимах: модель могла не успеть её увидеть.
+    `asked` — вопросы пользователю, оставшиеся без ответа в момент падения."""
     match step.mode:
         case ResumeMode.RESUME:
             preface = "Работа над задачей прервана перезапуском контейнера."
@@ -79,5 +82,16 @@ def continuation_prompt(step: Continue) -> str:
             assert_never(step.mode)
     return (
         f"{preface} Сначала проверь `git status` и `git diff`: часть работы уже сделана, "
-        f"не повторяй её.\n\nЗадача:\n{step.cmd.text}"
+        f"не повторяй её.\n\nЗадача:\n{task_prompt(step.cmd)}{_unanswered_block(asked)}"
+    )
+
+
+def _unanswered_block(asked: Sequence[str]) -> str:
+    if not asked:
+        return ""
+    listed = "\n".join(f"- {question}" for question in asked)
+    return (
+        "\n\nПеред прерыванием ты задал пользователю вопросы через AskUserQuestion, "
+        f"ответ получен не был:\n{listed}\n"
+        "Задай эти вопросы заново через AskUserQuestion и дождись ответа, прежде чем продолжать."
     )
