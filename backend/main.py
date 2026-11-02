@@ -209,6 +209,14 @@ async def send_stored_event(
     await send_websocket_payload(websocket, payload)
 
 
+async def publish_live_terminal_event(app: FastAPI, event: Event) -> None:
+    """Send a durable reconciliation correction to the active run socket."""
+    deliveries = getattr(app.state, "live_run_deliveries", {})
+    delivery = deliveries.pop(event.run_id, None)
+    if delivery is not None:
+        await delivery(event)
+
+
 async def send_command_error(
     websocket: WebSocket,
     *,
@@ -318,6 +326,11 @@ async def handle_run_create(
         except (WebSocketDisconnect, RuntimeError):
             socket_available = False
 
+    deliveries = getattr(app_state, "live_run_deliveries", None)
+    if deliveries is None:
+        deliveries = {}
+        app_state.live_run_deliveries = deliveries
+    deliveries[acceptance.run_id] = deliver_event
     if acceptance.reset_event is not None:
         await deliver_event(acceptance.reset_event)
     await deliver_event(
@@ -327,10 +340,14 @@ async def handle_run_create(
     del websocket
 
     if acceptance.idempotent_replay:
+        deliveries.pop(acceptance.run_id, None)
         return
 
     if app_state.settings.executor == "runner":
-        await run_via_runner(app_state, acceptance, content, deliver_event)
+        try:
+            await run_via_runner(app_state, acceptance, content, deliver_event)
+        finally:
+            deliveries.pop(acceptance.run_id, None)
         return
 
     process: subprocess.Popen[str] | None = None
@@ -564,9 +581,11 @@ async def handle_run_create(
         terminal_event = await asyncio.shield(finalize_and_store_terminal())
 
     if terminal_error is not None:
+        deliveries.pop(acceptance.run_id, None)
         raise terminal_error
 
     await deliver_event(terminal_event)
+    deliveries.pop(acceptance.run_id, None)
 
 
 async def handle_subscription(
@@ -675,11 +694,13 @@ async def reconcile_artifact_confirmations_periodically(app: FastAPI) -> None:
     """Deliver durable storage receipts until runner-mode shutdown."""
     while True:
         try:
-            await reconcile_artifact_confirmations(
+            result = await reconcile_artifact_confirmations(
                 app.state.database,
                 app.state.runner_transport,
                 app.state.settings,
             )
+            for event in result.terminal_events:
+                await publish_live_terminal_event(app, event)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1069,6 +1090,7 @@ def create_app(
     application.state.run_tasks = set()
     application.state.run_slot_lock = asyncio.Lock()
     application.state.run_task_count = 0
+    application.state.live_run_deliveries = {}
     application.include_router(auth_router)
     application.include_router(history_router)
     application.include_router(conversation_files_router)

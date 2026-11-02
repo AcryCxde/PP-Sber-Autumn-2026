@@ -574,7 +574,7 @@ async def test_concurrent_claims_are_disjoint_and_stale_claim_is_recovered(tmp_p
         await database.dispose()
 
 
-async def test_stale_final_claim_is_terminalized_without_an_extra_transport_attempt(tmp_path) -> None:
+async def test_stale_final_claim_retries_idempotent_transport_once_without_exceeding_cap(tmp_path) -> None:
     database = Database(database_url(tmp_path / "stale-final-claim.db"))
     await database.create_schema()
     try:
@@ -591,12 +591,12 @@ async def test_stale_final_claim_is_terminalized_without_an_extra_transport_atte
             now=start + timedelta(seconds=6),
         )
 
-        assert transport.calls == []
-        assert (result.claimed, result.conflicted, result.rescheduled) == (1, 1, 0)
+        assert len(transport.calls) == 1
+        assert (result.claimed, result.confirmed, result.conflicted, result.rescheduled) == (1, 1, 0, 0)
         async with database.session() as session:
             row = await session.scalar(select(ArtifactConfirmation))
             assert (row.status, row.attempts, row.error_category) == (
-                "conflicted", 3, "attempts_exhausted",
+                "confirmed", 3, None,
             )
     finally:
         await database.dispose()
