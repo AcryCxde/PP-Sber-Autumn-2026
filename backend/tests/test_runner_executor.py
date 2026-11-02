@@ -1,5 +1,6 @@
 """Режим executor=runner: браузерный /ws → транспорт → (поддельный) runner → история backend."""
 
+import asyncio
 import hashlib
 import sqlite3
 import threading
@@ -7,12 +8,13 @@ import time
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 import backend.main as main_module
+from backend.artifact_confirmations import ReconciliationResult
 from backend.config import Settings
 from backend.db import Database
-from backend.models import RunnerContainer
+from backend.models import Artifact, ArtifactConfirmation, Conversation, RunnerContainer, Run, User
 from backend.tests.databases import database_url
 from backend.tests.auth_helpers import sign_in
 from backend.tests.fake_docker import FakeDocker, unpack
@@ -168,6 +170,340 @@ def test_run_executes_in_per_conversation_runner_container(tmp_path):
         assert client.delete(f"/api/conversations/{conversation}").status_code == 404
 
 
+def test_runner_artifact_without_optional_facts_uses_verified_bytes(tmp_path):
+    docker = FakeDocker()
+    data = b"verified bytes\n"
+
+    def script(command, container):
+        container.files["/workspace/project/result.txt"] = data
+        return [
+            ("run.started", {}),
+            ("artifact.created", {"artifact_id": "a1", "path": "result.txt",
+                                  "commit_sha": "abc123", "role_id": None}),
+            ("run.completed", {}),
+        ]
+
+    app = make_runner_app(tmp_path, docker)
+    with TestClient(app) as client:
+        sign_in(client)
+        runner = FakeRunner(app.state.runner_transport, docker, script)
+        runner.start()
+        try:
+            with client.websocket_connect("/ws") as websocket:
+                websocket.send_json(run_command("Сохрани файл"))
+                events = receive_until_terminal(websocket)
+        finally:
+            runner.halt.set()
+
+        assert events[-1]["type"] == "run.completed"
+        async def persisted_facts():
+            async with app.state.database.session() as session:
+                confirmation = await session.scalar(select(ArtifactConfirmation))
+                assert confirmation is not None
+                return confirmation.size_bytes, confirmation.sha256
+        assert client.portal.call(persisted_facts) == (len(data), hashlib.sha256(data).hexdigest())
+
+
+def test_runner_artifact_is_committed_before_transport_confirmation(tmp_path, monkeypatch):
+    docker = FakeDocker()
+    data = "строгий UTF-8\r\n".encode()
+    confirmations: list[dict] = []
+
+    def script(command, container):
+        container.files["/workspace/project/result.txt"] = data
+        return [
+            ("run.started", {}),
+            ("artifact.created", {"artifact_id": "a1", "path": "result.txt", "commit_sha": "abc123",
+                                  "role_id": None, "size_bytes": len(data),
+                                  "sha256": hashlib.sha256(data).hexdigest()}),
+            ("run.completed", {}),
+        ]
+
+    app = make_runner_app(tmp_path, docker)
+    original_confirm = app.state.runner_transport.confirm_saved
+
+    def confirm_after_commit(project, run_id, artifact_id, receipt):
+        confirmations.append(receipt)
+        original_confirm(project, run_id, artifact_id, receipt)
+
+    monkeypatch.setattr(app.state.runner_transport, "confirm_saved", confirm_after_commit)
+    with TestClient(app) as client:
+        sign_in(client)
+        runner = FakeRunner(app.state.runner_transport, docker, script)
+        runner.start()
+        try:
+            with client.websocket_connect("/ws") as websocket:
+                websocket.send_json(run_command("Сохрани файл"))
+                events = receive_until_terminal(websocket)
+        finally:
+            runner.halt.set()
+
+        assert [event["type"] for event in events] == [
+            "run.accepted", "run.started", "artifact.saved", "run.completed",
+        ]
+        assert confirmations == [{
+            "artifact_id": "a1",
+            "version_id": "abc123",
+            "size_bytes": len(data),
+            "download": f"/api/runs/{events[0]['run_id']}/events/{events[2]['seq']}/file",
+        }]
+
+        async def persisted_counts():
+            async with app.state.database.session() as session:
+                return (
+                    await session.scalar(select(func.count()).select_from(Artifact)),
+                    await session.scalar(select(func.count()).select_from(ArtifactConfirmation)),
+                )
+
+        assert client.portal.call(persisted_counts) == (1, 1)
+        assert [event["type"] for event in app.state.runner_transport.events(
+            events[0]["conversation_id"].lower(), events[0]["run_id"],
+        )][-2:] == ["artifact.saved", "run.completed"]
+
+
+def test_immediate_save_ignores_unrelated_confirmation_conflict(tmp_path, monkeypatch):
+    docker = FakeDocker()
+    data = b"current artifact"
+
+    def script(command, container):
+        container.files["/workspace/project/current.txt"] = data
+        return [
+            ("run.started", {}),
+            ("artifact.created", {"artifact_id": "current", "path": "current.txt", "commit_sha": "v1",
+                                  "role_id": None, "size_bytes": len(data),
+                                  "sha256": hashlib.sha256(data).hexdigest()}),
+            ("run.completed", {}),
+        ]
+
+    app = make_runner_app(tmp_path, docker)
+    async def reconcile_with_unrelated_conflict(database, transport, settings):
+        return ReconciliationResult(
+            claimed=1,
+            confirmed=0,
+            conflicted=1,
+            rescheduled=0,
+            conflicted_confirmation_ids=frozenset({"unrelated-confirmation"}),
+            terminal_events=(),
+        )
+
+    monkeypatch.setattr(
+        "backend.runner_executor.reconcile_artifact_confirmations",
+        reconcile_with_unrelated_conflict,
+    )
+    with TestClient(app) as client:
+        sign_in(client)
+        runner = FakeRunner(app.state.runner_transport, docker, script)
+        runner.start()
+        try:
+            with client.websocket_connect("/ws") as websocket:
+                websocket.send_json(run_command("Сохрани файл"))
+                events = receive_until_terminal(websocket)
+        finally:
+            runner.halt.set()
+
+    assert events[-1]["type"] == "run.completed"
+
+
+def test_runner_startup_reconciles_before_orphaning_awaiting_storage(tmp_path, monkeypatch):
+    docker = FakeDocker()
+    database = Database(database_url(tmp_path / "data" / "history.db"))
+    settings = Settings(
+        workspace_root=tmp_path / "workspaces",
+        executor="runner",
+        anthropic_auth_token=ANTHROPIC_TOKEN,
+        runner_transport_db=tmp_path / "data" / "transport.db",
+        runner_secret_file=tmp_path / "data" / "gateway.secret",
+        runner_supervise_interval_seconds=60,
+        artifact_confirmation_reconcile_interval_seconds=60,
+    )
+
+    async def seed() -> tuple[str, str, str]:
+        await database.migrate()
+        async with database.session() as session:
+            user = User(email="restart@example.com", password_hash="x")
+            conversation = Conversation(title="Restart")
+            session.add_all([user, conversation])
+            await session.flush()
+            run = Run(conversation_id=conversation.id, client_request_id="restart-request", status="running")
+            session.add(run)
+            await session.flush()
+            project_id = conversation.id.lower()
+            confirmation = ArtifactConfirmation(
+                run_id=run.id,
+                project_id=project_id,
+                transport_run_id=run.id,
+                artifact_id="artifact-1",
+                source_event_seq=1,
+                version_id="v1",
+                receipt={"artifact_id": "artifact-1", "version_id": "v1", "size_bytes": 1,
+                         "download": "/artifact"},
+                sha256="a" * 64,
+                size_bytes=1,
+            )
+            session.add(confirmation)
+            await session.commit()
+            return run.id, project_id, conversation.id
+
+    run_id, project_id, _ = asyncio.run(seed())
+    transport = main_module.RunnerTransport(settings.runner_transport_db)
+    transport.message(project_id, run_id, "restart-request", "start")
+    transport.ingest(project_id, 1, {
+        "event_id": str(uuid4()), "project_id": project_id, "run_id": run_id,
+        "occurred_at": "2026-10-30T00:00:00Z", "type": "artifact.created",
+        "payload": {"artifact_id": "artifact-1", "path": "result.txt", "commit_sha": "v1",
+                    "role_id": None, "size_bytes": 1, "sha256": "a" * 64},
+    })
+    transport.ingest(project_id, 2, {
+        "event_id": str(uuid4()), "project_id": project_id, "run_id": run_id,
+        "occurred_at": "2026-10-30T00:00:01Z", "type": "run.completed", "payload": {},
+    })
+    assert transport.status(project_id, run_id)["awaiting_storage"]
+
+    app = main_module.create_app(database, settings)
+    app.state.runner_manager._client = docker
+    app.state.runner_manager._environ = {
+        "ANTHROPIC_BASE_URL": "https://proxy.example/anthropic",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-5.6-luna",
+        "ANTHROPIC_AUTH_TOKEN": ANTHROPIC_TOKEN,
+    }
+    calls = 0
+    original_confirm = app.state.runner_transport.confirm_saved
+
+    def confirm_once(project, confirmed_run_id, artifact_id, receipt):
+        nonlocal calls
+        calls += 1
+        original_confirm(project, confirmed_run_id, artifact_id, receipt)
+
+    monkeypatch.setattr(app.state.runner_transport, "confirm_saved", confirm_once)
+    with TestClient(app):
+        async def states():
+            async with database.session() as session:
+                run = await session.get(Run, run_id)
+                confirmation = await session.scalar(select(ArtifactConfirmation))
+                return run.status, confirmation.status
+
+        assert asyncio.run(states()) == ("outcome_unknown", "confirmed")
+        assert app.state.runner_transport.status(project_id, run_id)["status"] == "completed"
+        assert calls == 1
+
+    async def dispose() -> None:
+        await database.dispose()
+
+    asyncio.run(dispose())
+
+
+def test_runner_startup_conflict_never_false_completes(tmp_path, monkeypatch):
+    docker = FakeDocker()
+    database = Database(database_url(tmp_path / "data" / "history.db"))
+    settings = Settings(
+        workspace_root=tmp_path / "workspaces",
+        executor="runner",
+        anthropic_auth_token=ANTHROPIC_TOKEN,
+        runner_transport_db=tmp_path / "data" / "transport.db",
+        runner_secret_file=tmp_path / "data" / "gateway.secret",
+        runner_supervise_interval_seconds=60,
+    )
+
+    async def seed() -> tuple[str, str]:
+        await database.migrate()
+        async with database.session() as session:
+            user = User(email="conflict@example.com", password_hash="x")
+            conversation = Conversation(title="Conflict")
+            session.add_all([user, conversation])
+            await session.flush()
+            run = Run(conversation_id=conversation.id, client_request_id="conflict-request", status="running")
+            session.add(run)
+            await session.flush()
+            project_id = conversation.id.lower()
+            session.add(ArtifactConfirmation(
+                run_id=run.id, project_id=project_id, transport_run_id=run.id,
+                artifact_id="artifact-1", source_event_seq=1,
+                version_id="v1", receipt={"artifact_id": "artifact-1", "version_id": "v1",
+                                             "size_bytes": 1, "download": "/artifact"},
+                sha256="a" * 64, size_bytes=1,
+            ))
+            await session.commit()
+            return run.id, project_id
+
+    run_id, project_id = asyncio.run(seed())
+    transport = main_module.RunnerTransport(settings.runner_transport_db)
+    transport.message(project_id, run_id, "conflict-request", "start")
+    transport.ingest(project_id, 1, {
+        "event_id": str(uuid4()), "project_id": project_id, "run_id": run_id,
+        "occurred_at": "2026-10-30T00:00:00Z", "type": "artifact.created",
+        "payload": {"artifact_id": "artifact-1", "path": "result.txt", "commit_sha": "v1",
+                    "role_id": None, "size_bytes": 1, "sha256": "a" * 64},
+    })
+    transport.ingest(project_id, 2, {
+        "event_id": str(uuid4()), "project_id": project_id, "run_id": run_id,
+        "occurred_at": "2026-10-30T00:00:01Z", "type": "run.completed", "payload": {},
+    })
+    transport.confirm_saved(project_id, run_id, "artifact-1", {
+        "artifact_id": "artifact-1", "version_id": "other", "size_bytes": 1, "download": "/other",
+    })
+
+    app = main_module.create_app(database, settings)
+    app.state.runner_manager._client = docker
+    app.state.runner_manager._environ = {
+        "ANTHROPIC_BASE_URL": "https://proxy.example/anthropic",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-5.6-luna",
+        "ANTHROPIC_AUTH_TOKEN": ANTHROPIC_TOKEN,
+    }
+    with TestClient(app):
+        async def states():
+            async with database.session() as session:
+                run = await session.get(Run, run_id)
+                confirmation = await session.scalar(select(ArtifactConfirmation))
+                return run.status, confirmation.status
+
+        assert asyncio.run(states()) == ("outcome_unknown", "conflicted")
+        assert app.state.runner_transport.status(project_id, run_id)["status"] == "completed"
+
+    asyncio.run(database.dispose())
+
+
+def test_runner_artifact_rejection_has_no_persisted_receipt(tmp_path):
+    docker = FakeDocker()
+    data = b"\xffnot-utf8"
+
+    def script(command, container):
+        container.files["/workspace/project/result.txt"] = data
+        return [
+            ("run.started", {}),
+            ("artifact.created", {"artifact_id": "a1", "path": "result.txt", "commit_sha": "abc123",
+                                  "role_id": None, "size_bytes": len(data),
+                                  "sha256": hashlib.sha256(data).hexdigest()}),
+        ]
+
+    app = make_runner_app(tmp_path, docker)
+    with TestClient(app) as client:
+        sign_in(client)
+        runner = FakeRunner(app.state.runner_transport, docker, script)
+        runner.start()
+        try:
+            with client.websocket_connect("/ws") as websocket:
+                websocket.send_json(run_command("Сохрани файл"))
+                events = receive_until_terminal(websocket)
+        finally:
+            runner.halt.set()
+
+        assert events[-1]["type"] == "run.failed"
+        assert events[-1]["error_code"] == "encoding"
+
+        async def persisted_counts():
+            async with app.state.database.session() as session:
+                return (
+                    await session.scalar(select(func.count()).select_from(Artifact)),
+                    await session.scalar(select(func.count()).select_from(ArtifactConfirmation)),
+                )
+
+        assert client.portal.call(persisted_counts) == (0, 0)
+        transport_events = app.state.runner_transport.events(
+            events[0]["conversation_id"].lower(), events[0]["run_id"],
+        )
+        assert "artifact.saved" not in [event["type"] for event in transport_events]
+
+
 def test_conversation_from_cli_mode_requires_reset_before_runner(tmp_path):
     from backend.repository import accept_run, finalize_run
 
@@ -196,8 +532,9 @@ def test_conversation_from_cli_mode_requires_reset_before_runner(tmp_path):
         assert docker.started == []
 
 
-def test_agent_question_is_answered_by_next_message(tmp_path):
+def test_agent_question_answer_confirms_artifact_on_original_transport_run(tmp_path):
     docker = FakeDocker()
+    data = b"# Result\n"
     question = {"text": "Какой формат?", "header": None, "multi_select": False, "allow_custom": True,
                 "options": [{"label": "md", "description": None}, {"label": "txt", "description": None}]}
 
@@ -205,8 +542,12 @@ def test_agent_question_is_answered_by_next_message(tmp_path):
         if command["kind"] == "message":
             return [("run.started", {}),
                     ("facilitator.question", {"question_id": "f1", "questions": [question]})]
+        container.files["/workspace/project/result.md"] = data
         return [("user.answer.accepted", {"question_id": "f1", "answers": command["answers"]}),
                 ("message.created", {"role_id": None, "text": "Сделал в md"}),
+                ("artifact.created", {"artifact_id": "result", "path": "result.md", "commit_sha": "v1",
+                                      "role_id": None, "size_bytes": len(data),
+                                      "sha256": hashlib.sha256(data).hexdigest()}),
                 ("run.completed", {})]
 
     app = make_runner_app(tmp_path, docker)
@@ -234,10 +575,15 @@ def test_agent_question_is_answered_by_next_message(tmp_path):
             "options": [{"label": "md", "description": None}, {"label": "txt", "description": None}],
         }]
         assert second[-1]["status"] == "completed"
-        assert second[-2]["content"] == "Сделал в md"
+        assert any(event.get("content") == "Сделал в md" for event in second)
         answer = runner.received[-1]
         assert answer["kind"] == "fork_answer" and answer["answers"] == {"Какой формат?": "md"}
         assert answer["id"] == second[0]["run_id"]
+        first_transport_run_id = runner.received[0]["id"]
+        assert first_transport_run_id != second[0]["run_id"]
+        assert [event["type"] for event in app.state.runner_transport.events(
+            conversation.lower(), first_transport_run_id,
+        )][-2:] == ["artifact.saved", "run.completed"]
         # Один контейнер на диалог: второй запрос не создавал новый.
         assert len(docker.started) == 1
 

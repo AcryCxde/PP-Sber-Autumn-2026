@@ -1,15 +1,17 @@
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import exists, select, update
+from sqlalchemy import case, exists, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import Artifact, Conversation, Event, Message, Project, Run
+from backend.models import Artifact, ArtifactConfirmation, Conversation, Event, Message, Project, Run
 from backend.public_events import (
     SAFE_FAILURE_CODES,
     SAFE_UNKNOWN_CODES,
@@ -71,6 +73,28 @@ class RunEventPage:
     conversation_id: str
     run_status: str
     events: list[Event]
+
+
+@dataclass(frozen=True)
+class StagedArtifact:
+    event: Event
+    receipt: Mapping[str, object]
+    confirmation_id: str
+    created: bool
+
+
+@dataclass(frozen=True)
+class ArtifactConfirmationClaim:
+    id: str
+    run_id: str
+    project_id: str
+    transport_run_id: str
+    artifact_id: str
+    receipt: Mapping[str, object]
+    attempts: int
+    claimed_at: datetime
+    created_at: datetime
+    recovered_exhausted_claim: bool
 
 
 # Заголовок пустого диалога, созданного ради вложений; первый запрос заменяет его.
@@ -525,6 +549,7 @@ async def finalize_run(
     turns: int | None = None,
     error: str | None = None,
     error_code: str | None = None,
+    commit: bool = True,
 ) -> RunFinalization:
     del error
     if status not in TERMINAL_RUN_STATUSES:
@@ -554,7 +579,8 @@ async def finalize_run(
                 _terminal_event_data(run, conversation, assistant_message),
                 allow_terminal=True,
             )
-            await session.commit()
+            if commit:
+                await session.commit()
         return RunFinalization(
             assistant_message=assistant_message,
             terminal_event=terminal_event,
@@ -566,6 +592,19 @@ async def finalize_run(
         if session_id != run.resume_session_id:
             status = "failed"
             error_code = "claude_session_mismatch"
+
+    if status == "completed":
+        confirmation_pending = await session.scalar(
+            select(
+                exists().where(
+                    ArtifactConfirmation.run_id == run.id,
+                    ArtifactConfirmation.status.in_(("pending", "confirming")),
+                )
+            )
+        )
+        if confirmation_pending:
+            status = "outcome_unknown"
+            error_code = "artifact_confirmation_pending"
 
     if assistant_content:
         assistant_message = Message(
@@ -614,7 +653,8 @@ async def finalize_run(
         _terminal_event_data(run, conversation, assistant_message),
         allow_terminal=True,
     )
-    await session.commit()
+    if commit:
+        await session.commit()
     return RunFinalization(
         assistant_message=assistant_message,
         terminal_event=terminal_event,
@@ -631,6 +671,345 @@ async def append_event(
     event = await _append_event_in_transaction(session, run_id, event_data)
     await session.commit()
     return event
+
+
+async def stage_runner_artifact(
+    session: AsyncSession,
+    run_id: str,
+    *,
+    project_id: str,
+    transport_run_id: str,
+    artifact_id: str,
+    path: str,
+    content: str,
+    source_bytes: bytes,
+    version_id: str,
+    sha256: str,
+    max_bytes: int | None = None,
+) -> StagedArtifact:
+    """Stage an exact runner artifact with its event and confirmation intent.
+
+    The caller owns the transaction and must commit or roll back this work.
+    """
+    try:
+        encoded_content = content.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("Artifact content is not valid UTF-8") from error
+    if "\x00" in content or encoded_content != source_bytes:
+        raise ValueError("Artifact content does not match source bytes")
+    if max_bytes is not None and len(source_bytes) > max_bytes:
+        raise ValueError("Artifact exceeds the configured size limit")
+    if hashlib.sha256(source_bytes).hexdigest() != sha256:
+        raise ValueError("Artifact hash does not match source bytes")
+
+    existing_confirmation = await session.scalar(
+        select(ArtifactConfirmation).where(
+            ArtifactConfirmation.run_id == run_id,
+            ArtifactConfirmation.artifact_id == artifact_id,
+        )
+    )
+    if existing_confirmation is not None:
+        if (
+            existing_confirmation.project_id != project_id
+            or existing_confirmation.transport_run_id != transport_run_id
+            or existing_confirmation.version_id != version_id
+            or existing_confirmation.sha256 != sha256
+            or existing_confirmation.size_bytes != len(source_bytes)
+        ):
+            raise ValueError("Artifact confirmation conflicts with persisted identity")
+        event = await session.scalar(
+            select(Event).where(
+                Event.run_id == run_id,
+                Event.seq == existing_confirmation.source_event_seq,
+            )
+        )
+        if event is None:
+            raise ValueError("Artifact confirmation is missing its source event")
+        return StagedArtifact(
+            event=event,
+            receipt=MappingProxyType(dict(existing_confirmation.receipt)),
+            confirmation_id=existing_confirmation.id,
+            created=False,
+        )
+
+    event = await _append_event_in_transaction(
+        session,
+        run_id,
+        artifact_saved_event(
+            path=path,
+            size_bytes=len(source_bytes),
+            truncated=False,
+            num_lines=content.count("\n") + 1,
+        ),
+    )
+    artifact = Artifact(
+        run_id=run_id,
+        event_seq=event.seq,
+        path=path,
+        content=content,
+        size_bytes=len(source_bytes),
+        truncated=False,
+    )
+    receipt = {
+        "artifact_id": artifact_id,
+        "version_id": version_id,
+        "size_bytes": len(source_bytes),
+        "download": f"/api/runs/{run_id}/events/{event.seq}/file",
+    }
+    confirmation = ArtifactConfirmation(
+        run_id=run_id,
+        project_id=project_id,
+        transport_run_id=transport_run_id,
+        artifact_id=artifact_id,
+        source_event_seq=event.seq,
+        version_id=version_id,
+        receipt=receipt,
+        sha256=sha256,
+        size_bytes=len(source_bytes),
+        status="pending",
+    )
+    session.add_all([artifact, confirmation])
+    await session.flush()
+
+    persisted = await session.execute(
+        select(
+            Artifact.run_id,
+            Artifact.event_seq,
+            Artifact.path,
+            Artifact.content,
+            Artifact.size_bytes,
+            Artifact.truncated,
+            Event.type,
+            Event.payload,
+            ArtifactConfirmation.project_id,
+            ArtifactConfirmation.transport_run_id,
+            ArtifactConfirmation.artifact_id,
+            ArtifactConfirmation.version_id,
+            ArtifactConfirmation.receipt,
+            ArtifactConfirmation.sha256,
+            ArtifactConfirmation.size_bytes,
+            ArtifactConfirmation.status,
+        )
+        .join(Event, (Event.run_id == Artifact.run_id) & (Event.seq == Artifact.event_seq))
+        .join(
+            ArtifactConfirmation,
+            (ArtifactConfirmation.run_id == Artifact.run_id)
+            & (ArtifactConfirmation.source_event_seq == Artifact.event_seq),
+        )
+        .where(Artifact.run_id == run_id, Artifact.event_seq == event.seq)
+    )
+    row = persisted.one_or_none()
+    expected = (
+        run_id, event.seq, path, content, len(source_bytes), False,
+        "artifact.saved", event.payload, project_id, transport_run_id, artifact_id, version_id,
+        receipt, sha256, len(source_bytes), "pending",
+    )
+    if row is None or tuple(row) != expected:
+        raise ValueError("Persisted artifact staging data did not match input")
+    return StagedArtifact(
+        event=event,
+        receipt=MappingProxyType(receipt),
+        confirmation_id=confirmation.id,
+        created=True,
+    )
+
+
+async def claim_due_artifact_confirmations(
+    session: AsyncSession,
+    *,
+    now: datetime,
+    limit: int,
+    lease_seconds: float,
+    max_attempts: int,
+) -> list[ArtifactConfirmationClaim]:
+    """Atomically lease a deterministic bounded set of due confirmation intents."""
+    if limit <= 0 or lease_seconds <= 0 or max_attempts <= 0:
+        raise ValueError("Confirmation claim settings must be positive")
+    lease_expires_at = now - timedelta(seconds=lease_seconds)
+    due = (
+        (ArtifactConfirmation.status == "pending")
+        & (
+            (ArtifactConfirmation.next_attempt_at.is_(None))
+            | (ArtifactConfirmation.next_attempt_at <= now)
+        )
+    ) | (
+        (ArtifactConfirmation.status == "confirming")
+        & (ArtifactConfirmation.claimed_at <= lease_expires_at)
+    )
+    candidates = (await session.execute(
+        select(
+            ArtifactConfirmation.id,
+            ArtifactConfirmation.status,
+            ArtifactConfirmation.attempts,
+        )
+        .where(
+            due,
+            (ArtifactConfirmation.attempts < max_attempts)
+            | (
+                (ArtifactConfirmation.status == "confirming")
+                & (ArtifactConfirmation.attempts == max_attempts)
+            ),
+        )
+        .order_by(ArtifactConfirmation.next_attempt_at, ArtifactConfirmation.created_at, ArtifactConfirmation.id)
+        .limit(limit),
+    )).all()
+    claims: list[ArtifactConfirmationClaim] = []
+    for confirmation_id, prior_status, prior_attempts in candidates:
+        claimed = await session.scalar(
+            update(ArtifactConfirmation)
+            .where(
+                ArtifactConfirmation.id == confirmation_id,
+                due,
+                (ArtifactConfirmation.attempts < max_attempts)
+                | (
+                    (ArtifactConfirmation.status == "confirming")
+                    & (ArtifactConfirmation.attempts == max_attempts)
+                ),
+            )
+            .values(
+                status="confirming",
+                attempts=case(
+                    (ArtifactConfirmation.attempts < max_attempts, ArtifactConfirmation.attempts + 1),
+                    else_=ArtifactConfirmation.attempts,
+                ),
+                claimed_at=now,
+                next_attempt_at=None,
+                error_category=None,
+                updated_at=now,
+            )
+            .returning(ArtifactConfirmation)
+        )
+        if claimed is not None:
+            claims.append(ArtifactConfirmationClaim(
+                id=claimed.id,
+                run_id=claimed.run_id,
+                project_id=claimed.project_id,
+                transport_run_id=claimed.transport_run_id,
+                artifact_id=claimed.artifact_id,
+                receipt=MappingProxyType(dict(claimed.receipt)),
+                attempts=claimed.attempts,
+                claimed_at=now,
+                created_at=claimed.created_at,
+                recovered_exhausted_claim=(
+                    prior_status == "confirming" and prior_attempts == max_attempts
+                ),
+            ))
+    await session.commit()
+    return claims
+
+
+async def claim_pending_artifact_abandons(
+    session: AsyncSession,
+    *,
+    limit: int,
+) -> list[ArtifactConfirmationClaim]:
+    """Claim bounded terminal transport notices not confirmed as delivered."""
+    candidate_ids = list(await session.scalars(
+        select(ArtifactConfirmation.id)
+        .where(
+            ArtifactConfirmation.status == "conflicted",
+            ArtifactConfirmation.abandon_delivered.is_(False),
+        )
+        .order_by(ArtifactConfirmation.updated_at, ArtifactConfirmation.id)
+        .limit(limit),
+    ))
+    return [
+        ArtifactConfirmationClaim(
+            id=confirmation.id,
+            run_id=confirmation.run_id,
+            project_id=confirmation.project_id,
+            transport_run_id=confirmation.transport_run_id,
+            artifact_id=confirmation.artifact_id,
+            receipt=MappingProxyType(dict(confirmation.receipt)),
+            attempts=confirmation.attempts,
+            claimed_at=confirmation.claimed_at or datetime.now(UTC),
+            created_at=confirmation.created_at,
+            recovered_exhausted_claim=False,
+        )
+        for confirmation_id in candidate_ids
+        if (confirmation := await session.get(ArtifactConfirmation, confirmation_id)) is not None
+    ]
+
+
+async def mark_artifact_abandon_delivered(
+    session: AsyncSession,
+    claim: ArtifactConfirmationClaim,
+) -> bool:
+    changed = await session.scalar(
+        update(ArtifactConfirmation)
+        .where(
+            ArtifactConfirmation.id == claim.id,
+            ArtifactConfirmation.status == "conflicted",
+            ArtifactConfirmation.abandon_delivered.is_(False),
+        )
+        .values(abandon_delivered=True, updated_at=datetime.now(UTC))
+        .returning(ArtifactConfirmation.id)
+    )
+    await session.commit()
+    return changed is not None
+
+
+async def mark_artifact_confirmation_confirmed(
+    session: AsyncSession,
+    claim: ArtifactConfirmationClaim,
+) -> bool:
+    changed = await session.scalar(
+        update(ArtifactConfirmation)
+        .where(
+            ArtifactConfirmation.id == claim.id,
+            ArtifactConfirmation.status == "confirming",
+            ArtifactConfirmation.attempts == claim.attempts,
+            ArtifactConfirmation.claimed_at == claim.claimed_at,
+        )
+        .values(status="confirmed", claimed_at=None, next_attempt_at=None,
+                error_category=None, updated_at=datetime.now(UTC))
+        .returning(ArtifactConfirmation.id)
+    )
+    return changed is not None
+
+
+async def mark_artifact_confirmation_conflicted(
+    session: AsyncSession,
+    claim: ArtifactConfirmationClaim,
+    *,
+    category: str,
+) -> bool:
+    changed = await session.scalar(
+        update(ArtifactConfirmation)
+        .where(
+            ArtifactConfirmation.id == claim.id,
+            ArtifactConfirmation.status == "confirming",
+            ArtifactConfirmation.attempts == claim.attempts,
+            ArtifactConfirmation.claimed_at == claim.claimed_at,
+        )
+        .values(status="conflicted", claimed_at=None, next_attempt_at=None,
+                error_category=category, updated_at=datetime.now(UTC))
+        .returning(ArtifactConfirmation.id)
+    )
+    return changed is not None
+
+
+async def reschedule_artifact_confirmation(
+    session: AsyncSession,
+    claim: ArtifactConfirmationClaim,
+    *,
+    category: str,
+    next_attempt_at: datetime,
+) -> bool:
+    changed = await session.scalar(
+        update(ArtifactConfirmation)
+        .where(
+            ArtifactConfirmation.id == claim.id,
+            ArtifactConfirmation.status == "confirming",
+            ArtifactConfirmation.attempts == claim.attempts,
+            ArtifactConfirmation.claimed_at == claim.claimed_at,
+        )
+        .values(status="pending", claimed_at=None, next_attempt_at=next_attempt_at,
+                error_category=category, updated_at=datetime.now(UTC))
+        .returning(ArtifactConfirmation.id)
+    )
+    await session.commit()
+    return changed is not None
 
 
 async def append_artifact(
@@ -667,6 +1046,95 @@ async def append_artifact(
     return event
 
 
+async def finalize_artifact_confirmation_success(
+    session: AsyncSession,
+    run_id: str,
+    *,
+    commit: bool = True,
+) -> Event | None:
+    """Promote a terminal run withheld solely for pending artifact delivery."""
+    run = await session.get(Run, run_id)
+    if (
+        run is None
+        or run.status != "outcome_unknown"
+        or run.error_code != "artifact_confirmation_pending"
+    ):
+        return None
+    confirmation_pending = await session.scalar(
+        select(
+            exists().where(
+                ArtifactConfirmation.run_id == run.id,
+                ArtifactConfirmation.status.in_(("pending", "confirming")),
+            )
+        )
+    )
+    if confirmation_pending:
+        return None
+    conversation = await session.get(Conversation, run.conversation_id)
+    if conversation is None:
+        raise LookupError(f"Conversation {run.conversation_id} was not found")
+    assistant_message = await session.scalar(
+        select(Message).where(Message.run_id == run.id, Message.role == "assistant")
+    )
+    run.status = "completed"
+    run.error_code = None
+    if run.claude_session_id:
+        conversation.claude_session_id = run.claude_session_id
+        conversation.context_state = "active"
+    conversation.updated_at = datetime.now(UTC)
+    terminal_event = await _append_event_in_transaction(
+        session,
+        run_id,
+        _terminal_event_data(run, conversation, assistant_message),
+        allow_terminal=True,
+    )
+    if commit:
+        await session.commit()
+    return terminal_event
+
+
+async def finalize_artifact_confirmation_failure(
+    session: AsyncSession,
+    run_id: str,
+    *,
+    commit: bool = True,
+) -> Event | None:
+    """Terminally mark the owning run unknown when artifact delivery cannot converge."""
+    run = await session.get(Run, run_id)
+    if run is None:
+        return None
+    if run.status in TERMINAL_RUN_STATUSES:
+        if not (
+            run.status == "outcome_unknown"
+            and run.error_code == "artifact_confirmation_pending"
+        ):
+            return None
+        conversation = await session.get(Conversation, run.conversation_id)
+        if conversation is None:
+            raise LookupError(f"Conversation {run.conversation_id} was not found")
+        run.error_code = "artifact_confirmation_failed"
+        terminal_event = await _append_event_in_transaction(
+            session,
+            run_id,
+            _terminal_event_data(run, conversation, None),
+            allow_terminal=True,
+        )
+        if commit:
+            await session.commit()
+        return terminal_event
+    finalization = await finalize_run(
+        session,
+        run_id,
+        assistant_content=None,
+        status="outcome_unknown",
+        exit_code=run.exit_code,
+        session_id=None,
+        error_code="artifact_confirmation_failed",
+        commit=commit,
+    )
+    return finalization.terminal_event
+
+
 async def reconcile_orphaned_runs(session: AsyncSession) -> list[Event]:
     active_runs = list(
         await session.scalars(
@@ -675,8 +1143,17 @@ async def reconcile_orphaned_runs(session: AsyncSession) -> list[Event]:
             .order_by(Run.id)
         )
     )
+    pending_confirmation_run_ids = set(
+        await session.scalars(
+            select(ArtifactConfirmation.run_id).where(
+                ArtifactConfirmation.status.in_(("pending", "confirming"))
+            )
+        )
+    )
     terminal_events: list[Event] = []
     for run in active_runs:
+        if run.id in pending_confirmation_run_ids:
+            continue
         finalization = await finalize_run(
             session,
             run.id,

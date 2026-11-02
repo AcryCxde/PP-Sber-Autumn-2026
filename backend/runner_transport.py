@@ -128,9 +128,11 @@ def validate_event(event: Any, project: str) -> dict[str, Any]:
                     raise TransportError("invalid_question")
     if kind == "artifact.created":
         _path(payload.get("path"))
-        if not all(isinstance(payload.get(k), str) and payload[k]
-                   for k in ("artifact_id", "commit_sha")):
-            raise TransportError("invalid_artifact")
+        try:
+            _id(payload.get("artifact_id"))
+            _id(payload.get("commit_sha"))
+        except TransportError:
+            raise TransportError("invalid_artifact") from None
         if "size_bytes" in payload and (
                 type(payload["size_bytes"]) is not int or payload["size_bytes"] < 0):
             raise TransportError("invalid_artifact")

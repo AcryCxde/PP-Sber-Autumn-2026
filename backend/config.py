@@ -23,6 +23,12 @@ class Settings(BaseSettings):
         default=10 * 1024 * 1024,
         gt=0,
     )
+    artifact_confirmation_batch_size: int = Field(default=20, gt=0, le=100)
+    artifact_confirmation_max_attempts: int = Field(default=8, gt=0, le=100)
+    artifact_confirmation_timeout_seconds: float = Field(default=10.0, gt=0, le=300)
+    artifact_confirmation_lease_seconds: float = Field(default=60.0, gt=0, le=3600)
+    artifact_confirmation_max_retry_delay_seconds: float = Field(default=300.0, gt=0, le=86400)
+    artifact_confirmation_reconcile_interval_seconds: float = Field(default=5.0, gt=0, le=3600)
     workspace_root: Path = Path.home() / ".claude-web" / "workspaces"
     subscription_window_seconds: float = Field(default=15.0, gt=0)
     subscription_poll_interval_seconds: float = Field(default=0.25, gt=0)

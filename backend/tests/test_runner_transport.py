@@ -96,6 +96,27 @@ def test_storage_missing_holds_completed_and_confirmation_orders_terminal(transp
         transport.ingest("p1", 4, draft("run.started", event_id="e3"))
 
 
+def test_artifact_identifiers_match_persisted_confirmation_bounds(transport):
+    transport.message("p1", "run-1", "c1", "go")
+    artifact = {
+        "artifact_id": "a" * 64,
+        "path": "result.md",
+        "commit_sha": "b" * 64,
+        "role_id": None,
+    }
+    assert transport.ingest("p1", 2, draft("artifact.created", artifact))
+
+
+@pytest.mark.parametrize("field", ["artifact_id", "commit_sha"])
+def test_artifact_identifiers_reject_values_beyond_persisted_confirmation_bounds(transport, field):
+    transport.message("p1", "run-1", "c1", "go")
+    artifact = {"artifact_id": "a1", "path": "result.md", "commit_sha": "abc", "role_id": None}
+    artifact[field] = "a" * 65
+
+    with pytest.raises(TransportError, match="invalid_artifact"):
+        transport.ingest("p1", 2, draft("artifact.created", artifact))
+
+
 def test_heartbeat_loss_is_terminal_not_awaiting_answer(transport):
     transport.message("p1", "run-1", "c1", "go")
     transport.hello("p1")
