@@ -114,17 +114,40 @@ def test_open_forks_returns_unanswered_questions(tmp_path: Path) -> None:
     assert open_questions(path, "t1") == ("Разделы?",)
 
 
-def test_turn_interrupted_clears_forks_already_handled_by_previous_recovery(
-    tmp_path: Path,
-) -> None:
+def test_repeated_interruption_preserves_original_carried_fork(tmp_path: Path) -> None:
     path = tmp_path / "events.jsonl"
     write_rows(path, [
         question(1, "f1", "Формат?"),
         {"seq": 2, "turn_id": "t1", "kind": "turn_interrupted", "payload": {}},
-        question(3, "f2", "Формат?"),
+        {"seq": 3, "turn_id": "t1", "kind": "turn_interrupted", "payload": {}},
     ])  # fmt: skip
-    assert [f.fork_id for f in open_forks(path, "t1")] == ["f2"]
+    assert [f.fork_id for f in open_forks(path, "t1")] == ["f1"]
     assert open_questions(path, "t1") == ("Формат?",)
+
+
+def test_first_reasked_question_supersedes_carried_forks_and_later_questions_coexist(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "events.jsonl"
+    write_rows(path, [
+        question(1, "old", "Формат?"),
+        question(2, "other", "Разделы?"),
+        {"seq": 3, "turn_id": "t1", "kind": "turn_interrupted", "payload": {}},
+        question(4, "new", "Формат?"),
+        question(5, "later", "Срок?"),
+    ])  # fmt: skip
+    assert [f.fork_id for f in open_forks(path, "t1")] == ["new", "later"]
+    assert open_questions(path, "t1") == ("Формат?", "Срок?")
+
+
+def test_answer_removes_matching_carried_fork(tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    write_rows(path, [
+        question(1, "f1", "Формат?"),
+        {"seq": 2, "turn_id": "t1", "kind": "turn_interrupted", "payload": {}},
+        {"seq": 3, "turn_id": "t1", "kind": "fork_answered", "payload": {"fork_id": "f1"}},
+    ])  # fmt: skip
+    assert open_forks(path, "t1") == ()
 
 
 def test_open_forks_without_log_is_empty(tmp_path: Path) -> None:
