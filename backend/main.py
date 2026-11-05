@@ -9,27 +9,24 @@ from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 
 from backend import models  # noqa: F401
-from backend.api.admin import router as admin_router
 from backend.api.auth import router as auth_router
 from backend.api.conversation_files import router as conversation_files_router
 from backend.api.history import router as history_router
-from backend.api.product import router as product_router
 from backend.api.projects import router as projects_router
 from backend.auth import CurrentUser, owns_conversation, owns_run, websocket_user_id
 from backend.config import PROJECT_ROOT, Settings
 from backend.container_registry import ContainerRegistry
 from backend.containers import ContainerError, ContainerManager
 from backend.db import Database
-from backend.artifact_files import save_agent_file
-from backend.materials import MATERIALS_DIR, conversation_materials, materials_note, write_workspace_materials
+from backend.materials import conversation_materials, materials_note, write_workspace_materials
 from backend.models import Event, Message, Run
 from backend.parser import (
     NormalizedEvent,
+    bounded_file_content,
     normalized_event,
     parse_event,
 )
@@ -40,6 +37,7 @@ from backend.repository import (
     RunAcceptance,
     RunAcceptanceError,
     accept_run,
+    append_artifact,
     append_event,
     client_request_exists,
     finalize_run,
@@ -48,17 +46,14 @@ from backend.repository import (
     reconcile_orphaned_runs,
 )
 from backend.runner_app import RunnerBridge, create_runner_router
-from backend.product import ProductError
 from backend.runner_executor import run_via_runner
 from backend.runner_transport import RunnerTransport
-from backend.storage import create_storage
 from backend.workspace import (
     WorkspaceError,
     acquire_gateway_lease,
     conversation_workspace,
     normalize_artifact_path,
     validate_workspace_root,
-    workspace_files,
 )
 
 
@@ -333,16 +328,6 @@ async def handle_run_create(
     if acceptance.idempotent_replay:
         return
 
-    await execute_accepted_run(app_state, acceptance, content, deliver_event)
-
-
-async def execute_accepted_run(
-    app_state: Any,
-    acceptance: Any,
-    content: str,
-    deliver_event: Any,
-) -> None:
-    """Выполняет принятый запуск; deliver_event доставляет сохранённые события подписчику."""
     if app_state.settings.executor == "runner":
         await run_via_runner(app_state, acceptance, content, deliver_event)
         return
@@ -366,8 +351,6 @@ async def execute_accepted_run(
     terminal_error: BaseException | None = None
     terminal_event: Event | None = None
     workspace: Path | None = None
-    files_before: dict[str, tuple[int, int]] | None = None
-    written_paths: set[str] = set()
 
     async def publish_event(event_data: dict[str, Any]) -> Event:
         async with app_state.database.session() as session:
@@ -391,33 +374,24 @@ async def execute_accepted_run(
             )
             return
 
+        bounded_content, size_bytes, truncated = bounded_file_content(
+            file_content,
+            max_bytes=app_state.settings.artifact_max_download_bytes,
+        )
         try:
-            stored_event = await save_agent_file(
-                app_state, acceptance.run_id, relative_path, file_content.encode("utf-8")
-            )
+            async with app_state.database.session() as session:
+                stored_event = await append_artifact(
+                    session,
+                    acceptance.run_id,
+                    path=relative_path,
+                    content=bounded_content,
+                    size_bytes=size_bytes,
+                    truncated=truncated,
+                    num_lines=file_content.count("\n") + 1,
+                )
         except Exception as error:
             raise ArtifactSaveError("Artifact snapshot could not be saved") from error
-        written_paths.add(relative_path)
         await deliver_event(stored_event)
-
-    async def persist_changed_files() -> None:
-        """Файлы, которые агент создал или изменил не через Write (например, скриптом)."""
-        if workspace is None or files_before is None:
-            return
-        after = await asyncio.to_thread(workspace_files, workspace, skip_dirs={MATERIALS_DIR})
-        changed = [
-            path for path, fact in sorted(after.items())
-            if files_before.get(path) != fact and path not in written_paths
-        ][: app_state.settings.artifact_scan_max_files]
-        for path in changed:
-            if after[path][1] > app_state.settings.artifact_max_storage_bytes:
-                continue
-            data = await asyncio.to_thread((workspace / path).read_bytes)
-            try:
-                stored_event = await save_agent_file(app_state, acceptance.run_id, path, data)
-            except Exception as error:
-                raise ArtifactSaveError("Artifact snapshot could not be saved") from error
-            await deliver_event(stored_event)
 
     async def finalize_and_store_terminal() -> Event:
         assistant_content = "\n\n".join(assistant_parts).strip()
@@ -452,7 +426,6 @@ async def execute_accepted_run(
         materials = await conversation_materials(app_state.database, acceptance.conversation_id)
         if materials is not None:
             await asyncio.to_thread(write_workspace_materials, workspace, materials.files)
-        files_before = await asyncio.to_thread(workspace_files, workspace, skip_dirs={MATERIALS_DIR})
 
         async with app_state.database.session() as session:
             started_event = await mark_run_running(session, acceptance.run_id)
@@ -542,7 +515,6 @@ async def execute_accepted_run(
             error_code = "claude_session_state_uncertain"
         elif exit_code == 0 and not result_is_error:
             run_status = "completed"
-            await persist_changed_files()
             result_text = result_event.get("result")
             if not assistant_parts and isinstance(result_text, str) and result_text.strip():
                 assistant_parts.append(result_text.strip())
@@ -1032,9 +1004,6 @@ def create_app(
         runner_manager: ContainerManager | None = getattr(app.state, "runner_manager", None)
         try:
             await app.state.database.migrate()
-            storage = app.state.storage
-            if storage is not None and hasattr(storage, "ensure_bucket"):
-                await storage.ensure_bucket()
             database_ready = True
             async with app.state.database.session() as session:
                 await reconcile_orphaned_runs(session)
@@ -1065,23 +1034,13 @@ def create_app(
     application = FastAPI(lifespan=lifespan)
     application.state.database = selected_database
     application.state.settings = selected_settings
-    # Тесты подменяют его на MemoryStorage; None — файлы только в базе.
-    application.state.storage = create_storage(selected_settings)
     application.state.run_tasks = set()
     application.state.run_slot_lock = asyncio.Lock()
     application.state.run_task_count = 0
     application.include_router(auth_router)
-    application.include_router(admin_router)
     application.include_router(history_router)
     application.include_router(conversation_files_router)
     application.include_router(projects_router)
-    application.include_router(product_router)
-
-    @application.exception_handler(ProductError)
-    async def product_error(request: Request, error: ProductError) -> JSONResponse:
-        del request
-        # Код — на верхнем уровне тела, как ждёт клиент контракта V2.
-        return JSONResponse({"code": error.code, "detail": error.message}, status_code=error.status_code)
 
     if selected_settings.executor == "runner":
         selected_settings.runner_transport_db.parent.mkdir(parents=True, exist_ok=True)

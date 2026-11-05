@@ -17,7 +17,6 @@ logs
 backend/data
 backend/tests
 frontend
-web-product
 runner
 web-demo
 docs

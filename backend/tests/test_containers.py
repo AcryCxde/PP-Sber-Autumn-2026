@@ -197,6 +197,11 @@ def test_bridge_tokens_are_dynamic_and_late_events_do_not_break_connection(tmp_p
             while transport.project_state("p1")["phase"] != "idle":
                 assert time.time() < deadline
                 time.sleep(0.01)
+            # Close the protocol session before TestClient tears down its portal.
+            ws.close()
+            while bridge.is_connected("p1"):
+                assert time.time() < deadline
+                time.sleep(0.01)
         assert transport.hello("p1") == 7
         bridge.revoke("p1")
         with pytest.raises(Exception):

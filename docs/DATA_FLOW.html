@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Потоки данных CoreTeams</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<style>
+/* Layout: схема-«чертёж» по слоям сверху вниз, ниже — справочная таблица лимитов по номерам соединений */
+:root {
+  --bg: #f6f7f9;
+  --fg: #17202b;
+  --muted: #5b6676;
+  --line: #c9d0da;
+  --band-a: #eef1f5;
+  --band-b: #f8f9fb;
+  --box: #ffffff;
+  --box-strong: #e6ecf5;
+  --accent: #2357c6;
+  --ws: #b4531c;
+  --ok: #2f7d4f;
+  --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161d; --fg: #e3e8ef; --muted: #98a3b3; --line: #34404f;
+    --band-a: #161d26; --band-b: #121820; --box: #1c2530; --box-strong: #233144;
+    --accent: #7aa5ff; --ws: #f08a4b; --ok: #6cc28f; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161d; --fg: #e3e8ef; --muted: #98a3b3; --line: #34404f;
+  --band-a: #161d26; --band-b: #121820; --box: #1c2530; --box-strong: #233144;
+  --accent: #7aa5ff; --ws: #f08a4b; --ok: #6cc28f; color-scheme: dark;
+}
+body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-sans); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1280px; margin: 0 auto; padding-block: 28px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 28px; }
+header { display: grid; gap: 6px; max-width: 70ch; }
+h1 { margin: 0; font-size: 1.75rem; font-weight: 600; text-wrap: balance; }
+h2 { margin: 0 0 10px; font-size: 1.15rem; font-weight: 600; }
+p { margin: 0; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.legend svg { flex: none; }
+.scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--box); }
+.scroll svg { display: block; min-width: 1100px; width: 100%; height: auto; }
+
+/* SVG */
+.band-a { fill: var(--band-a); } .band-b { fill: var(--band-b); }
+.band-sep { stroke: var(--line); stroke-width: 1; }
+.layer-name { font: 600 12px var(--font-mono); letter-spacing: .08em; fill: var(--fg); text-transform: uppercase; }
+.layer-sub { font: 400 11.5px var(--font-sans); fill: var(--muted); }
+.node { fill: var(--box); stroke: var(--fg); stroke-width: 1.2; }
+.node-strong { fill: var(--box-strong); stroke: var(--fg); stroke-width: 1.2; }
+.group { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 6 4; }
+.n-title { font: 600 14px var(--font-sans); fill: var(--fg); }
+.n-sub { font: 400 12px var(--font-sans); fill: var(--muted); }
+.n-mono { font: 400 11.5px var(--font-mono); fill: var(--muted); }
+.chip { fill: var(--bg); stroke: var(--line); }
+.edge { fill: none; stroke: var(--accent); stroke-width: 1.8; }
+.edge-ws { fill: none; stroke: var(--ws); stroke-width: 1.8; stroke-dasharray: 7 4; }
+.head { fill: var(--accent); } .head-ws { fill: var(--ws); }
+.badge { fill: var(--accent); } .badge-ws { fill: var(--ws); }
+.badge-t { font: 600 11px var(--font-mono); fill: var(--box); text-anchor: middle; dominant-baseline: central; }
+.lim { font: 400 11.5px var(--font-mono); fill: var(--fg); }
+.lim-h { font: 600 11.5px var(--font-sans); fill: var(--fg); }
+.tag { font: 600 10.5px var(--font-mono); fill: var(--ok); letter-spacing: .04em; }
+
+/* Таблица */
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { font: 600 12px var(--font-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+td.n { font: 600 13px var(--font-mono); white-space: nowrap; }
+td.n i { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; font-style: normal; color: var(--box); background: var(--accent); }
+td.n i.ws { background: var(--ws); }
+td ul { margin: 0; padding-left: 18px; }
+td code, .src { font-family: var(--font-mono); font-size: 12.5px; }
+.src { color: var(--muted); }
+.table-scroll { overflow-x: auto; }
+.table-scroll table { min-width: 760px; }
+.notes { display: grid; gap: 6px; font-size: 14px; color: var(--muted); max-width: 80ch; }
+.notes p { margin: 0; }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Потоки данных CoreTeams</h1>
+    <p>Как запрос пользователя проходит через слои приложения до агента и модели и как события возвращаются обратно. На каждом соединении указаны лимиты из кода и конфигурации (режим <code>EXECUTOR=runner</code>, как в <code>docker-compose.yml</code>).</p>
+  </header>
+
+  <div class="legend" aria-label="Обозначения">
+    <span><svg width="38" height="10"><line x1="0" y1="5" x2="38" y2="5" stroke="var(--accent)" stroke-width="2"/></svg>Запрос/ответ: HTTP, SQL, Docker API, файлы</span>
+    <span><svg width="38" height="10"><line x1="0" y1="5" x2="38" y2="5" stroke="var(--ws)" stroke-width="2" stroke-dasharray="7 4"/></svg>Долгоживущий WebSocket</span>
+    <span><svg width="22" height="22"><circle cx="11" cy="11" r="10" fill="var(--accent)"/><text x="11" y="11" class="badge-t">1</text></svg>Номер соединения в таблице ниже</span>
+  </div>
+
+  <div class="scroll">
+  <svg viewBox="0 0 1240 1170" role="img" aria-labelledby="dtitle">
+    <title id="dtitle">Схема потоков данных CoreTeams по слоям: клиент, граница, приложение, данные, исполнение, внешний шлюз</title>
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+      <marker id="ahw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head-ws"/></marker>
+    </defs>
+
+    <!-- Слои -->
+    <rect x="0" y="0" width="1240" height="140" class="band-a"/>
+    <rect x="0" y="140" width="1240" height="160" class="band-b"/>
+    <rect x="0" y="300" width="1240" height="260" class="band-a"/>
+    <rect x="0" y="560" width="1240" height="200" class="band-b"/>
+    <rect x="0" y="760" width="1240" height="260" class="band-a"/>
+    <rect x="0" y="1020" width="1240" height="150" class="band-b"/>
+    <g class="band-sep">
+      <line x1="0" y1="140" x2="1240" y2="140"/><line x1="0" y1="300" x2="1240" y2="300"/>
+      <line x1="0" y1="560" x2="1240" y2="560"/><line x1="0" y1="760" x2="1240" y2="760"/>
+      <line x1="0" y1="1020" x2="1240" y2="1020"/>
+    </g>
+    <g>
+      <text x="18" y="30" class="layer-name">1 · Клиент</text>
+      <text x="18" y="48" class="layer-sub">браузер пользователя</text>
+      <text x="18" y="170" class="layer-name">2 · Граница</text>
+      <text x="18" y="188" class="layer-sub">nginx, единый origin</text>
+      <text x="18" y="330" class="layer-name">3 · Приложение</text>
+      <text x="18" y="348" class="layer-sub">backend, сети</text>
+      <text x="18" y="364" class="layer-sub">coreteams + db</text>
+      <text x="18" y="590" class="layer-name">4 · Данные</text>
+      <text x="18" y="608" class="layer-sub">хранилища и</text>
+      <text x="18" y="624" class="layer-sub">Docker хоста</text>
+      <text x="18" y="790" class="layer-name">5 · Исполнение</text>
+      <text x="18" y="808" class="layer-sub">контейнер проекта,</text>
+      <text x="18" y="824" class="layer-sub">только сеть coreteams</text>
+      <text x="18" y="1050" class="layer-name">6 · Внешнее</text>
+      <text x="18" y="1068" class="layer-sub">за периметром</text>
+    </g>
+
+    <!-- Узлы: слой 1–2 -->
+    <rect x="470" y="40" width="320" height="70" rx="4" class="node"/>
+    <text x="630" y="70" class="n-title" text-anchor="middle">Браузер</text>
+    <text x="630" y="90" class="n-sub" text-anchor="middle">React SPA · CoreTeams</text>
+
+    <rect x="470" y="190" width="320" height="60" rx="4" class="node"/>
+    <text x="630" y="216" class="n-title" text-anchor="middle">nginx · контейнер frontend</text>
+    <text x="630" y="236" class="n-mono" text-anchor="middle">:5173 → 80 · /api/ · /ws · статика</text>
+
+    <!-- Слой 3: backend -->
+    <rect x="180" y="372" width="1040" height="172" rx="6" class="group"/>
+    <text x="196" y="392" class="n-mono">backend · FastAPI + uvicorn :8000</text>
+
+    <rect x="200" y="404" width="220" height="76" rx="4" class="node"/>
+    <text x="310" y="432" class="n-title" text-anchor="middle">REST API</text>
+    <text x="310" y="451" class="n-mono" text-anchor="middle">/api/auth, projects,</text>
+    <text x="310" y="466" class="n-mono" text-anchor="middle">conversations, runs</text>
+
+    <rect x="470" y="404" width="220" height="76" rx="4" class="node"/>
+    <text x="580" y="432" class="n-title" text-anchor="middle">Шлюз событий /ws</text>
+    <text x="580" y="451" class="n-mono" text-anchor="middle">команды project.run,</text>
+    <text x="580" y="466" class="n-mono" text-anchor="middle">подписка на события</text>
+
+    <rect x="740" y="404" width="220" height="76" rx="4" class="node"/>
+    <text x="850" y="432" class="n-title" text-anchor="middle">Runner gateway</text>
+    <text x="850" y="451" class="n-mono" text-anchor="middle">WS /v1/runner,</text>
+    <text x="850" y="466" class="n-mono" text-anchor="middle">RunnerBridge</text>
+
+    <rect x="1010" y="404" width="190" height="76" rx="4" class="node"/>
+    <text x="1105" y="432" class="n-title" text-anchor="middle">ContainerManager</text>
+    <text x="1105" y="451" class="n-mono" text-anchor="middle">надзор, простой,</text>
+    <text x="1105" y="466" class="n-mono" text-anchor="middle">тома, материалы</text>
+
+    <!-- Слой 4 -->
+    <rect x="200" y="600" width="440" height="100" rx="4" class="node-strong"/>
+    <text x="420" y="628" class="n-title" text-anchor="middle">PostgreSQL 16</text>
+    <text x="420" y="647" class="n-sub" text-anchor="middle">пользователи, сессии, проекты, диалоги,</text>
+    <text x="420" y="664" class="n-sub" text-anchor="middle">запуски, события, файлы материалов</text>
+    <text x="420" y="686" class="tag" text-anchor="middle">СЕТЬ db · ХОСТ 127.0.0.1:5432</text>
+
+    <rect x="740" y="600" width="200" height="100" rx="4" class="node-strong"/>
+    <text x="840" y="628" class="n-title" text-anchor="middle">runner_transport.db</text>
+    <text x="840" y="647" class="n-sub" text-anchor="middle">SQLite-журнал команд</text>
+    <text x="840" y="664" class="n-sub" text-anchor="middle">и событий протокола v1</text>
+    <text x="840" y="686" class="tag" text-anchor="middle">ТОМ backend-data</text>
+
+    <rect x="1010" y="600" width="190" height="100" rx="4" class="node-strong"/>
+    <text x="1105" y="628" class="n-title" text-anchor="middle">Docker daemon</text>
+    <text x="1105" y="647" class="n-sub" text-anchor="middle">docker.sock хоста</text>
+    <text x="1105" y="664" class="n-sub" text-anchor="middle">(доступ = root)</text>
+
+    <!-- Слой 5 -->
+    <rect x="200" y="820" width="200" height="130" rx="4" class="node-strong"/>
+    <text x="300" y="848" class="n-title" text-anchor="middle">Тома проекта</text>
+    <text x="300" y="870" class="n-mono" text-anchor="middle">project → /workspace rw</text>
+    <text x="300" y="888" class="n-mono" text-anchor="middle">secrets → /run/secrets ro</text>
+    <text x="300" y="906" class="n-mono" text-anchor="middle">seed → /seed ro</text>
+    <text x="300" y="932" class="tag" text-anchor="middle">ХРАНЕНИЕ 30 ДН.</text>
+
+    <rect x="470" y="800" width="730" height="170" rx="6" class="node"/>
+    <text x="490" y="826" class="n-title">Runner-контейнер проекта</text>
+    <text x="490" y="845" class="n-sub">ctrunner + Claude Agent SDK, один контейнер на диалог</text>
+    <rect x="490" y="858" width="160" height="30" rx="3" class="chip"/>
+    <text x="570" y="878" class="n-mono" text-anchor="middle">events.jsonl</text>
+    <rect x="662" y="858" width="140" height="30" rx="3" class="chip"/>
+    <text x="732" y="878" class="n-mono" text-anchor="middle">inbox команд</text>
+    <rect x="814" y="858" width="170" height="30" rx="3" class="chip"/>
+    <text x="899" y="878" class="n-mono" text-anchor="middle">health.json ≤ 30 с</text>
+    <rect x="996" y="858" width="190" height="30" rx="3" class="chip"/>
+    <text x="1091" y="878" class="n-mono" text-anchor="middle">git-чекпойнт ≤ 600 с</text>
+    <text x="490" y="916" class="lim-h">Лимиты контейнера</text>
+    <text x="490" y="934" class="lim">1 ГБ RAM · 1 CPU · 256 PID · read-only FS · cap_drop ALL · no-new-privileges</text>
+    <text x="490" y="952" class="lim">зависание хода 720 с · авто-возобновление ≤ 3 · рестарт Docker ≤ 5 · фактов ≤ 2000 файлов</text>
+
+    <!-- Слой 6 -->
+    <rect x="470" y="1060" width="440" height="70" rx="4" class="node"/>
+    <text x="690" y="1089" class="n-title" text-anchor="middle">Anthropic-шлюз</text>
+    <text x="690" y="1109" class="n-mono" text-anchor="middle">ANTHROPIC_BASE_URL · модели Opus/Sonnet/Haiku</text>
+
+    <!-- Рёбра -->
+    <!-- 1 Браузер ↔ nginx REST -->
+    <line x1="560" y1="110" x2="560" y2="190" class="edge" marker-start="url(#ah)" marker-end="url(#ah)"/>
+    <circle cx="560" cy="150" r="10" class="badge"/><text x="560" y="150" class="badge-t">1</text>
+    <text x="544" y="134" class="lim-h" text-anchor="end">HTTP /api/*</text>
+    <text x="544" y="150" class="lim" text-anchor="end">тело ≤ 6 МБ</text>
+    <text x="544" y="166" class="lim" text-anchor="end">cookie-сессия 14 дн.</text>
+
+    <!-- 2 Браузер ↔ nginx WS -->
+    <line x1="700" y1="110" x2="700" y2="190" class="edge-ws" marker-start="url(#ahw)" marker-end="url(#ahw)"/>
+    <circle cx="700" cy="150" r="10" class="badge-ws"/><text x="700" y="150" class="badge-t">2</text>
+    <text x="716" y="134" class="lim-h">WebSocket /ws</text>
+    <text x="716" y="150" class="lim">тишина ≤ 1 ч</text>
+    <text x="716" y="166" class="lim">реконнект 0,5 → 5 с</text>
+
+    <!-- 3 nginx → REST -->
+    <polyline points="520,250 520,282 310,282 310,404" class="edge" marker-end="url(#ah)"/>
+    <circle cx="310" cy="318" r="10" class="badge"/><text x="310" y="318" class="badge-t">3</text>
+    <text x="326" y="306" class="lim">файл ≤ 5 МБ · ≤ 20 файлов</text>
+    <text x="326" y="322" class="lim">проект ≤ 20 МБ</text>
+    <text x="326" y="338" class="lim">поля ≤ 120 / 4000 / 8000</text>
+    <text x="326" y="354" class="lim">страница ≤ 100 / 500</text>
+
+    <!-- 4 nginx ↔ /ws -->
+    <line x1="640" y1="250" x2="640" y2="404" class="edge-ws" marker-start="url(#ahw)" marker-end="url(#ahw)"/>
+    <circle cx="640" cy="318" r="10" class="badge-ws"/><text x="640" y="318" class="badge-t">4</text>
+    <text x="656" y="306" class="lim">proxy timeout 1 ч</text>
+    <text x="656" y="322" class="lim">текст команды ≤ 3000</text>
+    <text x="656" y="338" class="lim">≤ 4 запуска одновременно</text>
+
+    <!-- 5 REST ↔ Postgres -->
+    <line x1="310" y1="480" x2="310" y2="600" class="edge" marker-start="url(#ah)" marker-end="url(#ah)"/>
+    <circle cx="310" cy="522" r="10" class="badge"/><text x="310" y="522" class="badge-t">5</text>
+    <text x="326" y="510" class="lim">asyncpg</text>
+    <text x="326" y="526" class="lim">пул 5 + 10</text>
+    <text x="326" y="542" class="lim">(умолч.)</text>
+
+    <!-- 6 /ws ↔ Postgres -->
+    <line x1="580" y1="480" x2="580" y2="600" class="edge" marker-start="url(#ah)" marker-end="url(#ah)"/>
+    <circle cx="580" cy="522" r="10" class="badge"/><text x="580" y="522" class="badge-t">6</text>
+    <text x="596" y="510" class="lim">опрос 0,25 с</text>
+    <text x="596" y="526" class="lim">окно 15 с</text>
+    <text x="596" y="542" class="lim">стр. 500 событий</text>
+
+    <!-- 7 Gateway ↔ SQLite -->
+    <line x1="850" y1="480" x2="850" y2="600" class="edge" marker-start="url(#ah)" marker-end="url(#ah)"/>
+    <circle cx="850" cy="522" r="10" class="badge"/><text x="850" y="522" class="badge-t">7</text>
+    <text x="866" y="510" class="lim">lock ≤ 10 с</text>
+    <text x="866" y="526" class="lim">опрос 0,1 с</text>
+    <text x="866" y="542" class="lim">id ≤ 64</text>
+
+    <!-- 8 SQLite → Postgres (runner_executor) -->
+    <line x1="740" y1="650" x2="640" y2="650" class="edge" marker-end="url(#ah)"/>
+    <circle cx="690" cy="650" r="10" class="badge"/><text x="690" y="650" class="badge-t">8</text>
+    <text x="690" y="676" class="lim" text-anchor="middle">опрос 0,25 с</text>
+    <text x="690" y="692" class="lim" text-anchor="middle">артефакт</text>
+    <text x="690" y="708" class="lim" text-anchor="middle">≤ 10 МБ</text>
+
+    <!-- 9 ContainerManager → Docker -->
+    <line x1="1105" y1="480" x2="1105" y2="600" class="edge" marker-start="url(#ah)" marker-end="url(#ah)"/>
+    <circle cx="1105" cy="522" r="10" class="badge"/><text x="1105" y="522" class="badge-t">9</text>
+    <text x="1121" y="510" class="lim">надзор 5 с</text>
+    <text x="1121" y="526" class="lim">стоп ≤ 15 с</text>
+    <text x="1121" y="542" class="lim">чтение ≤ 64 МБ</text>
+
+    <!-- 10 Docker → Runner -->
+    <line x1="1105" y1="700" x2="1105" y2="800" class="edge" marker-end="url(#ah)"/>
+    <circle cx="1105" cy="732" r="10" class="badge"/><text x="1105" y="732" class="badge-t">10</text>
+    <text x="1121" y="724" class="lim">старт ≤ 180 с</text>
+    <text x="1121" y="740" class="lim">простой 600 с</text>
+    <text x="1121" y="756" class="lim">→ удаление</text>
+
+    <!-- 11 Runner → Runner gateway (WS, исходящее из контейнера) -->
+    <polyline points="985,800 985,442 960,442" class="edge-ws" marker-start="url(#ahw)" marker-end="url(#ahw)"/>
+    <circle cx="985" cy="732" r="10" class="badge-ws"/><text x="985" y="732" class="badge-t">11</text>
+    <text x="970" y="716" class="lim-h" text-anchor="end">WS /v1/runner · Bearer</text>
+    <text x="970" y="732" class="lim" text-anchor="end">connect/hello ≤ 10 с</text>
+    <text x="970" y="748" class="lim" text-anchor="end">heartbeat 10 с, потеря 30 с</text>
+    <text x="970" y="764" class="lim" text-anchor="end">бэкофф 1 → 30 с</text>
+
+    <!-- 12 Runner ↔ тома -->
+    <line x1="470" y1="885" x2="400" y2="885" class="edge" marker-start="url(#ah)" marker-end="url(#ah)"/>
+    <circle cx="435" cy="885" r="10" class="badge"/><text x="435" y="885" class="badge-t">12</text>
+    <text x="200" y="976" class="lim">монтирование при старте;</text>
+    <text x="200" y="992" class="lim">путь ≤ 512 · вне .git/.runner</text>
+
+    <!-- 13 Runner → Anthropic -->
+    <line x1="690" y1="970" x2="690" y2="1060" class="edge" marker-start="url(#ah)" marker-end="url(#ah)"/>
+    <circle cx="690" cy="1005" r="10" class="badge"/><text x="690" y="1005" class="badge-t">13</text>
+    <text x="706" y="996" class="lim-h">HTTPS · токен из /run/secrets</text>
+    <text x="706" y="1012" class="lim">проба ≤ 30 с, повторы 5/10/20/40/60 с</text>
+    <text x="706" y="1028" class="lim">зависание 720 с · возобновление ≤ 3</text>
+  </svg>
+  </div>
+
+  <section>
+    <h2>Лимиты по соединениям</h2>
+    <div class="table-scroll">
+    <table>
+      <thead><tr><th>№</th><th>Соединение</th><th>Лимиты</th><th>Где задано</th></tr></thead>
+      <tbody>
+        <tr><td class="n"><i>1</i></td><td>Браузер → nginx<br>HTTP <code>/api/*</code></td>
+          <td><ul><li>тело запроса ≤ 6 МБ (<code>client_max_body_size</code>)</li><li>cookie сессии живёт 14 дней</li><li>email ≤ 254, пароль 8–256 символов</li></ul></td>
+          <td class="src">frontend/nginx.conf.template<br>backend/config.py<br>backend/schemas.py</td></tr>
+        <tr><td class="n"><i class="ws">2</i></td><td>Браузер ↔ nginx<br>WebSocket <code>/ws</code></td>
+          <td><ul><li>тихое соединение закрывается через 1 ч</li><li>переподключение 0,5 с, ×2, максимум 5 с; не переподключается при потере сессии</li></ul></td>
+          <td class="src">frontend/nginx.conf.template<br>frontend/src/coreteams/socket.ts</td></tr>
+        <tr><td class="n"><i>3</i></td><td>nginx → REST API</td>
+          <td><ul><li>файл ≤ 5 МБ, ≤ 20 файлов и ≤ 20 МБ на проект</li><li>название ≤ 120, задача ≤ 4000, контекст ≤ 8000, заметка ≤ 3000, отзыв ≤ 2000 символов</li><li>списки: диалоги ≤ 100 (по умолч. 50), сообщения/запуски ≤ 500, события ≤ 500 (по умолч. 100)</li><li>скачивание артефакта ≤ 10 МБ</li></ul></td>
+          <td class="src">backend/materials.py<br>backend/api/projects.py<br>backend/api/history.py</td></tr>
+        <tr><td class="n"><i class="ws">4</i></td><td>nginx ↔ шлюз событий <code>/ws</code></td>
+          <td><ul><li>proxy read/send timeout 1 ч</li><li>текст команды <code>project.run</code> ≤ 3000 символов</li><li>не больше 4 запусков одновременно, иначе <code>gateway_busy</code></li><li>кадр WS ≤ 16 МБ (умолчание uvicorn, явно не задан)</li></ul></td>
+          <td class="src">frontend/nginx.conf.template<br>backend/main.py<br>backend/config.py</td></tr>
+        <tr><td class="n"><i>5</i></td><td>REST API ↔ PostgreSQL</td>
+          <td><ul><li>пул соединений SQLAlchemy по умолчанию: 5 + 10 overflow (явно не настроен)</li><li>только сеть <code>db</code>; наружу порт открыт лишь на 127.0.0.1</li></ul></td>
+          <td class="src">backend/db.py<br>docker-compose.yml</td></tr>
+        <tr><td class="n"><i>6</i></td><td>Шлюз событий ↔ PostgreSQL</td>
+          <td><ul><li>опрос новых событий каждые 0,25 с</li><li>окно подписки после завершения 15 с</li><li>страница 500 событий</li></ul></td>
+          <td class="src">backend/config.py<br>backend/main.py</td></tr>
+        <tr><td class="n"><i>7</i></td><td>Runner gateway ↔ runner_transport.db</td>
+          <td><ul><li>ожидание блокировки SQLite ≤ 10 с</li><li>опрос команд 0,1 с; проверка heartbeat каждую 1 с</li><li>id ≤ 64 символа, путь артефакта ≤ 512</li></ul></td>
+          <td class="src">backend/runner_transport.py<br>backend/runner_app.py</td></tr>
+        <tr><td class="n"><i>8</i></td><td>runner_transport.db → PostgreSQL<br>(runner_executor)</td>
+          <td><ul><li>опрос журнала каждые 0,25 с</li><li>содержимое артефакта ≤ 10 МБ, сырой текст события ≤ 4000 символов</li></ul></td>
+          <td class="src">backend/runner_executor.py<br>backend/parser.py</td></tr>
+        <tr><td class="n"><i>9</i></td><td>ContainerManager → Docker daemon<br><code>docker.sock</code></td>
+          <td><ul><li>цикл надзора каждые 5 с</li><li>остановка контейнера ≤ 15 с</li><li>чтение файла из тома ≤ 64 МБ</li><li>отметка активности не чаще раза в 60 с</li></ul></td>
+          <td class="src">backend/containers.py<br>backend/config.py</td></tr>
+        <tr><td class="n"><i>10</i></td><td>Docker → runner-контейнер</td>
+          <td><ul><li>1 ГБ RAM, 1 CPU, 256 процессов, read-only FS, без capabilities</li><li>runner должен подключиться за 180 с</li><li>после 600 с простоя контейнер удаляется, тома остаются</li><li>ожидание материалов ≤ 60 с; авторестарт Docker ≤ 5</li></ul></td>
+          <td class="src">backend/containers.py<br>backend/config.py</td></tr>
+        <tr><td class="n"><i class="ws">11</i></td><td>Runner → Runner gateway<br>WS <code>/v1/runner</code>, Bearer-токен</td>
+          <td><ul><li>подключение и обмен hello/welcome ≤ 10 с каждый</li><li>heartbeat каждые 10 с; без него 30 с → <code>heartbeat_lost</code></li><li>бэкофф 1, 2, 4, 8, 16, 30 с; связь «стабильна» после 30 с</li><li>досылка хвоста журнала при выходе ≤ 5 с</li><li>в команде: ролей ≤ 32, метка ≤ 128, входных файлов ≤ 64, путь ≤ 512</li></ul></td>
+          <td class="src">runner/src/ctrunner/gateway.py<br>runner/src/ctrunner/main.py<br>runner/src/ctrunner/protocol.py</td></tr>
+        <tr><td class="n"><i>12</i></td><td>Runner ↔ тома проекта</td>
+          <td><ul><li>git-чекпойнт ≤ 600 с; факты по ≤ 2000 файлам</li><li>health.json старше 30 с считается мёртвым</li><li>тома хранятся 30 дней с последней активности (0 — всегда)</li></ul></td>
+          <td class="src">runner/src/ctrunner/checkpoint.py<br>runner/src/ctrunner/healthcheck.py<br>docker-compose.yml</td></tr>
+        <tr><td class="n"><i>13</i></td><td>Runner → Anthropic-шлюз<br>HTTPS</td>
+          <td><ul><li>проба модели ≤ 30 с, повторы через 5, 10, 20, 40, 60 с</li><li>ход без прогресса 720 с считается зависшим</li><li>автоматическое возобновление ≤ 3 раз, затем <code>resume_limit</code></li></ul></td>
+          <td class="src">runner/src/ctrunner/main.py<br>runner/src/ctrunner/config.py<br>runner/src/ctrunner/recovery.py</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="notes">
+    <h2>Что важно про границы</h2>
+    <p>Runner-контейнер с кодом агента подключён только к сети <code>coreteams</code> и не видит PostgreSQL: база живёт в отдельной сети <code>db</code>.</p>
+    <p>Runner сам подключается к backend (соединение 11), входящих портов у контейнера проекта нет.</p>
+    <p>Доступ backend к <code>docker.sock</code> равен root на хосте; для production нужен docker-socket-proxy.</p>
+    <p>Лимиты с пометкой «умолч.» не заданы в проекте явно и берутся из библиотек.</p>
+  </section>
+</div>
+</html>

@@ -95,8 +95,6 @@ export default function Shell({ user, onLogout }: { user: User; onLogout: () => 
             {NAV.map(([key, label]) => (
               <a key={key} href={`#${key}`} aria-current={current === key ? 'page' : undefined}>{label}</a>
             ))}
-            {/* Панель вовлечённости живёт в web-product, который раздаётся на /product/. */}
-            {user.role === 'admin' && <a href="/product/#admin">Админка</a>}
           </nav>
           <span className="demo-label ct-account">
             <button

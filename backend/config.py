@@ -24,16 +24,6 @@ class Settings(BaseSettings):
         gt=0,
     )
     workspace_root: Path = Path.home() / ".claude-web" / "workspaces"
-    # S3-совместимое хранилище файлов агента (SeaweedFS в docker-стеке); без endpoint выключено.
-    s3_endpoint_url: str | None = None
-    s3_bucket: str = "coreteams-artifacts"
-    s3_access_key: str | None = Field(default=None, repr=False)
-    s3_secret_key: str | None = Field(default=None, repr=False)
-    s3_region: str = "us-east-1"
-    # Файл больше этого не сохраняется в хранилище (в базе остаётся только запись о нём).
-    artifact_max_storage_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
-    # Сколько файлов, изменённых агентом не через Write, подбирать после запуска в режиме cli.
-    artifact_scan_max_files: int = Field(default=50, ge=0)
     subscription_window_seconds: float = Field(default=15.0, gt=0)
     subscription_poll_interval_seconds: float = Field(default=0.25, gt=0)
     max_concurrent_runs: int = Field(default=4, gt=0)
@@ -41,8 +31,6 @@ class Settings(BaseSettings):
     auth_session_ttl_seconds: int = Field(default=14 * 86400, gt=0)
     # true за HTTPS; по http браузер не вернёт Secure-cookie и вход не сработает.
     auth_cookie_secure: bool = False
-    # Email через запятую: эти аккаунты получают роль admin при входе (панель вовлечённости).
-    admin_emails: str = ""
 
     # "cli" — claude подпроцессом в контейнере backend; "runner" — контейнер ctrunner на сессию.
     executor: Literal["cli", "runner"] = "cli"
