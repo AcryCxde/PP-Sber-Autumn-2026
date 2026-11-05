@@ -834,13 +834,11 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
             Выйти
           </button>
         </span>
-        <span className="service-status">
-          {sample
-            ? "Учебный пример"
-            : api.available
-              ? "Подключён backend CoreTeams"
-              : "CTF не подключён"}
-        </span>
+        {sample || !api.available ? (
+          <span className="service-status">
+            {sample ? "Учебный пример" : "CTF не подключён"}
+          </span>
+        ) : null}
       </header>
       <JourneyPanel
         recorder={study}
@@ -1430,13 +1428,11 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
                     ][p.step]
                   }
                 </p>
-                <div className="service-note">
-                  CTF{" "}
-                  {api.available
-                    ? "подключён через backend CoreTeams"
-                    : "пока не подключён"}
-                  . Подготовка проекта работает локально.
-                </div>
+                {api.available ? null : (
+                  <div className="service-note">
+                    CTF пока не подключён. Подготовка проекта работает локально.
+                  </div>
+                )}
               </aside>
             </div>
             {p.step > 0 ? (

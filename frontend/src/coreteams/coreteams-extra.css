@@ -1,0 +1,199 @@
+/* Дополнения к стилям v9 для настоящего бэкенда: аккаунт, неопределённый прогресс, Markdown. */
+.ct.ct-root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+.ct.ct-root > main {
+  flex: 1;
+}
+
+.ct .ct-account {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ct .ct-account > span {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct .progress.ct-indeterminate {
+  position: relative;
+  overflow: hidden;
+}
+
+.ct .progress.ct-indeterminate span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 35%;
+  animation: ct-indeterminate 1.6s ease-in-out infinite;
+}
+
+@keyframes ct-indeterminate {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
+.ct .paper-body h3:first-child {
+  margin-top: 0;
+}
+
+.ct .paper-body pre {
+  overflow-x: auto;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 13px;
+}
+
+.ct .paper-body code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+.ct .paper-body blockquote {
+  margin: 12px 0;
+  padding-left: 14px;
+  border-left: 3px solid var(--line);
+  color: var(--muted);
+}
+
+.ct .paper-body hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 20px 0;
+}
+
+.ct .paper-body {
+  overflow-wrap: anywhere;
+}
+
+.ct .choice small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+@media (max-width: 740px) {
+  .ct .ct-account > span {
+    display: none;
+  }
+}
+
+/* Ссылка из свободного диалога обратно в CoreTeams. */
+.back-to-projects {
+  display: inline-block;
+  color: inherit;
+  text-decoration: none;
+}
+
+.back-to-projects:hover {
+  text-decoration: underline;
+}
+
+/* Тёмная тема: те же переменные, что в coreteams.css, переопределяются по data-theme на <html>. */
+:root[data-theme='dark'] .ct {
+  color-scheme: dark;
+  --bg: #16141b;
+  --paper: #211e28;
+  --paper-soft: #1c1a22;
+  --ink: #ece8f3;
+  --muted: #a9a3b5;
+  --muted-ink: #b7aec7;
+  --line: #34303d;
+  --line-strong: #453f51;
+  --line-accent: #7d66b5;
+  --purple: #a990f5;
+  --purple-dark: #cbb9ff;
+  --purple-hover: #bba6ff;
+  --on-purple: #17121f;
+  --lavender: #2e2641;
+  --tint: #29243a;
+  --tint-strong: #352d4a;
+  --green: #74d2a0;
+  --green-bg: #1b2c23;
+  --green-ink: #9ad4b4;
+  --amber: #e8b96a;
+  --amber-bg: #2f2616;
+  --amber-soft: #241e14;
+  --amber-line: #5d4b27;
+  --danger: #f08f8f;
+  --shadow: 0 12px 45px #0000004d;
+}
+
+.ct .ct-theme-toggle {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.ct .ct-theme-toggle:hover {
+  background: var(--tint);
+}
+
+/* Свободный диалог — вспомогательный режим, поэтому спрятан в профиле. */
+.ct .ct-advanced {
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.ct .ct-advanced summary {
+  cursor: pointer;
+  width: max-content;
+}
+
+.ct .ct-advanced p {
+  margin: 8px 0;
+}
+
+/* Таблицы в результатах: широкая таблица прокручивается внутри документа, а не страницы. */
+.ct .ct-table-wrap {
+  overflow-x: auto;
+  margin: 14px 0 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.ct .ct-table-wrap table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ct .ct-table-wrap th,
+.ct .ct-table-wrap td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.ct .ct-table-wrap th {
+  background: var(--tint);
+  font-weight: 600;
+}
+
+.ct .ct-table-wrap tr:last-child td {
+  border-bottom: none;
+}
+
+.ct .ct-table-wrap td + td,
+.ct .ct-table-wrap th + th {
+  border-left: 1px solid var(--line);
+}

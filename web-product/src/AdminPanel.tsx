@@ -287,13 +287,13 @@ export function AdminPanel({ user, onLogout }: { user: User; onLogout: () => voi
   return (
     <div className="app admin-app">
       <header className="topbar">
-        <a className="brand" href="#">
+        <a className="brand" href="/">
           <span aria-hidden>C</span>CoreTeams
         </a>
         <span className="top-caption">Администрирование</span>
         <nav aria-label="Основная навигация">
-          <a className="text-btn" href="#">
-            Рабочее пространство
+          <a className="text-btn" href="/">
+            Интерфейс CoreTeams
           </a>
         </nav>
         <span className="account">

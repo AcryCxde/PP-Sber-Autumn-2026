@@ -27,14 +27,16 @@ server {
         proxy_send_timeout 1h;
     }
 
-    # Свободный чат (этот каталог frontend), собран с base /chat/.
-    location /chat/ {
-        try_files $uri $uri/ /chat/index.html;
+    # Рабочее пространство web-product (контракт V2) и панель администратора (#admin).
+    location /product/ {
+        try_files $uri $uri/ /product/index.html;
     }
 
-    # Рабочее пространство web-product; прежний адрес /product/ ведёт сюда же.
-    location = /product/ {
-        return 301 /;
+    # Свободный чат — страница #chat интерфейса CoreTeams; прежний адрес /chat/ ведёт туда.
+    location /chat/ {
+        # Относительный Location: за пробросом порта (5173 -> 80) nginx не знает внешний порт.
+        absolute_redirect off;
+        return 302 /#chat;
     }
 
     location / {

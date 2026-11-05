@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 # Frontend: статические сборки Vite за nginx; /api и /ws проксируются в backend.
-# Рабочее пространство web-product (контракт V2) — /, свободный чат из этого каталога — /chat/.
+# Интерфейс CoreTeams из этого каталога (страницы и свободный чат #chat) — /,
+# рабочее пространство web-product (контракт V2) и панель администратора — /product/.
 # Контекст сборки — корень репозитория.
 
 FROM node:20-bookworm-slim AS build
@@ -26,7 +27,7 @@ FROM nginx:1.27-alpine
 ENV BACKEND_URL=http://backend:8000
 
 COPY frontend/nginx.conf.template /etc/nginx/templates/default.conf.template
-COPY --from=product /app/dist /usr/share/nginx/html
-COPY --from=build /app/dist /usr/share/nginx/html/chat
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=product /app/dist /usr/share/nginx/html/product
 
 EXPOSE 80

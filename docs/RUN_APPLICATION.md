@@ -118,7 +118,7 @@ AUTH_COOKIE_SECURE=false
 
 ### Панель администратора
 
-Аккаунты из `ADMIN_EMAILS` (через запятую; в docker-стеке — переменная в `.env` рядом с `docker-compose.yml`) получают роль `admin` при следующем входе или запросе. В шапке рабочего пространства у них появляется ссылка «Админка» (`http://localhost:5173/#admin`): DAU/WAU/MAU, возвраты, запуски и затраты по дням, воронка от регистрации до одобрения документа и таблица пользователей с сегментами и выгрузкой в CSV. API — `GET /api/admin/overview?days=30` и `GET /api/admin/users?days=30`, остальным отвечает 403.
+Аккаунты из `ADMIN_EMAILS` (через запятую; в docker-стеке — переменная в `.env` рядом с `docker-compose.yml`) получают роль `admin` при следующем входе или запросе. В шапке у них появляется ссылка «Админка» (`http://localhost:5173/product/#admin`, панель входит в web-product): DAU/WAU/MAU, возвраты, запуски и затраты по дням, воронка от регистрации до одобрения документа и таблица пользователей с сегментами и выгрузкой в CSV. API — `GET /api/admin/overview?days=30` и `GET /api/admin/users?days=30`, остальным отвечает 403.
 
 ```dotenv
 ADMIN_EMAILS=lead@example.com,analyst@example.com

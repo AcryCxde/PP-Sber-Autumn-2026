@@ -6,7 +6,7 @@ React/Vite/TypeScript workspace based on the owner-provided v9.2 behaviour, wire
 
 ## Run
 
-- Docker stack: `docker compose up --build`, open http://localhost:5173/ and sign in or register. This is the main interface; the free-form chat from `frontend/` is at `/chat/` with the same session.
+- Docker stack: `docker compose up --build`, open http://localhost:5173/product/ and sign in or register. The main interface is the CoreTeams UI from `frontend/` at `/` (free-form chat at `/#chat`); both share the session. The admin panel is at `/product/#admin`.
 - Dev: Node 22.12+, pnpm. From `web-product`: `pnpm install --frozen-lockfile`, `pnpm dev` (4191). `/api` is proxied to `BACKEND_URL` (default http://127.0.0.1:8000); the app shows its own sign-in screen.
 - `VITE_CTF_V2_ENABLED=false` returns to local-only drafts; see `.env.example`.
 
