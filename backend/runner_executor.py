@@ -85,20 +85,32 @@ async def run_via_runner(
         return stored
 
     async def save_artifact(payload: dict[str, Any]) -> None:
-        data = await manager.read_file(project, payload["path"])
-        if "sha256" in payload and hashlib.sha256(data).hexdigest() != payload["sha256"]:
-            raise RunnerRunError("artifact_hash_mismatch")
-        if "size_bytes" in payload and len(data) != payload["size_bytes"]:
-            raise RunnerRunError("artifact_size_mismatch")
-        text = data.decode("utf-8", errors="replace")
-        bounded, size_bytes, truncated = bounded_file_content(
-            text, max_bytes=app_state.settings.artifact_max_download_bytes,
-        )
-        async with database.session() as session:
-            stored = await append_artifact(
-                session, run_id, path=payload["path"], content=bounded,
-                size_bytes=size_bytes, truncated=truncated, num_lines=text.count("\n") + 1,
+        try:
+            data = await manager.read_file(project, payload["path"])
+            if len(data) > app_state.settings.artifact_max_download_bytes:
+                raise RunnerRunError("artifact_save_failed")
+            content_sha256 = hashlib.sha256(data).hexdigest()
+            if "sha256" in payload and content_sha256 != payload["sha256"]:
+                raise RunnerRunError("artifact_save_failed")
+            if "size_bytes" in payload and len(data) != payload["size_bytes"]:
+                raise RunnerRunError("artifact_save_failed")
+            # The current store is text-only: never silently replace unsupported bytes.
+            text = data.decode("utf-8")
+            bounded, size_bytes, truncated = bounded_file_content(
+                text, max_bytes=app_state.settings.artifact_max_download_bytes,
             )
+            if bounded is None or truncated or size_bytes != len(data):
+                raise RunnerRunError("artifact_save_failed")
+            async with database.session() as session:
+                stored = await append_artifact(
+                    session, run_id, path=payload["path"], content=bounded,
+                    size_bytes=size_bytes, truncated=False, num_lines=text.count("\n") + 1,
+                    expected_sha256=content_sha256,
+                )
+        except Exception:
+            # Keep database/encoding/Docker details and artifact contents out of public errors.
+            logger.warning("Artifact persistence failed for run %s", run_id)
+            raise RunnerRunError("artifact_save_failed") from None
         await deliver_event(stored)
         transport.confirm_saved(project, transport_run, payload["artifact_id"], {
             "artifact_id": payload["artifact_id"],
