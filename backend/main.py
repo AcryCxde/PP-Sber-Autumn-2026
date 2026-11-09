@@ -307,9 +307,14 @@ async def handle_run_create(
         return
 
     socket_available = True
+    pending_terminal_seq: int | None = None
 
     async def deliver_event(event: Event, **wire_fields: Any) -> None:
-        nonlocal socket_available
+        nonlocal socket_available, pending_terminal_seq
+        if event.payload.get("error_code") == "artifact_confirmation_pending":
+            pending_terminal_seq = event.seq
+        elif event.type in {"run.completed", "run.failed", "run.outcome_unknown"}:
+            pending_terminal_seq = None
         if not socket_available:
             return
         delivery_socket = socket_ref()
@@ -330,7 +335,8 @@ async def handle_run_create(
     if deliveries is None:
         deliveries = {}
         app_state.live_run_deliveries = deliveries
-    deliveries[acceptance.run_id] = deliver_event
+    if not acceptance.idempotent_replay:
+        deliveries[acceptance.run_id] = deliver_event
     if acceptance.reset_event is not None:
         await deliver_event(acceptance.reset_event)
     await deliver_event(
@@ -340,14 +346,23 @@ async def handle_run_create(
     del websocket
 
     if acceptance.idempotent_replay:
-        deliveries.pop(acceptance.run_id, None)
         return
 
     if app_state.settings.executor == "runner":
         try:
             await run_via_runner(app_state, acceptance, content, deliver_event)
         finally:
-            deliveries.pop(acceptance.run_id, None)
+            if deliveries.get(acceptance.run_id) is deliver_event:
+                deliveries.pop(acceptance.run_id, None)
+        if pending_terminal_seq is not None and socket_available:
+            delivery_socket = socket_ref()
+            if delivery_socket is not None:
+                # Replay from the durable cursor also closes the race with a
+                # correction committed while the live callback was removed.
+                start_subscription_task(
+                    delivery_socket, acceptance.run_id, pending_terminal_seq,
+                    owner_id=owner_id,
+                )
         return
 
     process: subprocess.Popen[str] | None = None
@@ -608,6 +623,14 @@ async def handle_subscription(
         async with websocket.app.state.database.session() as session:
             # Чужой run отвечает так же, как несуществующий.
             owned = await owns_run(session, run_id, owner_id)
+            # Read the marker before the event page: if reconciliation commits
+            # between reads, the page includes its correction, never vice versa.
+            pending_correction = (
+                await session.scalar(
+                    select(Run.error_code).where(Run.id == run_id)
+                ) == "artifact_confirmation_pending"
+                if owned else False
+            )
             page = await list_run_events(
                 session,
                 run_id,
@@ -637,6 +660,7 @@ async def handle_subscription(
         if (
             len(page.events) < page_size
             and page.run_status in terminal_statuses
+            and not pending_correction
         ):
             await send_websocket_payload(
                 websocket,
@@ -750,6 +774,8 @@ def start_subscription_task(
     *,
     owner_id: str,
 ) -> None:
+    if getattr(websocket, "_gateway_disconnected", False):
+        return
     subscriptions = getattr(websocket, "_gateway_subscriptions", None)
     if subscriptions is None:
         subscriptions = {}
@@ -1138,6 +1164,7 @@ def create_app(
         except WebSocketDisconnect:
             pass
         finally:
+            setattr(websocket, "_gateway_disconnected", True)
             subscriptions = getattr(websocket, "_gateway_subscriptions", {})
             for task in subscriptions.values():
                 task.cancel()

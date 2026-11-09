@@ -9,7 +9,7 @@ from backend.artifact_confirmations import reconcile_artifact_confirmations
 from backend.config import Settings
 from backend.db import Database
 from backend.models import ArtifactConfirmation, Conversation, Event, Project, Run, User
-from backend.repository import claim_due_artifact_confirmations, finalize_run
+from backend.repository import accept_run, claim_due_artifact_confirmations, finalize_run
 from backend.runner_transport import RunnerTransport, TransportError
 from backend.tests.databases import database_url
 
@@ -21,10 +21,13 @@ async def create_run_and_project(database: Database) -> tuple[str, str]:
         session.add_all([user, conversation])
         await session.flush()
         project = Project(owner_id=user.id, conversation_id=conversation.id)
-        run = Run(conversation_id=conversation.id, client_request_id="request-1")
-        session.add_all([project, run])
+        session.add(project)
         await session.commit()
-        return run.id, project.id
+        accepted = await accept_run(
+            session, conversation_id=conversation.id, client_request_id="request-1",
+            content="Artifact confirmation",
+        )
+        return accepted.run_id, project.id
 
 
 async def add_confirmation(

@@ -95,17 +95,8 @@ async def reconcile_artifact_confirmations(
     now: datetime | None = None,
 ) -> ReconciliationResult:
     """Claim due confirmations, then perform transport I/O outside database transactions."""
-    claimed_at = now or datetime.now(UTC)
-    async with database.session() as session:
-        claims = await claim_due_artifact_confirmations(
-            session,
-            now=claimed_at,
-            limit=settings.artifact_confirmation_batch_size,
-            lease_seconds=settings.artifact_confirmation_lease_seconds,
-            max_attempts=settings.artifact_confirmation_max_attempts,
-        )
-
     confirmed = conflicted = rescheduled = 0
+    processed_ids: set[str] = set()
     conflicted_confirmation_ids: set[str] = set()
     terminal_events: list[Event] = []
     async with database.session() as session:
@@ -119,7 +110,23 @@ async def reconcile_artifact_confirmations(
             abandon_claim,
             timeout_seconds=settings.artifact_confirmation_timeout_seconds,
         )
-    for claim in claims:
+    # Lease only the item about to enter transport I/O: neither the abandon
+    # backlog nor preceding confirmations may consume another item's lease.
+    for _ in range(settings.artifact_confirmation_batch_size):
+        claimed_at = now or datetime.now(UTC)
+        async with database.session() as session:
+            claims = await claim_due_artifact_confirmations(
+                session,
+                now=claimed_at,
+                limit=1,
+                lease_seconds=settings.artifact_confirmation_lease_seconds,
+                max_attempts=settings.artifact_confirmation_max_attempts,
+                exclude_ids=processed_ids,
+            )
+        if not claims:
+            break
+        claim = claims[0]
+        processed_ids.add(claim.id)
         try:
             await asyncio.wait_for(
                 asyncio.to_thread(
@@ -234,7 +241,7 @@ async def reconcile_artifact_confirmations(
         )
 
     return ReconciliationResult(
-        claimed=len(claims),
+        claimed=len(processed_ids),
         confirmed=confirmed,
         conflicted=conflicted,
         rescheduled=rescheduled,

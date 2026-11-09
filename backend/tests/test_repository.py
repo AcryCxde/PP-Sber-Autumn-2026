@@ -423,10 +423,16 @@ async def test_reconcile_orphaned_runs_keeps_retryable_artifact_confirmation(tmp
             ))
             await session.commit()
         async with database.session() as session:
-            assert await reconcile_orphaned_runs(session) == []
+            events = await reconcile_orphaned_runs(session)
+            assert len(events) == 1
+            assert events[0].payload["error_code"] == "backend_restarted"
         async with database.session() as session:
             run = await session.get(Run, created.run_id)
-            assert run is not None and run.status == "running"
+            assert run is not None and run.status == "outcome_unknown"
+            confirmation = await session.scalar(
+                select(ArtifactConfirmation).where(ArtifactConfirmation.run_id == created.run_id)
+            )
+            assert confirmation is not None and confirmation.status == "pending"
     finally:
         await database.dispose()
 

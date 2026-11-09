@@ -1,5 +1,5 @@
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -282,7 +282,12 @@ async def _accept_run_once(
         session.add(conversation)
         await session.flush()
     else:
-        conversation = await session.get(Conversation, conversation_id)
+        conversation = await session.scalar(
+            select(Conversation)
+            .where(Conversation.id == conversation_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         if (
             conversation is None
             or conversation.status == "deleted"
@@ -536,6 +541,30 @@ def _terminal_event_data(
     }
 
 
+async def _lock_run_context(
+    session: AsyncSession, run_id: str,
+) -> tuple[Run, Conversation] | None:
+    """Lock context then its run, before any confirmation child mutation.
+
+    Acceptance uses the same conversation lock. Refresh identity-map values after
+    waiting so READ COMMITTED decisions use the newly committed owner/state.
+    """
+    conversation_id = await session.scalar(select(Run.conversation_id).where(Run.id == run_id))
+    if conversation_id is None:
+        return None
+    conversation = await session.scalar(
+        select(Conversation).where(Conversation.id == conversation_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    if conversation is None:
+        raise LookupError(f"Conversation {conversation_id} was not found")
+    run = await session.scalar(
+        select(Run).where(Run.id == run_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
+    return (run, conversation) if run is not None else None
+
+
 async def finalize_run(
     session: AsyncSession,
     run_id: str,
@@ -555,13 +584,10 @@ async def finalize_run(
     if status not in TERMINAL_RUN_STATUSES:
         raise ValueError(f"Unsupported terminal run status: {status}")
 
-    run = await session.get(Run, run_id)
-    if run is None:
+    locked = await _lock_run_context(session, run_id)
+    if locked is None:
         raise LookupError(f"Run {run_id} was not found")
-
-    conversation = await session.get(Conversation, run.conversation_id)
-    if conversation is None:
-        raise LookupError(f"Conversation {run.conversation_id} was not found")
+    run, conversation = locked
 
     assistant_message = await session.scalar(
         select(Message).where(Message.run_id == run.id, Message.role == "assistant")
@@ -821,6 +847,7 @@ async def claim_due_artifact_confirmations(
     limit: int,
     lease_seconds: float,
     max_attempts: int,
+    exclude_ids: Collection[str] = (),
 ) -> list[ArtifactConfirmationClaim]:
     """Atomically lease a deterministic bounded set of due confirmation intents."""
     if limit <= 0 or lease_seconds <= 0 or max_attempts <= 0:
@@ -844,6 +871,7 @@ async def claim_due_artifact_confirmations(
         )
         .where(
             due,
+            ArtifactConfirmation.id.not_in(exclude_ids),
             (ArtifactConfirmation.attempts < max_attempts)
             | (
                 (ArtifactConfirmation.status == "confirming")
@@ -953,10 +981,13 @@ async def mark_artifact_confirmation_confirmed(
     session: AsyncSession,
     claim: ArtifactConfirmationClaim,
 ) -> bool:
+    if await _lock_run_context(session, claim.run_id) is None:
+        return False
     changed = await session.scalar(
         update(ArtifactConfirmation)
         .where(
             ArtifactConfirmation.id == claim.id,
+            ArtifactConfirmation.run_id == claim.run_id,
             ArtifactConfirmation.status == "confirming",
             ArtifactConfirmation.attempts == claim.attempts,
             ArtifactConfirmation.claimed_at == claim.claimed_at,
@@ -974,10 +1005,13 @@ async def mark_artifact_confirmation_conflicted(
     *,
     category: str,
 ) -> bool:
+    if await _lock_run_context(session, claim.run_id) is None:
+        return False
     changed = await session.scalar(
         update(ArtifactConfirmation)
         .where(
             ArtifactConfirmation.id == claim.id,
+            ArtifactConfirmation.run_id == claim.run_id,
             ArtifactConfirmation.status == "confirming",
             ArtifactConfirmation.attempts == claim.attempts,
             ArtifactConfirmation.claimed_at == claim.claimed_at,
@@ -996,10 +1030,13 @@ async def reschedule_artifact_confirmation(
     category: str,
     next_attempt_at: datetime,
 ) -> bool:
+    if await _lock_run_context(session, claim.run_id) is None:
+        return False
     changed = await session.scalar(
         update(ArtifactConfirmation)
         .where(
             ArtifactConfirmation.id == claim.id,
+            ArtifactConfirmation.run_id == claim.run_id,
             ArtifactConfirmation.status == "confirming",
             ArtifactConfirmation.attempts == claim.attempts,
             ArtifactConfirmation.claimed_at == claim.claimed_at,
@@ -1053,10 +1090,12 @@ async def finalize_artifact_confirmation_success(
     commit: bool = True,
 ) -> Event | None:
     """Promote a terminal run withheld solely for pending artifact delivery."""
-    run = await session.get(Run, run_id)
+    locked = await _lock_run_context(session, run_id)
+    if locked is None:
+        return None
+    run, conversation = locked
     if (
-        run is None
-        or run.status != "outcome_unknown"
+        run.status != "outcome_unknown"
         or run.error_code != "artifact_confirmation_pending"
     ):
         return None
@@ -1070,18 +1109,24 @@ async def finalize_artifact_confirmation_success(
     )
     if confirmation_pending:
         return None
-    conversation = await session.get(Conversation, run.conversation_id)
-    if conversation is None:
-        raise LookupError(f"Conversation {run.conversation_id} was not found")
+    # Message sequence, allocated under Conversation's lock, is the durable
+    # acceptance order. Run UUIDs and completion times cannot identify ownership.
+    current_owner = await session.scalar(
+        select(Message.run_id)
+        .where(Message.conversation_id == conversation.id, Message.role == "user")
+        .order_by(Message.sequence.desc())
+        .limit(1)
+    )
     assistant_message = await session.scalar(
         select(Message).where(Message.run_id == run.id, Message.role == "assistant")
     )
     run.status = "completed"
     run.error_code = None
-    if run.claude_session_id:
-        conversation.claude_session_id = run.claude_session_id
-        conversation.context_state = "active"
-    conversation.updated_at = datetime.now(UTC)
+    if current_owner == run.id:
+        if run.claude_session_id:
+            conversation.claude_session_id = run.claude_session_id
+            conversation.context_state = "active"
+        conversation.updated_at = datetime.now(UTC)
     terminal_event = await _append_event_in_transaction(
         session,
         run_id,
@@ -1100,18 +1145,16 @@ async def finalize_artifact_confirmation_failure(
     commit: bool = True,
 ) -> Event | None:
     """Terminally mark the owning run unknown when artifact delivery cannot converge."""
-    run = await session.get(Run, run_id)
-    if run is None:
+    locked = await _lock_run_context(session, run_id)
+    if locked is None:
         return None
+    run, conversation = locked
     if run.status in TERMINAL_RUN_STATUSES:
         if not (
             run.status == "outcome_unknown"
             and run.error_code == "artifact_confirmation_pending"
         ):
             return None
-        conversation = await session.get(Conversation, run.conversation_id)
-        if conversation is None:
-            raise LookupError(f"Conversation {run.conversation_id} was not found")
         run.error_code = "artifact_confirmation_failed"
         terminal_event = await _append_event_in_transaction(
             session,
@@ -1143,17 +1186,10 @@ async def reconcile_orphaned_runs(session: AsyncSession) -> list[Event]:
             .order_by(Run.id)
         )
     )
-    pending_confirmation_run_ids = set(
-        await session.scalars(
-            select(ArtifactConfirmation.run_id).where(
-                ArtifactConfirmation.status.in_(("pending", "confirming"))
-            )
-        )
-    )
     terminal_events: list[Event] = []
     for run in active_runs:
-        if run.id in pending_confirmation_run_ids:
-            continue
+        # Delivery recovery remains independent: a saved file is not evidence
+        # that execution completed, and no worker reattaches this orphaned run.
         finalization = await finalize_run(
             session,
             run.id,

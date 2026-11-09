@@ -342,9 +342,12 @@ def test_runner_startup_reconciles_before_orphaning_awaiting_storage(tmp_path, m
             )
             session.add(confirmation)
             await session.commit()
-            return run.id, project_id, conversation.id
+            result = run.id, project_id, conversation.id
+        await database.dispose()  # Seed loop must not lend asyncpg connections to TestClient's loop.
+        return result
 
     run_id, project_id, _ = asyncio.run(seed())
+    settings.runner_transport_db.parent.mkdir(parents=True, exist_ok=True)
     transport = main_module.RunnerTransport(settings.runner_transport_db)
     transport.message(project_id, run_id, "restart-request", "start")
     transport.ingest(project_id, 1, {
@@ -375,14 +378,14 @@ def test_runner_startup_reconciles_before_orphaning_awaiting_storage(tmp_path, m
         original_confirm(project, confirmed_run_id, artifact_id, receipt)
 
     monkeypatch.setattr(app.state.runner_transport, "confirm_saved", confirm_once)
-    with TestClient(app):
+    with TestClient(app) as client:
         async def states():
             async with database.session() as session:
                 run = await session.get(Run, run_id)
                 confirmation = await session.scalar(select(ArtifactConfirmation))
                 return run.status, confirmation.status
 
-        assert asyncio.run(states()) == ("outcome_unknown", "confirmed")
+        assert client.portal.call(states) == ("outcome_unknown", "confirmed")
         assert app.state.runner_transport.status(project_id, run_id)["status"] == "completed"
         assert calls == 1
 
@@ -423,9 +426,12 @@ def test_runner_startup_conflict_never_false_completes(tmp_path, monkeypatch):
                 sha256="a" * 64, size_bytes=1,
             ))
             await session.commit()
-            return run.id, project_id
+            result = run.id, project_id
+        await database.dispose()  # Keep asyncpg connections on their owning event loop.
+        return result
 
     run_id, project_id = asyncio.run(seed())
+    settings.runner_transport_db.parent.mkdir(parents=True, exist_ok=True)
     transport = main_module.RunnerTransport(settings.runner_transport_db)
     transport.message(project_id, run_id, "conflict-request", "start")
     transport.ingest(project_id, 1, {
@@ -449,14 +455,14 @@ def test_runner_startup_conflict_never_false_completes(tmp_path, monkeypatch):
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-5.6-luna",
         "ANTHROPIC_AUTH_TOKEN": ANTHROPIC_TOKEN,
     }
-    with TestClient(app):
+    with TestClient(app) as client:
         async def states():
             async with database.session() as session:
                 run = await session.get(Run, run_id)
                 confirmation = await session.scalar(select(ArtifactConfirmation))
                 return run.status, confirmation.status
 
-        assert asyncio.run(states()) == ("outcome_unknown", "conflicted")
+        assert client.portal.call(states) == ("outcome_unknown", "conflicted")
         assert app.state.runner_transport.status(project_id, run_id)["status"] == "completed"
 
     asyncio.run(database.dispose())
