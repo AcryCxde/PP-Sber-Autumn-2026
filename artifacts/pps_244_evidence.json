@@ -1,0 +1,58 @@
+{
+  "run_id": "PPS-244-20261109T091930Z-0856adaa",
+  "commit_sha": "2c47dbfc7ae6f112380bf6f00372dda99ce4ad89",
+  "started_at": "2026-11-09T09:23:44.494125+00:00",
+  "docx": {
+    "generation": {
+      "status": "FAIL",
+      "note": "service generation endpoint is absent; a valid synthetic DOCX fixture was used",
+      "fixture_valid": true,
+      "fixture_validation": "valid ZIP/OPC structure and word/document.xml"
+    },
+    "upload_status": 201,
+    "download_1_status": 200,
+    "download_2_status": 200,
+    "expected_mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "actual_mime": "application/octet-stream",
+    "mime_status": "FAIL",
+    "size_bytes": 937,
+    "non_empty_status": "PASS",
+    "structure_status": "PASS",
+    "structure_note": "valid ZIP/OPC structure and word/document.xml",
+    "sha256_first": "482e97f2371a7b5b643016d939d0ee1e965f4b619c1876c7d2ca89877c1a9a4e",
+    "sha256_second": "482e97f2371a7b5b643016d939d0ee1e965f4b619c1876c7d2ca89877c1a9a4e",
+    "repeat_read_status": "PASS",
+    "artifact": "artifacts\\test_result.docx"
+  },
+  "html": {
+    "generation_status": "PASS",
+    "terminal_event": "run.completed",
+    "download_1_status": 200,
+    "download_2_status": 200,
+    "expected_mime": "text/html",
+    "actual_mime": "application/octet-stream",
+    "mime_status": "FAIL",
+    "size_bytes": 213,
+    "non_empty_status": "PASS",
+    "structure_status": "PASS",
+    "structure_note": "UTF-8 and basic HTML structure are valid",
+    "sha256_first": "c78c1c41f6adefef8c5c0d85d67b241d6523f1443089bba5686369096b9e2a57",
+    "sha256_second": "c78c1c41f6adefef8c5c0d85d67b241d6523f1443089bba5686369096b9e2a57",
+    "repeat_read_status": "PASS",
+    "artifact": "artifacts\\test_result.html"
+  },
+  "negative": {
+    "status": "PASS",
+    "http_status": 415,
+    "response": {
+      "detail": "Этот тип файла не поддерживается"
+    },
+    "not_500": true
+  },
+  "limitations": [
+    "No service endpoint accepts a requested output format or generates DOCX/HTML.",
+    "Generated Artifact.content is UTF-8 text, so binary DOCX cannot use that path losslessly.",
+    "Both download endpoints return application/octet-stream instead of format-specific MIME."
+  ],
+  "finished_at": "2026-11-09T09:23:45.150621+00:00"
+}
