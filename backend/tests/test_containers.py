@@ -1,13 +1,15 @@
 """ContainerManager: восстановление токенов, наблюдение, уборка контейнеров и срок хранения томов."""
 
 import asyncio
+import io
+import tarfile
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.config import Settings
-from backend.containers import ContainerManager, _docker_time
+from backend.containers import ContainerError, ContainerManager, _docker_time
 from backend.runner_app import RunnerBridge, create_runner_app
 from backend.runner_transport import RunnerTransport
 from backend.tests.fake_docker import FakeDocker, unpack
@@ -164,6 +166,133 @@ def test_runner_exit_with_rejected_secret_fails_active_run(setup):
     assert transport.events("p1", "run-1")[-1]["payload"] == {"code": "runner_config_rejected"}
     status = manager.describe("p1")
     assert status["state"] == "exited" and status["exit_code"] == 78
+
+
+def _archive(path: str, data: bytes) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        info = tarfile.TarInfo(path)
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def _directory_archive(path: str) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        info = tarfile.TarInfo(path)
+        info.type = tarfile.DIRTYPE
+        tar.addfile(info)
+    return buffer.getvalue()
+
+
+def _pax_archive(path: str, data: bytes, metadata: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        info = tarfile.TarInfo(path)
+        info.size = len(data)
+        info.pax_headers = metadata
+        tar.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("data", [b"under", b"x" * 8])
+def test_read_file_returns_regular_member_within_limit(setup, data):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    docker.containers.get("ct-p1").files["/workspace/project/artifact.txt"] = data
+
+    assert asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8)) == data
+
+
+def test_read_file_rejects_member_larger_than_limit(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    docker.containers.get("ct-p1").files["/workspace/project/artifact.txt"] = b"x" * 9
+
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
+
+
+def test_read_file_accepts_bounded_pax_metadata_for_a_512_character_path(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+    archive = _pax_archive("a" * 512, b"content", {"comment": "x" * 2048})
+    container.get_archive = lambda path: ([archive], {"size": len(archive)})
+
+    assert asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8)) == b"content"
+
+
+def test_read_file_rejects_excessive_tar_metadata_before_unbounded_buffering(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+    archive = _pax_archive("artifact.txt", b"x", {"comment": "x" * (64 * 1024)})
+    container.get_archive = lambda path: ([archive], {"size": len(archive)})
+
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
+
+
+def test_read_file_stops_consuming_archive_after_budget(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+    consumed: list[bytes] = []
+    first = b"x" * (8 + 10 * 1024 + 1)
+
+    def get_archive(path):
+        def chunks():
+            consumed.append(first)
+            yield first
+            raise AssertionError("archive generator was consumed after its budget")
+        return chunks(), {"size": 0}
+
+    container.get_archive = get_archive
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
+    assert consumed == [first]
+
+
+def test_read_file_translates_get_archive_failure(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+
+    def get_archive(path):
+        raise RuntimeError("daemon unavailable")
+
+    container.get_archive = get_archive
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
+
+
+def test_read_file_translates_archive_iterator_failure(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+
+    def get_archive(path):
+        def chunks():
+            raise RuntimeError("connection reset")
+            yield b""  # pragma: no cover
+        return chunks(), {"size": 0}
+
+    container.get_archive = get_archive
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
+
+
+@pytest.mark.parametrize("archive", [b"not a tar archive", _directory_archive("directory")])
+def test_read_file_rejects_malformed_or_missing_regular_member(setup, archive):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get("ct-p1")
+    container.get_archive = lambda path: ([archive], {"size": len(archive)})
+
+    with pytest.raises(ContainerError, match="artifact_unreadable"):
+        asyncio.run(manager.read_file("p1", "artifact.txt", max_bytes=8))
 
 
 def test_docker_timestamps():

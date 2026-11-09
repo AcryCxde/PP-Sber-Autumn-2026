@@ -15,7 +15,7 @@ from backend.db import Database
 from backend.tests.databases import database_url
 from backend.tests.auth_helpers import make_user, sign_in
 from backend.models import Event, Run, User
-from backend.repository import accept_run, create_request
+from backend.repository import accept_run, create_request, finalize_run
 
 
 class FakeStdout:
@@ -105,6 +105,43 @@ class DisconnectingWebSocket(RecordingWebSocket):
 
 def make_database(tmp_path) -> Database:
     return Database(database_url(tmp_path / "data" / "history.db"))
+
+
+async def test_periodic_reconciliation_delivers_terminal_correction_to_live_run(tmp_path) -> None:
+    database = make_database(tmp_path)
+    await database.create_schema()
+    owner_id = await make_user(database)
+    websocket = RecordingWebSocket(database, tmp_path / "workspaces")
+    try:
+        async with database.session() as session:
+            accepted = await accept_run(
+                session,
+                conversation_id=None,
+                client_request_id=str(uuid4()),
+                content="Reconcile live run",
+                owner_id=owner_id,
+            )
+            finalization = await finalize_run(
+                session,
+                accepted.run_id,
+                assistant_content=None,
+                status="outcome_unknown",
+                exit_code=None,
+                error_code="artifact_confirmation_pending",
+            )
+
+        delivered: list[int] = []
+
+        async def deliver(event: Event) -> None:
+            delivered.append(event.seq)
+
+        websocket.app.state.live_run_deliveries = {accepted.run_id: deliver}
+        await main_module.publish_live_terminal_event(websocket.app, finalization.terminal_event)
+
+        assert delivered == [finalization.terminal_event.seq]
+        assert websocket.app.state.live_run_deliveries == {}
+    finally:
+        await database.dispose()
 
 
 def make_app(

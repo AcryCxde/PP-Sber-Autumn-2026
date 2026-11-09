@@ -17,6 +17,7 @@ from backend.api.auth import router as auth_router
 from backend.api.conversation_files import router as conversation_files_router
 from backend.api.history import router as history_router
 from backend.api.projects import router as projects_router
+from backend.artifact_confirmations import reconcile_artifact_confirmations
 from backend.auth import CurrentUser, owns_conversation, owns_run, websocket_user_id
 from backend.config import PROJECT_ROOT, Settings
 from backend.container_registry import ContainerRegistry
@@ -208,6 +209,14 @@ async def send_stored_event(
     await send_websocket_payload(websocket, payload)
 
 
+async def publish_live_terminal_event(app: FastAPI, event: Event) -> None:
+    """Send a durable reconciliation correction to the active run socket."""
+    deliveries = getattr(app.state, "live_run_deliveries", {})
+    delivery = deliveries.pop(event.run_id, None)
+    if delivery is not None:
+        await delivery(event)
+
+
 async def send_command_error(
     websocket: WebSocket,
     *,
@@ -298,9 +307,14 @@ async def handle_run_create(
         return
 
     socket_available = True
+    pending_terminal_seq: int | None = None
 
     async def deliver_event(event: Event, **wire_fields: Any) -> None:
-        nonlocal socket_available
+        nonlocal socket_available, pending_terminal_seq
+        if event.payload.get("error_code") == "artifact_confirmation_pending":
+            pending_terminal_seq = event.seq
+        elif event.type in {"run.completed", "run.failed", "run.outcome_unknown"}:
+            pending_terminal_seq = None
         if not socket_available:
             return
         delivery_socket = socket_ref()
@@ -317,6 +331,12 @@ async def handle_run_create(
         except (WebSocketDisconnect, RuntimeError):
             socket_available = False
 
+    deliveries = getattr(app_state, "live_run_deliveries", None)
+    if deliveries is None:
+        deliveries = {}
+        app_state.live_run_deliveries = deliveries
+    if not acceptance.idempotent_replay:
+        deliveries[acceptance.run_id] = deliver_event
     if acceptance.reset_event is not None:
         await deliver_event(acceptance.reset_event)
     await deliver_event(
@@ -329,7 +349,20 @@ async def handle_run_create(
         return
 
     if app_state.settings.executor == "runner":
-        await run_via_runner(app_state, acceptance, content, deliver_event)
+        try:
+            await run_via_runner(app_state, acceptance, content, deliver_event)
+        finally:
+            if deliveries.get(acceptance.run_id) is deliver_event:
+                deliveries.pop(acceptance.run_id, None)
+        if pending_terminal_seq is not None and socket_available:
+            delivery_socket = socket_ref()
+            if delivery_socket is not None:
+                # Replay from the durable cursor also closes the race with a
+                # correction committed while the live callback was removed.
+                start_subscription_task(
+                    delivery_socket, acceptance.run_id, pending_terminal_seq,
+                    owner_id=owner_id,
+                )
         return
 
     process: subprocess.Popen[str] | None = None
@@ -563,9 +596,11 @@ async def handle_run_create(
         terminal_event = await asyncio.shield(finalize_and_store_terminal())
 
     if terminal_error is not None:
+        deliveries.pop(acceptance.run_id, None)
         raise terminal_error
 
     await deliver_event(terminal_event)
+    deliveries.pop(acceptance.run_id, None)
 
 
 async def handle_subscription(
@@ -588,6 +623,14 @@ async def handle_subscription(
         async with websocket.app.state.database.session() as session:
             # Чужой run отвечает так же, как несуществующий.
             owned = await owns_run(session, run_id, owner_id)
+            # Read the marker before the event page: if reconciliation commits
+            # between reads, the page includes its correction, never vice versa.
+            pending_correction = (
+                await session.scalar(
+                    select(Run.error_code).where(Run.id == run_id)
+                ) == "artifact_confirmation_pending"
+                if owned else False
+            )
             page = await list_run_events(
                 session,
                 run_id,
@@ -617,6 +660,7 @@ async def handle_subscription(
         if (
             len(page.events) < page_size
             and page.run_status in terminal_statuses
+            and not pending_correction
         ):
             await send_websocket_payload(
                 websocket,
@@ -670,6 +714,26 @@ def _log_background_task(task: asyncio.Task[Any]) -> None:
         logger.exception("Background gateway task failed")
 
 
+async def reconcile_artifact_confirmations_periodically(app: FastAPI) -> None:
+    """Deliver durable storage receipts until runner-mode shutdown."""
+    while True:
+        try:
+            result = await reconcile_artifact_confirmations(
+                app.state.database,
+                app.state.runner_transport,
+                app.state.settings,
+            )
+            for event in result.terminal_events:
+                await publish_live_terminal_event(app, event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Artifact confirmation reconciliation failed")
+        await asyncio.sleep(
+            app.state.settings.artifact_confirmation_reconcile_interval_seconds
+        )
+
+
 async def start_run_task(
     websocket: WebSocket,
     coroutine: Any,
@@ -710,6 +774,8 @@ def start_subscription_task(
     *,
     owner_id: str,
 ) -> None:
+    if getattr(websocket, "_gateway_disconnected", False):
+        return
     subscriptions = getattr(websocket, "_gateway_subscriptions", None)
     if subscriptions is None:
         subscriptions = {}
@@ -1001,18 +1067,31 @@ def create_app(
         )
         database_ready = False
         supervisor: asyncio.Task[None] | None = None
+        confirmation_reconciler: asyncio.Task[None] | None = None
         runner_manager: ContainerManager | None = getattr(app.state, "runner_manager", None)
         try:
             await app.state.database.migrate()
             database_ready = True
+            if runner_manager is not None:
+                await runner_manager.restore()
+                await reconcile_artifact_confirmations(
+                    app.state.database,
+                    app.state.runner_transport,
+                    app.state.settings,
+                )
             async with app.state.database.session() as session:
                 await reconcile_orphaned_runs(session)
             if runner_manager is not None:
-                await runner_manager.restore()
                 await runner_manager.bridge.start()
                 supervisor = asyncio.create_task(runner_manager.supervise())
+                confirmation_reconciler = asyncio.create_task(
+                    reconcile_artifact_confirmations_periodically(app)
+                )
             yield
         finally:
+            if confirmation_reconciler is not None:
+                confirmation_reconciler.cancel()
+                await asyncio.gather(confirmation_reconciler, return_exceptions=True)
             if supervisor is not None:
                 supervisor.cancel()
                 await asyncio.gather(supervisor, return_exceptions=True)
@@ -1037,6 +1116,7 @@ def create_app(
     application.state.run_tasks = set()
     application.state.run_slot_lock = asyncio.Lock()
     application.state.run_task_count = 0
+    application.state.live_run_deliveries = {}
     application.include_router(auth_router)
     application.include_router(history_router)
     application.include_router(conversation_files_router)
@@ -1084,6 +1164,7 @@ def create_app(
         except WebSocketDisconnect:
             pass
         finally:
+            setattr(websocket, "_gateway_disconnected", True)
             subscriptions = getattr(websocket, "_gateway_subscriptions", {})
             for task in subscriptions.values():
                 task.cancel()
