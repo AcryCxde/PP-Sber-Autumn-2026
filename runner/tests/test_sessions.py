@@ -113,6 +113,31 @@ def test_start_requires_gateway_token_when_gateway_url_is_set(
     assert calls == []  # контейнер не создан
 
 
+@pytest.mark.parametrize(
+    ("key", "url"),
+    [
+        ("GATEWAY_URL", "ws://[private-password]/runner"),
+        ("GATEWAY_URL", "ws://user:private-password@localhost:8000/runner"),
+        ("GATEWAY_URL", "ws://[::1]unexpected:8000/runner"),
+        ("GATEWAY_URL", "ws://backend:8000/runner#section"),
+        ("ANTHROPIC_BASE_URL", "http://[private-password]/api"),
+        ("ANTHROPIC_BASE_URL", "http://user:private-password@localhost:8317"),
+    ],
+)
+def test_cli_rejects_unsafe_url_before_docker(
+    secrets_root: Path, monkeypatch: pytest.MonkeyPatch, key: str, url: str,
+) -> None:
+    monkeypatch.setenv(key, url)
+    monkeypatch.setattr("sys.argv", ["sessions", "start", "demo-a"])
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(sessions, "_docker", lambda *args, **_: calls.append(args))
+    with pytest.raises(SystemExit, match=key) as failure:
+        sessions.cli()
+    assert "private-password" not in str(failure.value)
+    assert url not in str(failure.value)
+    assert calls == []
+
+
 def test_start_with_gateway_token_runs_docker(
     secrets_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

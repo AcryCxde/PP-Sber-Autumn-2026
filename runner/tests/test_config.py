@@ -140,6 +140,7 @@ def test_gateway_url_must_be_websocket(secrets: Path) -> None:
         "example.test:private-password",
         "example.test:65536",
         "example.test:-1",
+        "[::1]unexpected:8000",
     ],
 )
 def test_endpoint_rejects_unsafe_authority_without_leaking(
@@ -174,6 +175,12 @@ def test_endpoint_preserves_supported_transport(secrets: Path, key: str, url: st
     (secrets / "gateway_token").write_text("gw-secret-token\n")
     cfg = load_config({**ENV, key: url}, secrets)
     assert (cfg.gateway_url if key == "GATEWAY_URL" else cfg.anthropic_base_url) == url
+
+
+def test_gateway_fragment_is_configuration_error(secrets: Path) -> None:
+    (secrets / "gateway_token").write_text("gw-secret-token\n")
+    with pytest.raises(ConfigError, match="GATEWAY_URL"):
+        load_config({**ENV, "GATEWAY_URL": "ws://backend:8000/v1/runner#section"}, secrets)
 
 
 @pytest.mark.parametrize("token", ["short", "gw secret token"])
