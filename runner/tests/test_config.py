@@ -180,7 +180,10 @@ def test_endpoint_preserves_supported_transport(secrets: Path, key: str, url: st
     assert (cfg.gateway_url if key == "GATEWAY_URL" else cfg.anthropic_base_url) == url
 
 
-@pytest.mark.parametrize("url", ["https://bücher.example", "http://proxy:8317/api?tenant=demo"])
+@pytest.mark.parametrize(
+    "url", ["https://bücher.example", "http://proxy:8317/api?tenant=demo",
+            "http://%FF", "http://proxy%3Ainvalid", "http://user%40proxy"],
+)
 def test_proxy_rejects_unsupported_base_url(secrets: Path, url: str) -> None:
     with pytest.raises(ConfigError, match="ANTHROPIC_BASE_URL"):
         load_config({**ENV, "ANTHROPIC_BASE_URL": url}, secrets)

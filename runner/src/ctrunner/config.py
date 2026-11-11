@@ -107,6 +107,8 @@ def check_endpoint_url(name: str, raw: str, schemes: tuple[str, str]) -> None:
     if "#" in raw:
         raise ConfigError(f"env {name} must not contain a fragment")
     if url.scheme in ("http", "https"):
+        if "%" in url.netloc:
+            raise ConfigError(f"env {name} authority must not contain percent escapes")
         if not raw.isascii():
             raise ConfigError(f"env {name} must use an ASCII URL; encode international hostnames")
         if "?" in raw:
