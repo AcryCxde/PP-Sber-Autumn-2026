@@ -396,6 +396,23 @@ class ContainerManager:
                     raise ContainerError("runner_project_missing") from None
                 await asyncio.sleep(0.5)
 
+    async def replace_materials(self, project: str, files: Mapping[str, bytes]) -> None:
+        """Replace only the reserved managed materials directory, never artifacts."""
+        if any(not name or name in {".", ".."} or "/" in name or "\\" in name for name in files):
+            raise ContainerError("materials_invalid_path")
+        container = await asyncio.to_thread(self._get, self.names(project)["container"])
+        if container is None:
+            raise ContainerError("runner_container_missing")
+        script = (
+            "import pathlib,shutil; root=pathlib.Path('/workspace/project'); "
+            "assert not root.is_symlink(); p=root/'materials'; "
+            "p.unlink() if p.is_symlink() else shutil.rmtree(p) if p.exists() else None"
+        )
+        result = await asyncio.to_thread(container.exec_run, ["python", "-c", script])
+        if result.exit_code != 0:
+            raise ContainerError("materials_cleanup_failed")
+        await self.write_files(project, "materials", files)
+
     def list_containers(self) -> list[str]:
         containers = self.client.containers.list(all=True, filters={"label": f"{MANAGED_LABEL}=1"})
         return sorted({c.labels[PROJECT_LABEL] for c in containers if PROJECT_LABEL in c.labels})

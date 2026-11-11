@@ -30,6 +30,7 @@ from backend.repository import (
     mark_run_running,
 )
 from backend.runner_transport import RunnerTransport, TransportError
+from backend.storage import StorageError, store_file, text_preview
 
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ async def run_via_runner(
     async def save_artifact(payload: dict[str, Any]) -> None:
         try:
             data = await manager.read_file(
-                project, payload["path"], max_bytes=app_state.settings.artifact_max_download_bytes,
+                project, payload["path"], max_bytes=app_state.settings.artifact_max_storage_bytes,
             )
         except ContainerError as error:
             raise RunnerRunError("container_read") from error
@@ -97,10 +98,18 @@ async def run_via_runner(
             raise RunnerRunError("size")
         if "sha256" in payload and actual_sha256 != payload["sha256"]:
             raise RunnerRunError("hash")
+        content, _ = text_preview(data, app_state.settings.artifact_max_download_bytes)
+        stored = None
         try:
-            content = data.decode("utf-8", errors="strict")
-        except UnicodeDecodeError as error:
-            raise RunnerRunError("encoding") from error
+            stored = await store_file(
+                getattr(app_state, "storage", None), run_id, payload["path"], data,
+            )
+        except StorageError as error:
+            # A complete text snapshot can still be durably stored in the database.
+            if content is None or "\x00" in content:
+                raise RunnerRunError("storage") from error
+        if stored is None and (content is None or "\x00" in content):
+            raise RunnerRunError("encoding")
 
         try:
             async with database.session() as session:
@@ -116,6 +125,7 @@ async def run_via_runner(
                     version_id=payload["commit_sha"],
                     sha256=actual_sha256,
                     max_bytes=app_state.settings.artifact_max_download_bytes,
+                    stored=stored,
                 )
                 await session.commit()
         except Exception as error:
@@ -158,9 +168,9 @@ async def run_via_runner(
             await deliver_event(started)
 
         await manager.ensure_running(project, run_id=run_id)
-        materials = await conversation_materials(database, acceptance.conversation_id)
-        if materials is not None and materials.files:
-            await manager.write_files(project, MATERIALS_DIR, materials.files)
+        materials = await conversation_materials(database, acceptance.conversation_id, run_id=acceptance.run_id)
+        if materials is not None:
+            await manager.replace_materials(project, materials.files)
         active = transport.active_run(project)
         if active is not None and active["status"] == "waiting_for_input" and active["question"]:
             transport_run = active["run_id"]

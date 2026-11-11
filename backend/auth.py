@@ -14,13 +14,17 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, WebSocket, status
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.config import Settings
 from backend.dependencies import get_session
-from backend.models import AuthSession, Conversation, Run, User
+from backend.models import AuthSession, Conversation, Run, User, UserActivityDay
 
 
 SESSION_COOKIE = "coreteams_session"
+# Чаще этого last_seen_at не переписывается: каждый запрос не должен писать в базу.
+ACTIVITY_INTERVAL = timedelta(minutes=5)
 
 # scrypt из стандартной библиотеки: ~16 МБ памяти и десятки миллисекунд на попытку.
 SCRYPT_N = 2**14
@@ -122,6 +126,33 @@ async def user_for_token(session: AsyncSession, token: str | None) -> User | Non
     return await session.get(User, auth_session.user_id)
 
 
+async def record_activity(session: AsyncSession, user: User, settings: Settings) -> None:
+    """Record activity without granting privileges to unverified email addresses.
+
+    Administrator roles are managed explicitly by an operator in the database.
+    Existing administrator roles are preserved.
+    """
+    del settings
+    now = datetime.now(UTC)
+    changed = False
+    last_seen = user.last_seen_at
+    if last_seen is not None and last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=UTC)
+    if last_seen is None or now - last_seen >= ACTIVITY_INTERVAL or last_seen.date() != now.date():
+        user.last_seen_at = now
+        if await session.get(UserActivityDay, (user.id, now.date())) is None:
+            session.add(UserActivityDay(user_id=user.id, day=now.date()))
+        changed = True
+    if not changed:
+        return
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Параллельный запрос уже записал этот день.
+        await session.rollback()
+        await session.refresh(user)
+
+
 async def get_current_user(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -132,15 +163,27 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
+    await record_activity(session, user, request.app.state.settings)
     return user
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+async def get_admin_user(user: CurrentUser) -> User:
+    if user.role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
+    return user
+
+
+AdminUser = Annotated[User, Depends(get_admin_user)]
+
+
 async def websocket_user_id(websocket: WebSocket) -> str | None:
     async with websocket.app.state.database.session() as session:
         user = await user_for_token(session, websocket.cookies.get(SESSION_COOKIE))
+        if user is not None:
+            await record_activity(session, user, websocket.app.state.settings)
     return user.id if user is not None else None
 
 

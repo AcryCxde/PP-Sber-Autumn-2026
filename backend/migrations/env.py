@@ -37,6 +37,12 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection) -> None:
+    from backend.migration_bridge import preflight_canonical
+
+    preflight_canonical(connection)
+    # Preflight SELECT starts an implicit transaction; finish it before Alembic
+    # owns the migration transaction, otherwise connection close rolls DDL back.
+    connection.commit()
     context.configure(
         connection=connection,
         target_metadata=target_metadata,

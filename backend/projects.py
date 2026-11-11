@@ -83,6 +83,7 @@ async def owned_project(session: AsyncSession, project_id: str, owner_id: str) -
             Project.id == project_id,
             Project.owner_id == owner_id,
             Project.deleted.is_(False),
+            Project.client_project_id.is_(None),
         )
         # Содержимое файлов не нужно для представления проекта.
         .options(selectinload(Project.files).load_only(
@@ -95,7 +96,12 @@ async def owned_project(session: AsyncSession, project_id: str, owner_id: str) -
 async def list_projects(session: AsyncSession, owner_id: str) -> list[Project]:
     result = await session.scalars(
         select(Project)
-        .where(Project.owner_id == owner_id, Project.deleted.is_(False))
+        # Проекты рабочего пространства (контракт V2) живут в своём интерфейсе.
+        .where(
+            Project.owner_id == owner_id,
+            Project.deleted.is_(False),
+            Project.client_project_id.is_(None),
+        )
         .order_by(Project.updated_at.desc())
     )
     return list(result)

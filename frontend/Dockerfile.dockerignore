@@ -1,5 +1,11 @@
-node_modules
-dist
-.env
-.env.*
-*.log
+# Контекст — корень репозитория: в образ попадают только два фронтенда.
+*
+!frontend
+!web-product
+**/node_modules
+**/dist
+**/.env
+**/.env.*
+**/*.log
+web-product/docs
+web-product/test

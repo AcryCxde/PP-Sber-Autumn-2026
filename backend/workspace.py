@@ -195,3 +195,50 @@ def normalize_artifact_path(workspace: Path, raw_path: str) -> str:
         raise WorkspaceError("Artifact path points to a protected directory")
 
     return relative.as_posix()
+
+
+class WorkspaceFiles(dict[str, tuple[int, int]]):
+    """Bounded discovery result; truncated means artifact discovery is incomplete."""
+
+    truncated: bool = False
+    entries_scanned: int = 0
+
+
+def workspace_files(workspace: Path, *, skip_dirs: set[str], max_entries: int = 10000) -> WorkspaceFiles:
+    """Discover files with a hard directory-entry and metadata allocation budget.
+
+    Entries within each bounded directory batch are visited lexically. Once the
+    budget is exhausted, no further directories or file metadata are read. No
+    generated-directory blanket exclusions: valid artifacts may live there.
+    """
+    files = WorkspaceFiles()
+    pending = [workspace]
+    while pending:
+        root = pending.pop()
+        entries = []
+        try:
+            with os.scandir(root) as iterator:
+                for entry in iterator:
+                    if files.entries_scanned >= max_entries:
+                        files.truncated = True
+                        break
+                    files.entries_scanned += 1
+                    entries.append(entry)
+        except FileNotFoundError:
+            continue
+        directories = []
+        for entry in sorted(entries, key=lambda item: item.name):
+            if entry.name.startswith(".") or entry.is_symlink():
+                continue
+            relative = Path(entry.path).relative_to(workspace)
+            if entry.is_dir(follow_symlinks=False):
+                if entry.name.lower() not in PROTECTED_WORKSPACE_PARTS and not (root == workspace and entry.name in skip_dirs):
+                    directories.append(Path(entry.path))
+            elif entry.is_file(follow_symlinks=False):
+                stat = entry.stat(follow_symlinks=False)
+                files[relative.as_posix()] = (stat.st_mtime_ns, stat.st_size)
+        pending.extend(reversed(directories))
+        if files.truncated or (pending and files.entries_scanned >= max_entries):
+            files.truncated = True
+            break
+    return files
