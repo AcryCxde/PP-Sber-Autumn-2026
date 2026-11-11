@@ -67,6 +67,90 @@ def test_denies(tool: str, tool_input: dict[str, object], path: str) -> None:
     assert verdict.path == path
 
 
+@pytest.mark.parametrize(
+    ("command", "path"),
+    [
+        ("echo x>/etc/foo", "/etc/foo"),
+        ("cat</etc/passwd", "/etc/passwd"),
+        ("echo x>>/etc/foo", "/etc/foo"),
+        ("echo x 2>/run/secrets/error", "/run/secrets/error"),
+        ("ls&&cat</etc/passwd", "/etc/passwd"),
+        ("false||cat</etc/passwd", "/etc/passwd"),
+        ("true;cat</run/secrets/t", "/run/secrets/t"),
+        ("cat</etc/passwd|wc -c", "/etc/passwd"),
+        ("(cat</etc/passwd)", "/etc/passwd"),
+        ("cat<../proj-other/a", "/workspace/proj-other/a"),
+        ('cat<"/workspace/proj-other/secret file.md"', "/workspace/proj-other/secret file.md"),
+    ],
+)
+def test_bash_denies_paths_glued_to_shell_operators(command: str, path: str) -> None:
+    # Проверяется только решение guard: shell-команды не исполняются.
+    verdict = check("Bash", {"command": command}, PROJECT, POLICY, ident)
+    assert isinstance(verdict, Deny)
+    assert verdict.path == path
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo x>/workspace/project/out.txt",
+        "cat</workspace/project/in.txt|wc -c",
+        "echo x>>/tmp/out.txt",
+        "echo x 2>/dev/null",
+        "true&&cat</workspace/project/in.txt",
+        "false||cat</workspace/project/in.txt",
+        "true;cat</workspace/project/in.txt",
+        "(cat</workspace/project/in.txt)",
+        'cat<"/workspace/project/input file.txt"',
+        "cat<notes/in.txt",
+        "echo x>/workspace/project/out.txt 2>&1",
+    ],
+)
+def test_bash_allows_permitted_paths_glued_to_shell_operators(command: str) -> None:
+    assert check("Bash", {"command": command}, PROJECT, POLICY, ident) == Allow()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat '/workspace/project/a;/etc/passwd'",
+        'cat "/workspace/project/a;/etc/passwd"',
+        r"cat /workspace/project/a\;/etc/passwd",
+        "cat<'/workspace/project/a;/etc/passwd'",
+        'cat<"/workspace/project/a;/etc/passwd"',
+        r"cat</workspace/project/a\;/etc/passwd",
+        "cat '/workspace/project/a|&<>()/etc/passwd'",
+        r"cat /workspace/project/a\|\&\<\>\(\)/etc/passwd",
+    ],
+)
+def test_bash_allows_literal_shell_punctuation_in_paths(command: str) -> None:
+    assert check("Bash", {"command": command}, PROJECT, POLICY, ident) == Allow()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat '/tmp/cache;backup/state.json'",
+        'cat "/tmp/cache;backup/state.json"',
+        r"cat /tmp/cache\;backup/state.json",
+        "cat<'/tmp/cache;backup/state.json'",
+        'cat<"/tmp/cache;backup/state.json"',
+        r"cat</tmp/cache\;backup/state.json",
+    ],
+)
+def test_bash_denies_literal_punctuation_path_symlink_escape(command: str) -> None:
+    def resolve(path: Path) -> Path:
+        # Детерминированная модель symlink; файлов и shell-процессов не создаёт.
+        link = Path("/tmp/cache;backup")
+        if path.is_relative_to(link):
+            return Path("/workspace/.runner") / path.relative_to(link)
+        return path
+
+    verdict = check("Bash", {"command": command}, PROJECT, POLICY, resolve)
+    assert isinstance(verdict, Deny)
+    assert verdict.path == "/workspace/.runner/state.json"
+
+
 def test_bash_unbalanced_quotes_falls_back() -> None:
     assert isinstance(check("Bash", {"command": "cat '/etc/passwd"}, PROJECT, POLICY, ident), Deny)
 

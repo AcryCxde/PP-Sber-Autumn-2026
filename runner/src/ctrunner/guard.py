@@ -52,7 +52,7 @@ PATH_FIELDS: Final[Mapping[str, str]] = {
 }
 GLOB_CHARS: Final = frozenset("*?[{")
 BRACE_SEPARATORS: Final = re.compile(r"[{},]")
-SHELL_PUNCT: Final = "<>|&;()'\""
+SHELL_PUNCT_RE: Final = re.compile(r"[<>|&;()'\"]+")
 
 
 def check(
@@ -112,11 +112,16 @@ def _glob_base(pattern: str) -> str:
 
 
 def _bash_paths(command: str) -> Iterator[str]:
+    # Разделяем операторы до снятия кавычек и escape: `cat<a` и `cat 'a;b'` различны.
+    lexer = shlex.shlex(command, posix=True, punctuation_chars="<>|&;()")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
-        tokens = shlex.split(command)
+        tokens = list(lexer)
     except ValueError:
-        tokens = command.split()
+        # Незакрытые кавычки: сохраняем грубую эвристику для некорректной команды.
+        tokens = SHELL_PUNCT_RE.sub(" ", command).split()
     for token in tokens:
-        candidate = token.lstrip(SHELL_PUNCT).rpartition("=")[2]
+        candidate = token.rpartition("=")[2]
         if candidate.startswith(("/", "~")) or ".." in candidate:
             yield candidate
