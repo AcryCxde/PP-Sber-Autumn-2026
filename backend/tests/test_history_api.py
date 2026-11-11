@@ -793,7 +793,7 @@ def test_interrupted_resumed_run_invalidates_session_context(tmp_path, monkeypat
         raise RuntimeError("database unavailable")
 
     monkeypatch.setattr(main_module, "start_claude", fake_start_claude)
-    monkeypatch.setattr(main_module, "append_artifact", fail_artifact_save)
+    monkeypatch.setattr(main_module, "save_agent_file", fail_artifact_save)
     app = make_app(tmp_path)
 
     with TestClient(app) as client:
@@ -1357,3 +1357,40 @@ async def test_websocket_replay_waits_for_running_run_to_finish(tmp_path) -> Non
         assert websocket.messages[1]["type"] == "replay.complete"
     finally:
         await database.dispose()
+
+
+@pytest.mark.parametrize("late_write_edit", [False, True])
+def test_unchanged_write_snapshots_do_not_consume_final_scan_budget(tmp_path, monkeypatch, late_write_edit):
+    from pathlib import Path
+
+    async def fake_claude(prompt, workspace, resume_session_id=None, *, permission_mode=None):
+        folder = Path(workspace)
+        lines = claude_lines("Done")
+        writes = []
+        for index in range(50):
+            name = f"a{index:02}.md"
+            (folder / name).write_text("unchanged")
+            writes.extend(write_tool_events(name, "unchanged"))
+        if late_write_edit:
+            writes.extend(write_tool_events("z-result.md", "original"))
+        (folder / "z-result.md").write_text("final bytes")
+        lines[1:1] = writes
+        return FakeProcess(lines)
+
+    monkeypatch.setattr(main_module, "start_claude", fake_claude)
+    with TestClient(make_app(tmp_path)) as client:
+        sign_in(client)
+        events = []
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json(run_command("Write files and final script result"))
+            while True:
+                event = websocket.receive_json()
+                events.append(event)
+                if event["type"] in {"run.completed", "run.failed", "run.outcome_unknown"}:
+                    break
+        saved = [event for event in events if event["type"] == "artifact.saved"]
+        assert len(saved) == 51 + int(late_write_edit)
+        result = [event for event in saved if event["path"] == "z-result.md"][-1]
+        downloaded = client.get(f"/api/runs/{result['run_id']}/events/{result['seq']}/file")
+        assert downloaded.status_code == 200
+        assert downloaded.content == b"final bytes"

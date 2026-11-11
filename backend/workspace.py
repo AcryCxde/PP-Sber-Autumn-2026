@@ -195,3 +195,28 @@ def normalize_artifact_path(workspace: Path, raw_path: str) -> str:
         raise WorkspaceError("Artifact path points to a protected directory")
 
     return relative.as_posix()
+
+
+def workspace_files(workspace: Path, *, skip_dirs: set[str]) -> dict[str, tuple[int, int]]:
+    """Файлы рабочей директории: относительный путь → (mtime_ns, размер).
+
+    Скрытые и служебные каталоги и каталоги из skip_dirs (например, materials/) не входят.
+    """
+    files: dict[str, tuple[int, int]] = {}
+    if not workspace.is_dir():
+        return files
+    for root, dirs, names in os.walk(workspace):
+        relative_root = Path(root).relative_to(workspace)
+        dirs[:] = [
+            name for name in dirs
+            if not name.startswith(".")
+            and name.lower() not in PROTECTED_WORKSPACE_PARTS
+            and not (relative_root == Path(".") and name in skip_dirs)
+        ]
+        for name in names:
+            path = Path(root) / name
+            if name.startswith(".") or path.is_symlink() or not path.is_file():
+                continue
+            stat = path.stat()
+            files[(relative_root / name).as_posix()] = (stat.st_mtime_ns, stat.st_size)
+    return files

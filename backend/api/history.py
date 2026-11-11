@@ -18,6 +18,7 @@ from backend.repository import (
     list_messages,
     list_run_events,
 )
+from backend.storage import ObjectStorage, StorageError
 from backend.schemas import ConversationRead, EventRead, MessageRead
 
 
@@ -30,6 +31,10 @@ def get_app_settings(request: Request) -> Settings:
 
 
 SettingsDependency = Annotated[Settings, Depends(get_app_settings)]
+
+
+def get_storage(request: Request) -> ObjectStorage | None:
+    return getattr(request.app.state, "storage", None)
 
 
 async def require_conversation(
@@ -188,6 +193,7 @@ async def download_event_file(
     session: SessionDependency,
     settings: SettingsDependency,
     user: CurrentUser,
+    storage: Annotated[ObjectStorage | None, Depends(get_storage)] = None,
 ) -> Response:
     await require_run(session, run_id, user, "File artifact not found")
     artifact = await session.scalar(
@@ -200,6 +206,23 @@ async def download_event_file(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File artifact not found",
+        )
+    filename = artifact.path.replace("\\", "/").rsplit("/", 1)[-1]
+    filename = filename.replace("\r", "").replace("\n", "") or "artifact"
+    disposition = {"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}"}
+    if artifact.storage_key and storage is not None:
+        # Исходные байты из объектного хранилища: целиком, в т. ч. бинарные и большие файлы.
+        try:
+            data = await storage.get(artifact.storage_key)
+        except StorageError:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="File storage is unavailable",
+            ) from None
+        return Response(
+            content=data,
+            media_type=artifact.content_type or "application/octet-stream",
+            headers=disposition,
         )
     if artifact.truncated or (
         artifact.size_bytes is not None
@@ -222,14 +245,8 @@ async def download_event_file(
             detail="File is too large to download",
         )
 
-    filename = artifact.path.replace("\\", "/").rsplit("/", 1)[-1]
-    filename = filename.replace("\r", "").replace("\n", "") or "artifact"
     return Response(
         content=content,
         media_type="application/octet-stream",
-        headers={
-            "Content-Disposition": (
-                f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
-            )
-        },
+        headers=disposition,
     )

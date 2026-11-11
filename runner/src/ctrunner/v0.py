@@ -270,7 +270,14 @@ class Translator:
             return
         payload = _object(event.payload)
         run, sha, files = self._runs[run_id], _str(payload, "sha"), payload.get("files")
-        for path, write in sorted(run.written.items()):
+        written = dict(run.written)
+        # Файлы, созданные не через Write/Edit (скриптом, конвертером), тоже результат работы:
+        # их видно по коммиту. Входные материалы пользователя (materials/) результатом не считаются.
+        if isinstance(files, dict):
+            for path in files:
+                if path not in written and _generated(path):
+                    written[path] = _Write(path, None)
+        for path, write in sorted(written.items()):
             created: dict[str, JsonValue] = {
                 "artifact_id": self._opaque(f"{sha}:{path}"),
                 "path": path,
@@ -412,6 +419,12 @@ def _cost(raw: JsonValue | None) -> int | float | None:
 
 
 _SHA256_RE: Final = re.compile(r"[0-9a-f]{64}")
+
+
+def _generated(path: str) -> bool:
+    """Файл из коммита, который публикуется артефактом: не материалы и не служебный файл."""
+    parts = path.split("/")
+    return parts[0] != "materials" and not any(part.startswith(".") for part in parts)
 
 
 def _file_fact(raw: JsonValue | None) -> dict[str, JsonValue]:

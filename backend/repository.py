@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import Artifact, ArtifactConfirmation, Conversation, Event, Message, Project, Run
+from backend.storage import StoredFile
 from backend.public_events import (
     SAFE_FAILURE_CODES,
     SAFE_UNKNOWN_CODES,
@@ -241,7 +242,7 @@ async def _existing_acceptance(
     )
 
 
-async def _accept_run_once(
+async def accept_run_in_transaction(
     session: AsyncSession,
     *,
     conversation_id: str | None,
@@ -250,6 +251,11 @@ async def _accept_run_once(
     requested_context_mode: str = "resume",
     owner_id: str | None = None,
 ) -> RunAcceptance:
+    """Flush acceptance without committing; the caller owns commit, rollback and races.
+
+    Allows a service to atomically persist its domain link alongside acceptance.
+    Unlike accept_run, integrity failures propagate without discarding caller work.
+    """
     existing_run = await session.scalar(
         select(Run).where(Run.client_request_id == client_request_id)
     )
@@ -377,7 +383,7 @@ async def _accept_run_once(
         ),
     )
     conversation.updated_at = datetime.now(UTC)
-    await session.commit()
+    await session.flush()
 
     return RunAcceptance(
         conversation_id=conversation.id,
@@ -413,7 +419,7 @@ async def accept_run(
 ) -> RunAcceptance:
     """owner_id: владелец нового диалога; существующий диалог и повтор запроса должны быть его."""
     try:
-        return await _accept_run_once(
+        acceptance = await accept_run_in_transaction(
             session,
             conversation_id=conversation_id,
             client_request_id=client_request_id,
@@ -421,6 +427,9 @@ async def accept_run(
             requested_context_mode=requested_context_mode,
             owner_id=owner_id,
         )
+        if not acceptance.idempotent_replay:
+            await session.commit()
+        return acceptance
     except IntegrityError:
         await session.rollback()
 
@@ -707,24 +716,30 @@ async def stage_runner_artifact(
     transport_run_id: str,
     artifact_id: str,
     path: str,
-    content: str,
+    content: str | None,
     source_bytes: bytes,
     version_id: str,
     sha256: str,
     max_bytes: int | None = None,
+    stored: StoredFile | None = None,
 ) -> StagedArtifact:
     """Stage an exact runner artifact with its event and confirmation intent.
 
     The caller owns the transaction and must commit or roll back this work.
     """
-    try:
-        encoded_content = content.encode("utf-8")
-    except UnicodeEncodeError as error:
-        raise ValueError("Artifact content is not valid UTF-8") from error
-    if "\x00" in content or encoded_content != source_bytes:
-        raise ValueError("Artifact content does not match source bytes")
-    if max_bytes is not None and len(source_bytes) > max_bytes:
-        raise ValueError("Artifact exceeds the configured size limit")
+    if stored is None:
+        if content is None:
+            raise ValueError("Artifact has no durable snapshot")
+        try:
+            encoded_content = content.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ValueError("Artifact content is not valid UTF-8") from error
+        if "\x00" in content or encoded_content != source_bytes:
+            raise ValueError("Artifact content does not match source bytes")
+        if max_bytes is not None and len(source_bytes) > max_bytes:
+            raise ValueError("Artifact exceeds the configured size limit")
+    elif stored.sha256 != sha256 or stored.size_bytes != len(source_bytes):
+        raise ValueError("Stored object does not match source bytes")
     if hashlib.sha256(source_bytes).hexdigest() != sha256:
         raise ValueError("Artifact hash does not match source bytes")
 
@@ -765,7 +780,7 @@ async def stage_runner_artifact(
             path=path,
             size_bytes=len(source_bytes),
             truncated=False,
-            num_lines=content.count("\n") + 1,
+            num_lines=content.count("\n") + 1 if content is not None else None,
         ),
     )
     artifact = Artifact(
@@ -775,6 +790,9 @@ async def stage_runner_artifact(
         content=content,
         size_bytes=len(source_bytes),
         truncated=False,
+        storage_key=stored.key if stored else None,
+        sha256=stored.sha256 if stored else None,
+        content_type=stored.content_type if stored else None,
     )
     receipt = {
         "artifact_id": artifact_id,
@@ -1058,7 +1076,9 @@ async def append_artifact(
     size_bytes: int | None,
     truncated: bool,
     num_lines: int | None,
+    stored: StoredFile | None = None,
 ) -> Event:
+    """stored — исходные байты в объектном хранилище; тогда файл скачивается целиком."""
     event = await _append_event_in_transaction(
         session,
         run_id,
@@ -1077,6 +1097,9 @@ async def append_artifact(
             content=content,
             size_bytes=size_bytes,
             truncated=truncated,
+            storage_key=stored.key if stored else None,
+            sha256=stored.sha256 if stored else None,
+            content_type=stored.content_type if stored else None,
         )
     )
     await session.commit()

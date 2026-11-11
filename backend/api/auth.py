@@ -11,6 +11,7 @@ from backend.auth import (
     check_credentials,
     create_session,
     hash_password,
+    record_activity,
     revoke_session,
 )
 from backend.config import Settings
@@ -54,6 +55,7 @@ async def register(
         raise HTTPException(status_code=409, detail="Email already registered") from None
 
     token = await create_session(session, user, settings.auth_session_ttl_seconds)
+    await record_activity(session, user, settings)
     set_session_cookie(response, token, settings)
     return UserRead.model_validate(user)
 
@@ -70,6 +72,7 @@ async def login(
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     token = await create_session(session, user, settings.auth_session_ttl_seconds)
+    await record_activity(session, user, settings)
     set_session_cookie(response, token, settings)
     return UserRead.model_validate(user)
 

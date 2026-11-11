@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -9,6 +9,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -54,17 +55,31 @@ class User(Base):
     # Хранится нормализованным (strip + lower): уникальность не зависит от регистра.
     email: Mapped[str] = mapped_column(String(254), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
-    # user | admin; права по роли пока не проверяются.
+    # user | admin; admin открывает /api/admin (панель вовлечённости).
     role: Mapped[str] = mapped_column(String(20), default="user", server_default="user")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
     )
+    # Последний авторизованный запрос; обновляется не чаще раза в несколько минут.
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     sessions: Mapped[list[AuthSession]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
     )
+
+
+class UserActivityDay(Base):
+    """День (UTC), в который пользователь обращался к API: основа DAU/WAU/MAU и удержания."""
+
+    __tablename__ = "user_activity_days"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    day: Mapped[date] = mapped_column(Date, primary_key=True, index=True)
 
 
 class AuthSession(Base):
@@ -246,6 +261,10 @@ class Artifact(Base):
     content: Mapped[str | None] = mapped_column(SafeText)
     size_bytes: Mapped[int | None] = mapped_column(Integer)
     truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Исходные байты файла в объектном хранилище (backend/storage.py); content — текстовое превью.
+    storage_key: Mapped[str | None] = mapped_column(Text)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    content_type: Mapped[str | None] = mapped_column(String(255))
     # Заполняются, когда результат зафиксирован в git-репозитории проекта.
     git_path: Mapped[str | None] = mapped_column(Text)
     commit_sha: Mapped[str | None] = mapped_column(String(64))
@@ -323,6 +342,9 @@ class Project(Base):
     """Проект CoreTeams: подготовка задачи и три этапа работы в своём диалоге."""
 
     __tablename__ = "projects"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "client_project_id", name="uq_projects_owner_client_project"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     owner_id: Mapped[str] = mapped_column(
@@ -350,6 +372,10 @@ class Project(Base):
     feedback: Mapped[str] = mapped_column(String(20), default="")
     feedback_note: Mapped[str] = mapped_column(Text, default="")
     git_repo_url: Mapped[str | None] = mapped_column(Text)
+    # Проект рабочего пространства (контракт V2): ID черновика в браузере и его план и команда.
+    # У проектов прежнего интерфейса оба поля пустые.
+    client_project_id: Mapped[str | None] = mapped_column(String(64))
+    product: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     deleted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -390,6 +416,15 @@ class ProjectRun(Base):
     stage: Mapped[int] = mapped_column(Integer)
     kind: Mapped[str] = mapped_column(String(20))
     accepted: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Запуск рабочего пространства, в цепочку которого входит этот запуск Claude.
+    product_run_id: Mapped[str | None] = mapped_column(
+        ForeignKey("product_runs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    # Что пользователь видит своим сообщением вместо собранного промпта.
+    display_text: Mapped[str | None] = mapped_column(Text)
+    # Immutable body fingerprint for idempotent answer replay; legacy links remain null.
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
@@ -399,10 +434,56 @@ class ProjectRun(Base):
     run: Mapped[Run] = relationship()
 
 
+class ProductRun(Base):
+    """Run контракта V2: исходный запуск Claude и его продолжения ответами на вопросы.
+
+    Доработка после завершения — новый ProductRun со ссылкой на родителя и исходную версию.
+    """
+
+    __tablename__ = "product_runs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        index=True,
+    )
+    # Idempotency-Key клиента и SHA-256 тела: повтор с другим телом отклоняется.
+    client_request_id: Mapped[str] = mapped_column(String(64), unique=True)
+    request_hash: Mapped[str] = mapped_column(String(64))
+    stage_id: Mapped[str] = mapped_column(String(64))
+    parent_run_id: Mapped[str | None] = mapped_column(String(36))
+    source_artifact_id: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+
+
+class ArtifactApproval(Base):
+    """Квитанция об одобрении конкретной сохранённой версии документа; Run она не меняет."""
+
+    __tablename__ = "artifact_approvals"
+    __table_args__ = (
+        UniqueConstraint("project_id", "artifact_id", name="uq_artifact_approvals_artifact"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    product_run_id: Mapped[str] = mapped_column(ForeignKey("product_runs.id", ondelete="CASCADE"))
+    artifact_id: Mapped[str] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer)
+    client_request_id: Mapped[str] = mapped_column(String(64), unique=True)
+    approved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+
+
 class ProjectFile(Base):
     __tablename__ = "project_files"
     __table_args__ = (
         UniqueConstraint("project_id", "name", name="uq_project_files_name"),
+        UniqueConstraint("project_id", "client_file_id", name="uq_project_files_client_file"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -413,6 +494,9 @@ class ProjectFile(Base):
     name: Mapped[str] = mapped_column(String(200))
     size_bytes: Mapped[int] = mapped_column(Integer)
     content: Mapped[bytes] = mapped_column(LargeBinary)
+    # Только у файлов рабочего пространства: ID файла в браузере и SHA-256 полученных байтов.
+    client_file_id: Mapped[str | None] = mapped_column(String(64))
+    sha256: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,

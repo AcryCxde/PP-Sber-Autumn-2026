@@ -47,6 +47,24 @@ jobs:
       - name: Build frontend
         run: npm --prefix frontend run build
 
+  web-product:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22.x"
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@10.11.0
+      - name: Install web-product dependencies
+        run: pnpm --dir web-product install --frozen-lockfile
+      - name: Test web-product
+        run: pnpm --dir web-product test
+      - name: Typecheck web-product
+        run: pnpm --dir web-product typecheck
+      - name: Build web-product
+        run: pnpm --dir web-product build
+
   compose:
     runs-on: ubuntu-latest
     steps:
@@ -55,4 +73,4 @@ jobs:
         run: |
           cp .env.gateway.example .env.gateway
           trap 'rm -f .env.gateway' EXIT
-          POSTGRES_PASSWORD=ci-only docker compose config
+          POSTGRES_PASSWORD=ci-only S3_ACCESS_KEY=ci-only S3_SECRET_KEY=ci-only docker compose config
