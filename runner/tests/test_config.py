@@ -1,5 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
+from traceback import format_exception
 
 import pytest
 
@@ -120,6 +121,59 @@ def test_gateway_url_must_be_websocket(secrets: Path) -> None:
     (secrets / "gateway_token").write_text("gw-secret-token\n")
     with pytest.raises(ConfigError, match="GATEWAY_URL"):
         load_config({**ENV, "GATEWAY_URL": "http://gw:8000"}, secrets)
+
+
+@pytest.mark.parametrize(
+    ("key", "field", "scheme"),
+    [
+        ("ANTHROPIC_BASE_URL", "anthropic_base_url", "https"),
+        ("GATEWAY_URL", "gateway_url", "wss"),
+    ],
+)
+@pytest.mark.parametrize(
+    "authority",
+    [
+        "user:private-password@example.test",
+        "private-password@example.test",
+        "user:private-password@[broken",
+        "[private-password]",
+        "example.test:private-password",
+        "example.test:65536",
+        "example.test:-1",
+    ],
+)
+def test_endpoint_rejects_unsafe_authority_without_leaking(
+    secrets: Path, key: str, field: str, scheme: str, authority: str,
+) -> None:
+    (secrets / "gateway_token").write_text("gw-secret-token\n")
+    url = f"{scheme}://{authority}/runner"
+    good = load_config({**ENV, "GATEWAY_URL": "ws://backend:8000/v1/runner"}, secrets)
+    with pytest.raises(ConfigError, match=key) as loaded:
+        load_config({**ENV, key: url}, secrets)
+    with pytest.raises(ConfigError, match=key) as constructed:
+        replace(good, **{field: url})
+    for failure in (loaded, constructed):
+        diagnostic = "".join(format_exception(failure.value))
+        assert url not in diagnostic
+        assert "private-password" not in diagnostic
+
+
+@pytest.mark.parametrize(
+    ("key", "url"),
+    [
+        ("ANTHROPIC_BASE_URL", "http://proxy:8317"),
+        ("ANTHROPIC_BASE_URL", "https://proxy.example.test/api"),
+        ("GATEWAY_URL", "ws://backend:8000/v1/runner"),
+        ("GATEWAY_URL", "ws://localhost:8000/runner"),
+        ("GATEWAY_URL", "ws://host.docker.internal:8000/runner"),
+        ("GATEWAY_URL", "ws://[::1]:8000/runner"),
+        ("GATEWAY_URL", "wss://gateway.example.test/runner"),
+    ],
+)
+def test_endpoint_preserves_supported_transport(secrets: Path, key: str, url: str) -> None:
+    (secrets / "gateway_token").write_text("gw-secret-token\n")
+    cfg = load_config({**ENV, key: url}, secrets)
+    assert (cfg.gateway_url if key == "GATEWAY_URL" else cfg.anthropic_base_url) == url
 
 
 @pytest.mark.parametrize("token", ["short", "gw secret token"])

@@ -9,6 +9,7 @@ WebSocket-клиент runner реализован (`runner/src/ctrunner/gateway
 ## Транспорт
 
 - WebSocket, соединение открывает runner (у контейнера нет входящих портов). Адрес — `GATEWAY_URL`.
+- `GATEWAY_URL`: `ws://` или `wss://`, без credentials в URL; некорректный URL/порт — ошибка конфигурации до подключения. `ws://` для внутренней сети сохранён (включая `ws://backend:8000/v1/runner`); через недоверенную сеть необходим `wss://`. Валидатор не навязывает TLS и не заменяет сетевую изоляцию.
 - Авторизация: заголовок `Authorization: Bearer <gateway_token>`; токен — файл `/run/secrets/gateway_token`. `sessions secrets init` пишет его из `GATEWAY_AUTH_TOKEN`.
 - Переподключение: при любом обрыве runner ждёт 1, 2, 4, 8, 16, 30 с (дальше 30 с) и повторяет `hello`. Недоступный gateway и неверный токен runner не останавливают.
 - Одно JSON-сообщение на кадр, UTF-8. Конверт: `{"v": 1, "type": "<тип>", ...поля}`.
