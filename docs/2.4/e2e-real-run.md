@@ -15,6 +15,19 @@
 - В canonical compose runner создаётся через Docker API: backend монтирует `/var/run/docker.sock`, задаёт `RUNNER_IMAGE`, `RUNNER_NETWORK`, `RUNNER_GATEWAY_URL`. Доступ к socket эквивалентен root на хосте; это не доказательство совместимости с k3s/containerd. Отдельно подтвердить runtime, сеть, volumes и сохранность данных; не «лечить» разрыв выдачей привилегий.
 - Миграция deployed fork — **отдельное maintenance**, по [CANONICAL_MIGRATION](../CANONICAL_MIGRATION.md): проверенный восстанавливаемый backup, репетиция restore, quiescence всех writers/schedulers, проверка схемы. Не использовать `alembic stamp` как shortcut и не запускать bridge внутри E2E. Обычный startup canonical БД и bridge несовместимой истории — разные процедуры.
 
+### Карточка пригодности до запуска
+
+До T3 согласовать с владельцем кейса критерии результата; неизвестные значения — `NOT_PROVIDED`, не автоматически выполненные требования.
+
+| Поле | Согласованное значение |
+|---|---|
+| Кейс / ответственный за приёмку | `___` |
+| Ожидаемый документ / этап / формат | `___` — формат по задаче, без общего требования CSV/JSON или отдельного pilot ZIP |
+| Обязательное содержание / схема, если применима / бизнес-правила | `___` |
+| Целевое ПО / способ ручной проверки пригодности | `___` |
+
+После сохранения привязать карточку и результаты проверки к точным artifact/document/version и производящему ProductRun. При изменении требований записать новые критерии для rework/новой версии; неизменность bytes старой версии проверять отдельно, не требовать совпадения старого и доработанного документа. Незаполненная карточка не мешает технической проверке, но не позволяет объявить пригодность результата подтверждённой.
+
 ## 2. Какие идентификаторы и подтверждения не смешивать
 
 | Сущность | Текущий смысл |
@@ -93,6 +106,11 @@ Provenance: откуда подтверждены версии; если неи�
 Synthetic account/project/ProductRun IDs; отдельно internal Run IDs, если наблюдались:
 Operation ID / question ID / artifact / document / stage / version / approval receipt ID:
 Step T*/S* | expected | redacted actual | PASS/FAIL/NOT_RUN | evidence reference
+Readiness card / criteria revision / artifact/document/version / producing ProductRun:
+Integrity: PASS/FAIL/NOT_RUN + size/hash evidence (T7/T10)
+Format validity: PASS/FAIL/NOT_RUN + проверка согласованного формата
+Target application / manual usability: PASS/FAIL/NOT_RUN + ПО, проверяющий, наблюдение
+Business suitability: PASS/FAIL/NOT_RUN + сверка с согласованными критериями
 Original/download bytes: size + SHA-256; ZIP document hash отдельно от archive hash:
 Commands/tests actually run + exit/result/skips; mocks/fixtures and other limits:
 NOT_RUN reason: нет реализации | нет предусловия | не запускалось по решению
@@ -100,11 +118,15 @@ Defect/blocker / owner / next action:
 Overall: PARTIAL/FAIL/NOT_RUN; live E2E proof outstanding where applicable
 ```
 
+Для результата T6/T7 фиксировать четыре независимых исхода из шаблона выше: целостность bytes не доказывает валидность формата, открытие/ручную пригодность в целевом ПО или выполнение бизнес-правил. Выполнять ручные проверки только для разрешённых синтетических файлов в согласованном ПО; непроведённая проверка — `NOT_RUN`, неизвестный критерий — `NOT_PROVIDED`. Ни `completed`, ни валидный ZIP сами по себе не дают readiness PASS.
+
 Сохранять только разрешённые redacted outcomes, коды ошибок, счётчики и hash синтетических файлов. Не включать cookie, Authorization headers, `.env`, credentials/DSN, сырой HAR, модельные промпты с личными данными, содержимое пользовательских документов или закрытые object keys. Даже read-only export требует отдельного разрешения. Публичная публикация evidence не предполагается.
 
 Полный E2E требует фактического React V2 → gateway → реального runner/model → durable storage → точного download/rework/approval и recovery/isolation evidence на закреплённой сборке. Он остаётся открытым до такого прогона; user study и production readiness — дополнительные, не взаимозаменяемые решения.
 
 ## Источник восстановленных сценариев
+
+- PR #23, `origin/feat/pps-239-artifact-readiness` @ `bcd7774`, `docs/tests/PPS-239-artifact-readiness.md`: предварительное согласование критериев, целевое ПО, ручная проверка и отдельная фиксация изменённых требований. Восстановлены только эти идеи для текущего продукта; validator/probe scripts, старые generated evidence и обязательный CSV/JSON-контракт не перенесены. Это не восстановление PR #23 целиком и не подтверждение readiness.
 
 - `origin/e2e-runbook-pr11-review` @ `4aaa3cd`, `docs/2.4/e2e-real-run.md`: start/question/answer, результат, disconnect/retry/reopen/failure, synthetic evidence и разделение technical E2E/user study. Исторические «нет реализации», команды `docker kill/exec`, protocol assumptions и старые PASS сюда не перенесены.
 - PR #12, `origin/codex/team-contracts-docs-2026-10-16` @ `450ec66`, `docs/contracts/{README,integration,verification,review-2026-10-16}.md`: закреплённый manifest, same public Run vs linked rework, три разных подтверждения, immutable versions/approval, isolation и ограничения fixture proof. Это provenance идей, не manifest текущего стенда и не восстановление четырёх устаревших контрактов.
