@@ -75,6 +75,10 @@ def test_container_env_allowlist_and_localhost_rewrite() -> None:
     }
 
 
+def test_container_env_drops_disabled_gateway() -> None:
+    assert container_env({"GATEWAY_URL": ""}) == {}
+
+
 def test_container_env_keeps_remote_host() -> None:
     env = container_env({"ANTHROPIC_BASE_URL": "https://proxy.example:443"})
     assert env == {"ANTHROPIC_BASE_URL": "https://proxy.example:443"}
@@ -111,6 +115,31 @@ def test_start_requires_gateway_token_when_gateway_url_is_set(
     with pytest.raises(SystemExit, match="sessions secrets init demo-a"):
         sessions._start("demo-a", None, 720.0, "img")
     assert calls == []  # контейнер не создан
+
+
+@pytest.mark.parametrize(
+    ("key", "url"),
+    [
+        ("GATEWAY_URL", "ws://[private-password]/runner"),
+        ("GATEWAY_URL", "ws://user:private-password@localhost:8000/runner"),
+        ("GATEWAY_URL", "ws://[::1]unexpected:8000/runner"),
+        ("GATEWAY_URL", "ws://backend:8000/runner#section"),
+        ("ANTHROPIC_BASE_URL", "http://[private-password]/api"),
+        ("ANTHROPIC_BASE_URL", "http://user:private-password@localhost:8317"),
+    ],
+)
+def test_cli_rejects_unsafe_url_before_docker(
+    secrets_root: Path, monkeypatch: pytest.MonkeyPatch, key: str, url: str,
+) -> None:
+    monkeypatch.setenv(key, url)
+    monkeypatch.setattr("sys.argv", ["sessions", "start", "demo-a"])
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(sessions, "_docker", lambda *args, **_: calls.append(args))
+    with pytest.raises(SystemExit, match=key) as failure:
+        sessions.cli()
+    assert "private-password" not in str(failure.value)
+    assert url not in str(failure.value)
+    assert calls == []
 
 
 def test_start_with_gateway_token_runs_docker(

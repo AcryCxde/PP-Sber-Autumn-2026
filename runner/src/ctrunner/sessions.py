@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Final, final
 from urllib.parse import urlsplit
 
-from ctrunner.config import GATEWAY_TOKEN_FILE, PROJECT_ID_RE
+from ctrunner.config import GATEWAY_TOKEN_FILE, PROJECT_ID_RE, ConfigError, check_endpoint_url
 
 DEFAULT_IMAGE: Final = "coreteams-runner:dev"
 SECRETS_ROOT: Final = Path.home() / ".config" / "coreteams" / "secrets"
@@ -44,8 +44,13 @@ class RunSpec:
 
 def container_env(host_env: Mapping[str, str]) -> dict[str, str]:
     env = {k: v for k, v in host_env.items() if ENV_ALLOW.fullmatch(k) and not ENV_DENY.search(k)}
-    for key in ("ANTHROPIC_BASE_URL", "GATEWAY_URL"):
+    if env.get("GATEWAY_URL") == "":
+        del env["GATEWAY_URL"]
+    for key, schemes in (
+        ("ANTHROPIC_BASE_URL", ("http", "https")), ("GATEWAY_URL", ("ws", "wss")),
+    ):
         if key in env:
+            check_endpoint_url(key, env[key], schemes)
             env[key] = _reachable_from_container(env[key])
     return env
 
@@ -110,7 +115,10 @@ def _start(project_id: str, data: Path | None, stall_after_s: float, image: str)
     secrets = SECRETS_ROOT / project_id
     if not (secrets / TOKEN_FILE).is_file():
         sys.exit(f"sessions: run `sessions secrets init {project_id}` first")
-    env = container_env(os.environ)
+    try:
+        env = container_env(os.environ)
+    except ConfigError as error:
+        sys.exit(f"sessions: {error}")
     if "GATEWAY_URL" in env and not (secrets / GATEWAY_TOKEN_FILE).is_file():
         sys.exit(
             f"sessions: GATEWAY_URL is set but secret {GATEWAY_TOKEN_FILE} is missing: "

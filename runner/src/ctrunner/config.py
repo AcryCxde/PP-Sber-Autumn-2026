@@ -44,9 +44,7 @@ class RunnerConfig:
     def __post_init__(self) -> None:
         if not PROJECT_ID_RE.fullmatch(self.project_id):
             raise ConfigError("env PROJECT_ID must match [a-z0-9][a-z0-9-]{0,39}")
-        url = urlsplit(self.anthropic_base_url)
-        if url.scheme not in ("http", "https") or not url.hostname:
-            raise ConfigError("env ANTHROPIC_BASE_URL must be an http(s) URL")
+        check_endpoint_url("ANTHROPIC_BASE_URL", self.anthropic_base_url, ("http", "https"))
         _check_token(TOKEN_FILE, self.anthropic_token)
         if not math.isfinite(self.stall_after_s) or self.stall_after_s <= 0:
             raise ConfigError("env STALL_AFTER_S must be a positive finite number")
@@ -55,9 +53,7 @@ class RunnerConfig:
         if (self.gateway_url is None) != (self.gateway_token is None):
             raise ConfigError(f"env GATEWAY_URL and secret {GATEWAY_TOKEN_FILE} go together")
         if self.gateway_url is not None and self.gateway_token is not None:
-            gateway = urlsplit(self.gateway_url)
-            if gateway.scheme not in ("ws", "wss") or not gateway.hostname:
-                raise ConfigError("env GATEWAY_URL must be a ws(s) URL")
+            check_endpoint_url("GATEWAY_URL", self.gateway_url, ("ws", "wss"))
             _check_token(GATEWAY_TOKEN_FILE, self.gateway_token)
 
     @property
@@ -83,6 +79,40 @@ class RunnerConfig:
             "CLAUDE_CONFIG_DIR": str(self.claude_dir),
             **self.models,
         }
+
+
+def check_endpoint_url(name: str, raw: str, schemes: tuple[str, str]) -> None:
+    if any(ord(char) <= 32 or ord(char) == 127 for char in raw):
+        raise ConfigError(f"env {name} must not contain whitespace or control characters")
+    try:
+        url = urlsplit(raw)
+        host = url.hostname
+        # urlsplit defers port validation until this property is accessed.
+        _ = url.port
+    except ValueError:
+        # urllib diagnostics can contain credentials; do not chain them into startup errors.
+        raise ConfigError(f"env {name} is not a valid URL") from None
+    if url.scheme not in schemes or not host:
+        raise ConfigError(f"env {name} must be a {'/'.join(schemes)} URL")
+    if "@" in url.netloc:
+        raise ConfigError(f"env {name} must not contain credentials; use a secret file")
+    if "[" in url.netloc or "]" in url.netloc:
+        if (not url.netloc.startswith("[") or url.netloc.count("[") != 1
+                or url.netloc.count("]") != 1):
+            raise ConfigError(f"env {name} is not a valid URL")
+        suffix = url.netloc.partition("]")[2]
+        if suffix and (not suffix.startswith(":") or not suffix[1:].isascii()
+                       or not suffix[1:].isdigit()):
+            raise ConfigError(f"env {name} is not a valid URL")
+    if "#" in raw:
+        raise ConfigError(f"env {name} must not contain a fragment")
+    if url.scheme in ("http", "https"):
+        if "%" in url.netloc:
+            raise ConfigError(f"env {name} authority must not contain percent escapes")
+        if not raw.isascii():
+            raise ConfigError(f"env {name} must use an ASCII URL; encode international hostnames")
+        if "?" in raw:
+            raise ConfigError(f"env {name} base URL must not contain a query")
 
 
 def load_config(env: Mapping[str, str], secrets_dir: Path) -> RunnerConfig:
