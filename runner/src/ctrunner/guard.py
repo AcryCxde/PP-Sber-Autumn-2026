@@ -112,13 +112,16 @@ def _glob_base(pattern: str) -> str:
 
 
 def _bash_paths(command: str) -> Iterator[str]:
+    # Разделяем операторы до снятия кавычек и escape: `cat<a` и `cat 'a;b'` различны.
+    lexer = shlex.shlex(command, posix=True, punctuation_chars="<>|&;()")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
-        tokens = shlex.split(command)
+        tokens = list(lexer)
     except ValueError:
-        tokens = command.split()
+        # Незакрытые кавычки: сохраняем грубую эвристику для некорректной команды.
+        tokens = SHELL_PUNCT_RE.sub(" ", command).split()
     for token in tokens:
-        # Операторы shell могут быть приклеены к пути: `echo x>/etc/foo`, `ls&&cat</etc/passwd`.
-        for piece in SHELL_PUNCT_RE.split(token):
-            candidate = piece.rpartition("=")[2]
-            if candidate.startswith(("/", "~")) or ".." in candidate:
-                yield candidate
+        candidate = token.rpartition("=")[2]
+        if candidate.startswith(("/", "~")) or ".." in candidate:
+            yield candidate

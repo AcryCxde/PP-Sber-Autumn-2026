@@ -110,6 +110,47 @@ def test_bash_allows_permitted_paths_glued_to_shell_operators(command: str) -> N
     assert check("Bash", {"command": command}, PROJECT, POLICY, ident) == Allow()
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat '/workspace/project/a;/etc/passwd'",
+        'cat "/workspace/project/a;/etc/passwd"',
+        r"cat /workspace/project/a\;/etc/passwd",
+        "cat<'/workspace/project/a;/etc/passwd'",
+        'cat<"/workspace/project/a;/etc/passwd"',
+        r"cat</workspace/project/a\;/etc/passwd",
+        "cat '/workspace/project/a|&<>()/etc/passwd'",
+        r"cat /workspace/project/a\|\&\<\>\(\)/etc/passwd",
+    ],
+)
+def test_bash_allows_literal_shell_punctuation_in_paths(command: str) -> None:
+    assert check("Bash", {"command": command}, PROJECT, POLICY, ident) == Allow()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat '/tmp/cache;backup/state.json'",
+        'cat "/tmp/cache;backup/state.json"',
+        r"cat /tmp/cache\;backup/state.json",
+        "cat<'/tmp/cache;backup/state.json'",
+        'cat<"/tmp/cache;backup/state.json"',
+        r"cat</tmp/cache\;backup/state.json",
+    ],
+)
+def test_bash_denies_literal_punctuation_path_symlink_escape(command: str) -> None:
+    def resolve(path: Path) -> Path:
+        # Детерминированная модель symlink; файлов и shell-процессов не создаёт.
+        link = Path("/tmp/cache;backup")
+        if path.is_relative_to(link):
+            return Path("/workspace/.runner") / path.relative_to(link)
+        return path
+
+    verdict = check("Bash", {"command": command}, PROJECT, POLICY, resolve)
+    assert isinstance(verdict, Deny)
+    assert verdict.path == "/workspace/.runner/state.json"
+
+
 def test_bash_unbalanced_quotes_falls_back() -> None:
     assert isinstance(check("Bash", {"command": "cat '/etc/passwd"}, PROJECT, POLICY, ident), Deny)
 
