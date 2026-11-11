@@ -52,7 +52,7 @@ PATH_FIELDS: Final[Mapping[str, str]] = {
 }
 GLOB_CHARS: Final = frozenset("*?[{")
 BRACE_SEPARATORS: Final = re.compile(r"[{},]")
-SHELL_PUNCT: Final = "<>|&;()'\""
+SHELL_PUNCT_RE: Final = re.compile(r"[<>|&;()'\"]+")
 
 
 def check(
@@ -117,6 +117,8 @@ def _bash_paths(command: str) -> Iterator[str]:
     except ValueError:
         tokens = command.split()
     for token in tokens:
-        candidate = token.lstrip(SHELL_PUNCT).rpartition("=")[2]
-        if candidate.startswith(("/", "~")) or ".." in candidate:
-            yield candidate
+        # Операторы shell могут быть приклеены к пути: `echo x>/etc/foo`, `ls&&cat</etc/passwd`.
+        for piece in SHELL_PUNCT_RE.split(token):
+            candidate = piece.rpartition("=")[2]
+            if candidate.startswith(("/", "~")) or ".." in candidate:
+                yield candidate
