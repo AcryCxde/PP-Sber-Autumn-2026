@@ -4,7 +4,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { GitArtifactStorage } = require("./git-storage");
+const { GitArtifactStorage, UnsafeArtifactTargetError } = require("./git-storage");
 const { MetadataStore } = require("./metadata");
 
 const root = __dirname;
@@ -121,7 +121,7 @@ async function persistArtifact(state, run, { content, title = "итоговый-
     }
     if (prior?.state === "confirmed" && state.artifacts[prior.artifactId]) return state.artifacts[prior.artifactId];
 
-    const gitPath = artifactStorage.artifactPath(run.projectId, run.id);
+    const gitPath = artifactStorage.validateArtifactTarget(run.projectId, run.id, stableOperationId);
     const operation = { operationId: stableOperationId, runId: run.id, projectId: run.projectId, state: "intent", gitPath, contentSha256, createdAt: prior?.createdAt || now(), updatedAt: now() };
     state.operations[stableOperationId] = operation;
     save(state);
@@ -230,6 +230,13 @@ const server = http.createServer(async (req, res) => {
       }
       const actualHash = crypto.createHash("sha256").update(body.content, "utf8").digest("hex");
       if (body.contentSha256 !== actualHash) return json(res, 422, { error: "Контрольная сумма не совпадает." });
+      // Validate IDs and the existing filesystem before persisting a Run or intent.
+      try {
+        artifactStorage.validateArtifactTarget(body.projectId, body.runId, body.operationId);
+      } catch (error) {
+        if (!(error instanceof UnsafeArtifactTargetError)) throw error;
+        return json(res, 422, { error: "Некорректный или небезопасный путь артефакта." });
+      }
       const existingRun = state.runs[body.runId];
       if (existingRun && existingRun.projectId !== body.projectId) {
         return json(res, 403, { error: "Запуск не принадлежит указанному проекту." });
@@ -239,6 +246,13 @@ const server = http.createServer(async (req, res) => {
         priorOperation.projectId === body.projectId &&
         priorOperation.runId === body.runId &&
         priorOperation.contentSha256 === actualHash;
+      if (priorOperation && (
+        priorOperation.projectId !== body.projectId ||
+        priorOperation.runId !== body.runId ||
+        priorOperation.contentSha256 !== actualHash
+      )) {
+        return json(res, 409, { error: "Operation-Id уже связан с другим артефактом." });
+      }
       if (existingRun && terminalRunStatuses.has(existingRun.status) && !exactReplay) {
         return json(res, 409, { error: "Запись в завершённый запуск запрещена." });
       }
