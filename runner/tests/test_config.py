@@ -141,6 +141,9 @@ def test_gateway_url_must_be_websocket(secrets: Path) -> None:
         "example.test:65536",
         "example.test:-1",
         "[::1]unexpected:8000",
+        "backend[::1]:8000",
+        "example.test/api\nprivate-password",
+        "example.test/api#section",
     ],
 )
 def test_endpoint_rejects_unsafe_authority_without_leaking(

@@ -44,6 +44,8 @@ class RunSpec:
 
 def container_env(host_env: Mapping[str, str]) -> dict[str, str]:
     env = {k: v for k, v in host_env.items() if ENV_ALLOW.fullmatch(k) and not ENV_DENY.search(k)}
+    if env.get("GATEWAY_URL") == "":
+        del env["GATEWAY_URL"]
     for key, schemes in (
         ("ANTHROPIC_BASE_URL", ("http", "https")), ("GATEWAY_URL", ("ws", "wss")),
     ):

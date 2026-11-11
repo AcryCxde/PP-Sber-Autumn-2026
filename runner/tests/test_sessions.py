@@ -75,6 +75,10 @@ def test_container_env_allowlist_and_localhost_rewrite() -> None:
     }
 
 
+def test_container_env_drops_disabled_gateway() -> None:
+    assert container_env({"GATEWAY_URL": ""}) == {}
+
+
 def test_container_env_keeps_remote_host() -> None:
     env = container_env({"ANTHROPIC_BASE_URL": "https://proxy.example:443"})
     assert env == {"ANTHROPIC_BASE_URL": "https://proxy.example:443"}

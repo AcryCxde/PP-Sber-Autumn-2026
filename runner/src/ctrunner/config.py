@@ -82,6 +82,8 @@ class RunnerConfig:
 
 
 def check_endpoint_url(name: str, raw: str, schemes: tuple[str, str]) -> None:
+    if any(ord(char) <= 32 or ord(char) == 127 for char in raw):
+        raise ConfigError(f"env {name} must not contain whitespace or control characters")
     try:
         url = urlsplit(raw)
         host = url.hostname
@@ -94,12 +96,15 @@ def check_endpoint_url(name: str, raw: str, schemes: tuple[str, str]) -> None:
         raise ConfigError(f"env {name} must be a {'/'.join(schemes)} URL")
     if "@" in url.netloc:
         raise ConfigError(f"env {name} must not contain credentials; use a secret file")
-    if url.netloc.startswith("["):
+    if "[" in url.netloc or "]" in url.netloc:
+        if (not url.netloc.startswith("[") or url.netloc.count("[") != 1
+                or url.netloc.count("]") != 1):
+            raise ConfigError(f"env {name} is not a valid URL")
         suffix = url.netloc.partition("]")[2]
         if suffix and (not suffix.startswith(":") or not suffix[1:].isascii()
                        or not suffix[1:].isdigit()):
             raise ConfigError(f"env {name} is not a valid URL")
-    if url.scheme in ("ws", "wss") and url.fragment:
+    if "#" in raw:
         raise ConfigError(f"env {name} must not contain a fragment")
 
 
