@@ -284,6 +284,117 @@ def test_approval_receipt_and_zip_for_exact_version(tmp_path, claude) -> None:
     assert manifest["approval"] == receipt and manifest["runId"] == run["id"]
 
 
+def test_old_version_download_and_approval_remain_exact_after_rework(tmp_path, claude) -> None:
+    with TestClient(make_app(tmp_path)) as client:
+        sign_in(client)
+        project_id, body, first = started_project(client, claude)
+        assert first["status"] == "completed"
+        source = next(item for item in first["artifacts"] if item["documentId"] == "options")
+        assert source["saved"] is True and source["version"] == 1
+        route = f"projects/{project_id}/runs/{first['id']}/artifacts/{source['id']}"
+        approved = post(client, f"{route}/approve", {"artifactId": source["id"], "version": 1})
+        assert approved.status_code == 200, approved.text
+        receipt = approved.json()
+        assert receipt["artifactId"] == source["id"] and receipt["version"] == 1
+        assert receipt["approved"] is True
+        original = client.get(f"/api/v2/{route}/zip")
+        assert original.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(original.content)) as package:
+            original_bytes = package.read("options-v1.md")
+            original_manifest = json.loads(package.read("manifest.json"))
+        assert original_bytes == source["content"].encode()
+        assert original_manifest["approval"] == receipt
+        original_hash = hashlib.sha256(original_bytes).hexdigest()
+
+        revised_text = "# Варианты решения\nС рисками и новым планом проверки"
+        claude.writes.append([("coreteams/options.md", revised_text)])
+        created = post(client, f"projects/{project_id}/runs", {
+            **body,
+            "text": "Добавьте риски и план проверки",
+            "stageId": "options",
+            "parentRunId": first["id"],
+            "sourceArtifactId": source["id"],
+            "documentId": "options",
+            "sourceVersion": 1,
+            "fileIds": [],
+        })
+        assert created.status_code == 201, created.text
+        second = wait_run(client, project_id, created.json()["id"])
+        assert second["status"] == "completed"
+        assert second["id"] != first["id"]
+        assert second["parentRunId"] == first["id"]
+        assert second["sourceArtifactId"] == source["id"]
+        revised = next(item for item in second["artifacts"] if item["documentId"] == "options")
+        assert revised["id"] != source["id"]
+        assert revised["saved"] is True and revised["version"] == 2
+        revised_route = f"projects/{project_id}/runs/{second['id']}/artifacts/{revised['id']}"
+        old_download = client.get(f"/api/v2/{route}/zip")
+        new_download = client.get(f"/api/v2/{revised_route}/zip")
+        assert old_download.status_code == new_download.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(old_download.content)) as package:
+            old_bytes = package.read("options-v1.md")
+            old_manifest = json.loads(package.read("manifest.json"))
+        with zipfile.ZipFile(io.BytesIO(new_download.content)) as package:
+            new_bytes = package.read("options-v2.md")
+            new_manifest = json.loads(package.read("manifest.json"))
+
+    assert old_bytes == original_bytes
+    assert hashlib.sha256(old_bytes).hexdigest() == original_hash
+    assert old_manifest == original_manifest
+    assert old_manifest["runId"] == first["id"]
+    assert old_manifest["artifactId"] == source["id"] and old_manifest["version"] == 1
+    assert old_manifest["approval"] == receipt
+    assert new_bytes == revised_text.encode() and new_bytes != original_bytes
+    assert new_manifest["documentId"] == original_manifest["documentId"] == "options"
+    assert new_manifest["runId"] == second["id"]
+    assert new_manifest["artifactId"] == revised["id"] and new_manifest["version"] == 2
+    assert new_manifest["approval"] is None
+
+
+def test_foreign_user_cannot_download_or_approve_product_artifact(tmp_path, claude) -> None:
+    with TestClient(make_app(tmp_path)) as client:
+        sign_in(client)
+        owner_cookies = dict(client.cookies)
+        project_id, _, run = started_project(client, claude)
+        assert run["status"] == "completed"
+        document = next(item for item in run["artifacts"] if item["documentId"] == "options")
+        route = f"projects/{project_id}/runs/{run['id']}/artifacts/{document['id']}"
+        zip_url = f"/api/v2/{route}/zip"
+        approval_body = {"artifactId": document["id"], "version": document["version"]}
+        before = client.get(zip_url)
+        assert before.status_code == 200
+        assert before.headers["content-type"] == "application/zip"
+        with zipfile.ZipFile(io.BytesIO(before.content)) as package:
+            assert package.read("options-v1.md") == document["content"].encode()
+            assert json.loads(package.read("manifest.json"))["approval"] is None
+
+        client.cookies.clear()
+        sign_in(client, "beta@example.com")
+        foreign_download = client.get(zip_url)
+        foreign_approval = post(client, f"{route}/approve", approval_body)
+        assert foreign_download.status_code == foreign_approval.status_code == 404
+        assert foreign_download.json()["code"] == "project_not_found"
+        assert foreign_approval.json()["code"] == "project_not_found"
+        client.cookies.clear()
+        assert client.get(zip_url).status_code == 401
+        assert post(client, f"{route}/approve", approval_body).status_code == 401
+
+        client.cookies.update(owner_cookies)
+        after_attempts = client.get(zip_url)
+        assert after_attempts.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(after_attempts.content)) as package:
+            assert json.loads(package.read("manifest.json"))["approval"] is None
+        approved = post(client, f"{route}/approve", approval_body)
+        assert approved.status_code == 200, approved.text
+        receipt = approved.json()
+        assert receipt["artifactId"] == document["id"] and receipt["version"] == document["version"]
+        assert receipt["approved"] is True
+        after_approval = client.get(zip_url)
+        assert after_approval.status_code == 200
+        with zipfile.ZipFile(io.BytesIO(after_approval.content)) as package:
+            assert json.loads(package.read("manifest.json"))["approval"] == receipt
+
+
 def test_other_user_cannot_see_product_project(tmp_path, claude) -> None:
     with TestClient(make_app(tmp_path)) as client:
         sign_in(client)
