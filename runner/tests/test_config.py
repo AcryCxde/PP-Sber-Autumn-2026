@@ -180,6 +180,18 @@ def test_endpoint_preserves_supported_transport(secrets: Path, key: str, url: st
     assert (cfg.gateway_url if key == "GATEWAY_URL" else cfg.anthropic_base_url) == url
 
 
+@pytest.mark.parametrize("url", ["https://bücher.example", "http://proxy:8317/api?tenant=demo"])
+def test_proxy_rejects_unsupported_base_url(secrets: Path, url: str) -> None:
+    with pytest.raises(ConfigError, match="ANTHROPIC_BASE_URL"):
+        load_config({**ENV, "ANTHROPIC_BASE_URL": url}, secrets)
+
+
+def test_gateway_query_remains_supported(secrets: Path) -> None:
+    (secrets / "gateway_token").write_text("gw-secret-token\n")
+    url = "wss://gateway.example.test/runner?tenant=demo"
+    assert load_config({**ENV, "GATEWAY_URL": url}, secrets).gateway_url == url
+
+
 def test_gateway_fragment_is_configuration_error(secrets: Path) -> None:
     (secrets / "gateway_token").write_text("gw-secret-token\n")
     with pytest.raises(ConfigError, match="GATEWAY_URL"):

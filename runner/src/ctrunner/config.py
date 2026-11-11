@@ -106,6 +106,11 @@ def check_endpoint_url(name: str, raw: str, schemes: tuple[str, str]) -> None:
             raise ConfigError(f"env {name} is not a valid URL")
     if "#" in raw:
         raise ConfigError(f"env {name} must not contain a fragment")
+    if url.scheme in ("http", "https"):
+        if not raw.isascii():
+            raise ConfigError(f"env {name} must use an ASCII URL; encode international hostnames")
+        if "?" in raw:
+            raise ConfigError(f"env {name} base URL must not contain a query")
 
 
 def load_config(env: Mapping[str, str], secrets_dir: Path) -> RunnerConfig:
