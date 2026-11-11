@@ -24,7 +24,9 @@ class StorageError(RuntimeError):
 class ObjectStorage(Protocol):
     async def put(self, key: str, data: bytes, content_type: str) -> None: ...
 
-    async def get(self, key: str) -> bytes: ...
+    async def get(self, key: str, *, max_bytes: int | None = None) -> bytes: ...
+
+    async def get_bounded(self, key: str, max_bytes: int) -> bytes: ...
 
 
 @dataclass(frozen=True)
@@ -103,9 +105,21 @@ class S3Storage:
         except Exception as error:
             raise StorageError(f"Could not store {key}") from error
 
-    async def get(self, key: str) -> bytes:
+    async def get_bounded(self, key: str, max_bytes: int) -> bytes:
+        if max_bytes < 0:
+            raise ValueError("Read limit must be nonnegative")
+        return await self.get(key, max_bytes=max_bytes)
+
+    async def get(self, key: str, *, max_bytes: int | None = None) -> bytes:
         def read() -> bytes:
-            return self.client.get_object(Bucket=self.bucket, Key=key)["Body"].read()
+            body = self.client.get_object(Bucket=self.bucket, Key=key)["Body"]
+            try:
+                data = body.read() if max_bytes is None else body.read(max_bytes + 1)
+                if max_bytes is not None and len(data) > max_bytes:
+                    raise StorageError("Stored object exceeds the read limit")
+                return data
+            finally:
+                body.close()
 
         try:
             return await asyncio.to_thread(read)
@@ -122,9 +136,17 @@ class MemoryStorage:
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         self.objects[key] = (data, content_type)
 
-    async def get(self, key: str) -> bytes:
+    async def get_bounded(self, key: str, max_bytes: int) -> bytes:
+        if max_bytes < 0:
+            raise ValueError("Read limit must be nonnegative")
+        return await self.get(key, max_bytes=max_bytes)
+
+    async def get(self, key: str, *, max_bytes: int | None = None) -> bytes:
         try:
-            return self.objects[key][0]
+            data = self.objects[key][0]
+            if max_bytes is not None and len(data) > max_bytes:
+                raise StorageError("Stored object exceeds the read limit")
+            return data
         except KeyError:
             raise StorageError(f"Could not read {key}") from None
 

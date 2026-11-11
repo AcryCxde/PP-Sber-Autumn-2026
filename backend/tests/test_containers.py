@@ -378,3 +378,25 @@ def test_materials_give_up_when_project_dir_never_appears(setup):
     container.put_archive = put_archive
     with pytest.raises(ContainerError, match="runner_project_missing"):
         asyncio.run(manager.write_files("p1", "materials", {"a.md": b"x"}, wait_seconds=0.6))
+
+
+def test_reused_runner_replaces_only_managed_materials(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get(manager.names("p1")["container"])
+    container.files["/workspace/project/materials/old.md"] = b"deselected"
+    container.files["/workspace/project/report.md"] = b"agent artifact"
+    asyncio.run(manager.replace_materials("p1", {}))
+    assert "/workspace/project/materials/old.md" not in container.files
+    assert container.files["/workspace/project/report.md"] == b"agent artifact"
+    assert unpack(container.archives[-1][1]) == {}
+
+
+def test_material_replacement_rejects_path_escape_before_cleanup(setup):
+    manager, _, docker = setup
+    asyncio.run(manager.ensure_running("p1"))
+    container = docker.containers.get(manager.names("p1")["container"])
+    container.files["/workspace/project/materials/old.md"] = b"keep"
+    with pytest.raises(ContainerError, match="materials_invalid_path"):
+        asyncio.run(manager.replace_materials("p1", {"../report.md": b"bad"}))
+    assert container.files["/workspace/project/materials/old.md"] == b"keep"

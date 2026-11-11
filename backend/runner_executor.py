@@ -168,9 +168,9 @@ async def run_via_runner(
             await deliver_event(started)
 
         await manager.ensure_running(project, run_id=run_id)
-        materials = await conversation_materials(database, acceptance.conversation_id)
-        if materials is not None and materials.files:
-            await manager.write_files(project, MATERIALS_DIR, materials.files)
+        materials = await conversation_materials(database, acceptance.conversation_id, run_id=acceptance.run_id)
+        if materials is not None:
+            await manager.replace_materials(project, materials.files)
         active = transport.active_run(project)
         if active is not None and active["status"] == "waiting_for_input" and active["question"]:
             transport_run = active["run_id"]

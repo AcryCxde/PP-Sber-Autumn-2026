@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CtfApi, ApiError, recoverRejectedOperation } from "../src/api.ts";
+import { CtfApi, ApiError, recoverRejectedOperation, assertDraftCurrent, draftStorageChanged } from "../src/api.ts";
 import {
   parseRun, parseQuestion, buildAnswers, mergeRun, mergeRework, newProject,
   projectArtifacts, projectRuns, artifactRunId, parseApproval, approved, readProjects,
-  canRework, projectPayload, MAX_PLAN_STAGES,
+  canRework, projectPayload, MAX_PLAN_STAGES, shouldPollRun,
 } from "../src/domain.ts";
 const base = () => ({ id: "run-1", revision: 1, status: "running", stageId: "understand", messages: [], artifacts: [] });
 const artifact = () => ({ id: "a1", documentId: "d1", stageId: "understand", version: 1,
@@ -13,6 +13,68 @@ const group = () => ({ id: "q1", questions: [
   { text: "Exact question?", header: null, options: [{ label: "A", description: null }, { label: "B", description: "Detail" }], multi_select: true, allow_custom: true },
   { text: "Second question?", header: "Choose one", options: [{ label: "Yes", description: null }], multi_select: false, allow_custom: false },
 ] });
+test("only marked higher-revision confirmation corrections can advance a terminal snapshot", () => {
+  const pending = parseRun({ ...base(), status: "outcome_unknown", errorCode: "artifact_confirmation_pending" });
+  const project = { ...newProject(), run: pending };
+  assert.equal(shouldPollRun(pending), true);
+  const completed = parseRun({ ...base(), revision: 2, status: "completed", artifacts: [artifact()] });
+  assert.equal(mergeRun(project, completed).run!.status, "completed");
+  assert.equal(shouldPollRun(completed), false);
+  assert.equal(mergeRun(project, parseRun({ ...base(), revision: 0, status: "completed" })), project);
+  assert.throws(() => mergeRun(project, parseRun({ ...completed, revision: 1 })));
+  assert.throws(() => mergeRun(project, parseRun({ ...base(), revision: 2 })));
+  const unknown = parseRun({ ...base(), status: "outcome_unknown" });
+  assert.equal(shouldPollRun(unknown), false);
+  assert.throws(() => mergeRun({ ...project, run: unknown }, completed));
+  assert.throws(() => mergeRun({ ...project, run: completed }, parseRun({ ...base(), revision: 3 })));
+  assert.throws(() => mergeRun(project, parseRun({ ...completed, artifacts: [{ ...artifact(), content: "different" }], id: "other-run" })));
+  assert.throws(() => mergeRun({ ...project, run: { ...pending, artifacts: [artifact()] } },
+    parseRun({ ...completed, artifacts: [{ ...artifact(), content: "different" }] })));
+  assert.equal(mergeRun(project, parseRun({ ...pending, revision: 2, artifacts: [artifact()] })).run!.revision, 2);
+});
+test("pending artifact acknowledgement restores parsed facilitator fork; permanent failure stops polling", () => {
+  const pending = parseRun({ ...base(), status: "outcome_unknown", errorCode: "artifact_confirmation_pending" });
+  const project = { ...newProject(), run: pending };
+  const waiting = parseRun({ ...base(), revision: 2, status: "waiting_for_input", question: group(), artifacts: [artifact()] });
+  const restored = mergeRun(project, waiting);
+  assert.equal(restored.run!.status, "waiting_for_input");
+  assert.equal(restored.run!.question!.id, "q1");
+  assert.equal(shouldPollRun(restored.run), true);
+  assert.deepEqual(buildAnswers(restored.run!.question!, {
+    "Exact question?": { selected: ["A"], custom: "" },
+    "Second question?": { selected: ["Yes"], custom: "" },
+  }), { "Exact question?": "A", "Second question?": "Yes" });
+  const failed = parseRun({ ...base(), revision: 2, status: "outcome_unknown", errorCode: "artifact_confirmation_failed" });
+  const terminal = mergeRun(project, failed);
+  assert.equal(terminal.run!.errorCode, "artifact_confirmation_failed");
+  assert.equal(shouldPollRun(terminal.run), false);
+  assert.equal(mergeRun(terminal, pending), terminal);
+  assert.throws(() => mergeRun(terminal, parseRun({ ...base(), revision: 3, status: "completed" })));
+  assert.throws(() => mergeRun(project, parseRun({ ...failed, revision: 1 })));
+  assert.throws(() => mergeRun(project, parseRun({ ...waiting, question: undefined })));
+  assert.throws(() => mergeRun({ ...project, run: { ...pending, artifacts: [artifact()] } },
+    parseRun({ ...waiting, artifacts: [{ ...artifact(), content: "changed" }] })));
+});
+test("account storage events and pre-request CAS stop stale uploads without overwriting receipts", async () => {
+  const key = "drafts:alice";
+  const storage = { value: "original", getItem: (_key: string) => storage.value };
+  assert.equal(draftStorageChanged(key, key), true);
+  assert.equal(draftStorageChanged(null, key), true);
+  assert.equal(draftStorageChanged("drafts:bob", key), false);
+  let requests = 0;
+  const send = async () => { assertDraftCurrent(storage, key, "original"); requests++; };
+  await send();
+  storage.value = "other-tab"; // While file bytes are being read / prior HTTP receipt is awaited.
+  await assert.rejects(send(), /другой вкладке/);
+  assert.equal(requests, 1);
+  assert.equal(storage.value, "other-tab");
+  const blob = new Blob(["input"]);
+  const bytes = await blob.arrayBuffer();
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))).map(n => n.toString(16).padStart(2, "0")).join("");
+  const api = new CtfApi("http://fixture.invalid/api", true, async () => { requests++; return Response.json({ id: "upload", sha256: hash }); });
+  await assert.rejects(api.upload("p", "f", "input.txt", blob, hash, () => assertDraftCurrent(storage, key, "original")), /другой вкладке/);
+  assert.equal(requests, 1); // The guard runs after asynchronous byte hashing and before fetch.
+});
 test("16/18: full structured questions, exact keys and runner comma-space multiselect", () => {
   const q = parseQuestion(group());
   assert.deepEqual(buildAnswers(q, {

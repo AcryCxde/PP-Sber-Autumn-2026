@@ -44,6 +44,14 @@ class FakeContainer:
         self.archives.append((path, data))
         return True
 
+    def exec_run(self, command):
+        from types import SimpleNamespace
+        assert command[:2] == ["python", "-c"]
+        assert "'/workspace/project'" in command[2] and "root/'materials'" in command[2]
+        self.files = {path: data for path, data in self.files.items()
+                      if not path.startswith("/workspace/project/materials/")}
+        return SimpleNamespace(exit_code=0)
+
     def get_archive(self, path):
         data = self.files[path]
         buffer = io.BytesIO()

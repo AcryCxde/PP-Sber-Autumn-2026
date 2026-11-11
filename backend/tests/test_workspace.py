@@ -110,3 +110,37 @@ async def test_second_gateway_cannot_lease_same_database(tmp_path) -> None:
 
     release = await acquire_gateway_lease(url, tmp_path / "workspaces")
     await release()
+
+
+def test_workspace_discovery_entry_budget_bounds_dependency_tree(tmp_path):
+    from backend.workspace import workspace_files
+    for index in range(200):
+        folder = tmp_path / "node_modules" / f"package-{index:03}"
+        folder.mkdir(parents=True)
+        (folder / "bundle.js").write_bytes(b"x")
+    result = workspace_files(tmp_path, skip_dirs=set(), max_entries=30)
+    assert result.truncated
+    assert result.entries_scanned == 30
+    assert len(result) <= 30
+
+
+def test_workspace_discovery_includes_generated_artifacts_when_within_budget(tmp_path):
+    from backend.workspace import workspace_files
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "report.pdf").write_bytes(b"report")
+    result = workspace_files(tmp_path, skip_dirs=set(), max_entries=30)
+    assert not result.truncated
+    assert "dist/report.pdf" in result
+
+
+def test_managed_material_symlink_cleanup_does_not_delete_target(tmp_path):
+    from backend.materials import write_workspace_materials
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.md").write_bytes(b"artifact")
+    (workspace / "materials").symlink_to(outside, target_is_directory=True)
+    write_workspace_materials(workspace, {})
+    assert (outside / "keep.md").read_bytes() == b"artifact"
+    assert not (workspace / "materials").exists()

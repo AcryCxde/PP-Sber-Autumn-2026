@@ -227,3 +227,36 @@ def test_zip_preserves_empty_text_original():
                                {"name": "empty.txt", "sizeBytes": 0})
     with zipfile.ZipFile(io.BytesIO(document_zip(Project(product={}), document, None))) as archive:
         assert archive.read("empty-v1.txt") == b""
+
+
+async def test_s3_bounded_read_closes_stream_on_overflow():
+    from types import SimpleNamespace
+    from backend.storage import S3Storage
+    body = io.BytesIO(b"too large")
+    storage = object.__new__(S3Storage)
+    storage.bucket = "test"
+    storage.client = SimpleNamespace(get_object=lambda **kwargs: {"Body": body})
+    with pytest.raises(StorageError):
+        await storage.get_bounded("key", 3)
+    assert body.closed
+
+
+async def test_memory_storage_bounded_read_exact_limit():
+    storage = MemoryStorage()
+    await storage.put("key", b"123", "text/plain")
+    assert await storage.get_bounded("key", 3) == b"123"
+    with pytest.raises(StorageError):
+        await storage.get_bounded("key", 2)
+
+
+def test_product_snapshot_projects_pending_confirmation_error_code():
+    from datetime import UTC, datetime
+    from backend.models import ProductRun, ProjectRun, Run
+    from backend.product import Chain
+    run = Run(id="run", status="outcome_unknown", error_code="artifact_confirmation_pending", next_event_seq=2)
+    link = ProjectRun(created_at=datetime.now(UTC), display_text="test")
+    chain = Chain(ProductRun(id="product", stage_id="stage"), links=[(link, run)])
+    assert chain.snapshot()["errorCode"] == "artifact_confirmation_pending"
+    run.status = "completed"
+    run.error_code = None
+    assert "errorCode" not in chain.snapshot()

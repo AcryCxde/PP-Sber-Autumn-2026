@@ -13,6 +13,11 @@ export function recoverRejectedOperation(project: Project, operationId: string, 
     ![400, 401, 403, 404, 413, 415, 422].includes(error.status ?? 0)) return project;
   return { ...project, pending: undefined };
 }
+export function assertDraftCurrent(storage: Pick<Storage, "getItem">, key: string, expected: string | null) {
+  if (storage.getItem(key) !== expected)
+    throw new Error("Черновики изменились в другой вкладке. Обновите страницу перед продолжением.");
+}
+export const draftStorageChanged = (key: string | null, accountKey: string) => key === null || key === accountKey;
 export class CtfApi {
   onMetric?: (name: EventName, fields: Fields) => void;
   private metric(name: EventName, fields: Fields) {
@@ -126,6 +131,7 @@ export class CtfApi {
     name: string,
     blob: Blob,
     sha256: string,
+    beforeRequest?: () => void,
   ): Promise<string> {
     const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
     const actualHash = Array.from(new Uint8Array(digest)).map(n => n.toString(16).padStart(2, "0")).join("");
@@ -134,6 +140,7 @@ export class CtfApi {
     body.append("file", blob, name);
     body.append("clientFileId", fileId);
     body.append("sha256", sha256);
+    beforeRequest?.(); // Hashing awaits above; re-check account draft immediately before sending bytes.
     const v = (await this.request(
       `projects/${encodeURIComponent(projectId)}/files`,
       body,

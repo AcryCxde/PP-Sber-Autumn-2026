@@ -15,7 +15,7 @@ from pathlib import Path, PurePath
 from sqlalchemy import select
 
 from backend.db import Database
-from backend.models import ConversationFile, Project, ProjectFile
+from backend.models import ConversationFile, ProductRun, Project, ProjectFile, ProjectRun
 
 
 MATERIALS_DIR = "materials"
@@ -72,7 +72,9 @@ class Materials:
     standalone: bool
 
 
-async def conversation_materials(database: Database, conversation_id: str) -> Materials | None:
+async def conversation_materials(
+    database: Database, conversation_id: str, *, run_id: str | None = None,
+) -> Materials | None:
     """None — трогать materials/ не нужно: у свободного диалога нет приложенных файлов,
     а каталог с таким именем мог создать сам агент."""
     async with database.session() as session:
@@ -80,10 +82,15 @@ async def conversation_materials(database: Database, conversation_id: str) -> Ma
             select(Project.id).where(Project.conversation_id == conversation_id)
         )
         if project_id is not None:
-            rows = await session.execute(
-                select(ProjectFile.name, ProjectFile.content)
-                .where(ProjectFile.project_id == project_id)
-            )
+            query = select(ProjectFile.name, ProjectFile.content).where(ProjectFile.project_id == project_id)
+            if run_id is not None:
+                product = await session.scalar(
+                    select(ProductRun).join(ProjectRun, ProjectRun.product_run_id == ProductRun.id)
+                    .where(ProjectRun.run_id == run_id, ProductRun.project_id == project_id)
+                )
+                if product is not None and product.file_ids is not None:
+                    query = query.where(ProjectFile.id.in_(product.file_ids))
+            rows = await session.execute(query)
             return Materials({name: content for name, content in rows}, standalone=False)
         rows = await session.execute(
             select(ConversationFile.name, ConversationFile.content)

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ApiError, CtfApi, recoverRejectedOperation } from "./api.ts";
+import { ApiError, CtfApi, recoverRejectedOperation, assertDraftCurrent, draftStorageChanged } from "./api.ts";
 import { FacilitatorQuestions } from "./FacilitatorQuestions.tsx";
 import {
   IDENTITY,
@@ -17,7 +17,7 @@ import {
   approved,
   canRework,
   isWaiting,
-  isTerminal,
+  shouldPollRun,
   newProject,
   projectPayload,
   MAX_PLAN_STAGES,
@@ -29,7 +29,7 @@ import {
 } from "./domain.ts";
 import { getFile, keepFile, removeFile } from "./files.ts";
 import { JourneyPanel } from "./JourneyPanel.tsx";
-import { JourneyRecorder, type EventName, type Fields } from "./journey.ts";
+import { JourneyRecorder, accountJourneyKey, type EventName, type Fields } from "./journey.ts";
 import type { User } from "./auth.tsx";
 import { LegacyProjects } from "./LegacyProjects.tsx";
 
@@ -138,7 +138,7 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
       new JourneyRecorder({
         getItem: (key) => window.localStorage.getItem(key),
         setItem: (key, value) => window.localStorage.setItem(key, value),
-      }),
+      }, undefined, undefined, accountJourneyKey(user.id)),
   );
   const [loaded] = useState(() => initial(storageKey)),
     [projects, setProjects] = useState(loaded.projects),
@@ -233,6 +233,7 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
     document.addEventListener("visibilitychange", hidden);
     window.addEventListener("pagehide", leave);
     return () => {
+      leave(); // Account logout/unmount ends observation; remount recovers as paused.
       api.onMetric = undefined;
       clearInterval(timer);
       document.removeEventListener("visibilitychange", hidden);
@@ -350,14 +351,21 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
   }
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
-      if (e.key === KEY || e.key === null)
+      if (draftStorageChanged(e.key, storageKey))
         setIssue(
           "Черновики изменились в другой вкладке. Обновите страницу перед продолжением.",
         );
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  }, []);
+  }, [storageKey]);
+  function requireCurrentDraft() {
+    try { assertDraftCurrent(localStorage, storageKey, rawRef.current); }
+    catch (e) {
+      setIssue(e instanceof Error ? e.message : "Не удалось проверить черновики");
+      throw e;
+    }
+  }
   function working(flag: boolean) {
     busyRef.current = flag;
     setBusy(flag);
@@ -482,6 +490,7 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
     working(true);
     try {
       let result: Run;
+      requireCurrentDraft();
       if (pending.action === "start") {
         if (!next.serverId) {
           next.serverId = await api.create(pending.body, `${next.id}:create`);
@@ -494,12 +503,14 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
         if (!serverId) throw new Error("Нет подтверждённого ID проекта");
         for (const file of next.files.filter((f) => !f.uploadedId)) {
           const blob = await getFile(next.id, file.id);
+          requireCurrentDraft();
           const uploadedId = await api.upload(
             serverId,
             file.id,
             file.name,
             blob,
             file.sha256,
+            requireCurrentDraft,
           );
           next = {
             ...next,
@@ -510,6 +521,7 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
           if (!update(next))
             throw new Error("Нельзя сохранить подтверждение загрузки");
         }
+        requireCurrentDraft();
         result = await api.run(
           `projects/${encodeURIComponent(serverId)}/runs`,
           { ...pending.body, fileIds: next.files.map((f) => f.uploadedId) },
@@ -575,6 +587,7 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
         const current = projectsRef.current.find(x => x.id === next.id) || next;
         update({ ...current, pending: { ...pending, rejected: true } });
         try {
+          requireCurrentDraft();
           const fresh = await api.run(`projects/${encodeURIComponent(next.serverId!)}/runs/${encodeURIComponent(pending.runId!)}`);
           const latestProject = projectsRef.current.find(x => x.id === next.id) || current;
           if (update({ ...mergeRun(latestProject, fresh), pending: undefined, answerDraft: undefined })) observeRun(next.id, fresh);
@@ -661,7 +674,7 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
       !api.available ||
       !p?.serverId ||
       !run ||
-      isTerminal(run) || run.status === "review" ||
+      !shouldPollRun(run) ||
       p.pending ||
       !poll ||
       issue

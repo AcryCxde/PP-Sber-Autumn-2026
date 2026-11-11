@@ -11,6 +11,7 @@ import {
   type ResultKind,
 } from "./baseline.ts";
 export const JOURNEY_KEY = "coreteams-journey-study:v1";
+export const accountJourneyKey = (userId: string) => `${JOURNEY_KEY}:${userId}`;
 export const CONSENT_VERSION = "journey-local-v1";
 export type Phase = "baseline" | "prototype" | "interface";
 export type Mode = "active" | "wait" | "pause" | "unobserved";
@@ -274,9 +275,10 @@ export class JourneyRecorder {
     private storage: StoragePort,
     private now = () => Date.now(),
     private uuid = () => crypto.randomUUID(),
+    private storageKey = JOURNEY_KEY,
   ) {
     try {
-      this.raw = storage.getItem(JOURNEY_KEY);
+      this.raw = storage.getItem(this.storageKey);
       this.state = { sessions: read(this.raw), issue: "" };
       const open = this.active();
       if (open)
@@ -312,10 +314,10 @@ export class JourneyRecorder {
   private commit(sessions: Session[]) {
     if (this.state.issue) return false;
     try {
-      if (this.storage.getItem(JOURNEY_KEY) !== this.raw)
+      if (this.storage.getItem(this.storageKey) !== this.raw)
         throw Error("Журнал изменился в другой вкладке. Обновите страницу.");
       const raw = JSON.stringify({ version: 1, sessions });
-      this.storage.setItem(JOURNEY_KEY, raw);
+      this.storage.setItem(this.storageKey, raw);
       this.raw = raw;
       this.publish({ sessions, issue: "" });
       return true;

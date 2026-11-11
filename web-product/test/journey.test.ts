@@ -8,6 +8,7 @@ import {
 import {
   JourneyRecorder,
   JOURNEY_KEY,
+  accountJourneyKey,
   compare,
   csv,
   exportStudy,
@@ -39,6 +40,26 @@ const input = (phase: "baseline" | "prototype" | "interface" = "baseline") => ({
   consent: true,
   buildVersion: "test-1",
   environment: "local" as const,
+});
+test("account journals isolate participants and ignore unowned global data across logout/remount", () => {
+  const f = fixture();
+  const global = f.create();
+  global.start(input());
+  const rawGlobal = f.storage.getItem(JOURNEY_KEY);
+  const account = (id: string) => new JourneyRecorder(f.storage, undefined, undefined, accountJourneyKey(id));
+  const alice = account("alice");
+  assert.equal(alice.getSnapshot().sessions.length, 0);
+  alice.start({ ...input(), participantCode: "U002" });
+  alice.mode("unobserved"); // App cleanup on logout.
+  const bob = account("bob");
+  assert.equal(bob.getSnapshot().sessions.length, 0);
+  bob.start({ ...input(), participantCode: "U003" });
+  const remounted = account("alice");
+  assert.equal(remounted.getSnapshot().sessions.length, 1);
+  assert.equal(remounted.active()!.participantCode, "U002");
+  assert.equal(remounted.active()!.mode, "pause");
+  assert.equal(f.storage.getItem(JOURNEY_KEY), rawGlobal);
+  assert.notEqual(f.storage.getItem(accountJourneyKey("alice")), f.storage.getItem(accountJourneyKey("bob")));
 });
 test("opt-in, fixed pseudonyms; baseline excludes product events and arbitrary text", () => {
   const f = fixture(),

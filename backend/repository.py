@@ -791,7 +791,7 @@ async def stage_runner_artifact(
         size_bytes=len(source_bytes),
         truncated=False,
         storage_key=stored.key if stored else None,
-        sha256=stored.sha256 if stored else None,
+        sha256=stored.sha256 if stored else hashlib.sha256(source_bytes).hexdigest(),
         content_type=stored.content_type if stored else None,
     )
     receipt = {
@@ -1098,7 +1098,11 @@ async def append_artifact(
             size_bytes=size_bytes,
             truncated=truncated,
             storage_key=stored.key if stored else None,
-            sha256=stored.sha256 if stored else None,
+            sha256=stored.sha256 if stored else (
+                hashlib.sha256(content.encode("utf-8")).hexdigest()
+                if content is not None and not truncated and "\u0000" not in content
+                and len(content.encode("utf-8")) == size_bytes else None
+            ),
             content_type=stored.content_type if stored else None,
         )
     )

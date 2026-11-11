@@ -18,7 +18,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy.ext.asyncio import create_async_engine
 
-HEAD = "20261111_0004"
+HEAD = "20261111_0005"
 VERSIONS = Path(__file__).with_name("migrations") / "versions"
 
 
@@ -125,7 +125,8 @@ def bridge(connection, *, apply: bool = False, backup_verified: bool = False) ->
     if not backup_verified:
         raise RuntimeError("Apply requires a verified backup and stopped writers")
     _apply(connection, sorted(VERSIONS.glob("20261030_*.py")))
-    _apply(connection, [VERSIONS / "20261111_0004_answer_fingerprint.py"])
+    _apply(connection, [VERSIONS / "20261111_0004_answer_fingerprint.py",
+                        VERSIONS / "20261111_0005_selected_materials.py"])
     validate_schema(connection, "master", HEAD)
     result = connection.execute(sa.text("UPDATE alembic_version SET version_num=:target WHERE version_num=:source"),
                                 {"target": HEAD, "source": revisions[0]})

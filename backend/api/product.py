@@ -8,6 +8,7 @@
 import asyncio
 import hashlib
 import re
+from dataclasses import dataclass
 from pathlib import PurePath
 from typing import Annotated, Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -148,9 +149,12 @@ async def require_chain(session: AsyncSession, project: Project, run_id: str):
     return workspace, chain
 
 
-async def material_names(session: AsyncSession, project: Project) -> list[str]:
+async def material_names(session: AsyncSession, project: Project, file_ids: list[str | None]) -> list[str]:
     return list(await session.scalars(
-        select(ProjectFile.name).where(ProjectFile.project_id == project.id).order_by(ProjectFile.created_at)
+        select(ProjectFile.name).where(
+            ProjectFile.project_id == project.id,
+            ProjectFile.id.in_([item for item in file_ids if item]),
+        ).order_by(ProjectFile.created_at)
     ))
 
 
@@ -354,8 +358,23 @@ async def create_run(
         response.status_code = status.HTTP_200_OK
         _, chain = await require_chain(session, project, previous.id)
         return chain.snapshot()
-
     run = parse(RunBody, body)
+    source = await rework_source(request, session, project, run) if run.parentRunId else None
+    if source is not None:
+        await session.refresh(user)
+    # Storage I/O above holds no transaction/row lock. Re-check all workspace
+    # invariants under the root lock before accepting an execution.
+    project = await require_project(session, project_id, user)
+    await session.execute(select(Project.id).where(Project.id == project.id).with_for_update())
+    digest = request_hash(body)
+    previous = await session.scalar(select(ProductRun).where(ProductRun.client_request_id == key))
+    if previous is not None:
+        if previous.project_id != project.id or previous.request_hash != digest:
+            raise ProductError(409, "idempotency_conflict", "Idempotency-Key уже использован для другого запроса")
+        response.status_code = status.HTTP_200_OK
+        _, chain = await require_chain(session, project, previous.id)
+        return chain.snapshot()
+
     workspace = await load_workspace(session, project)
     if workspace.busy():
         raise ProductError(409, "project_state_conflict", "Предыдущий запуск ещё не завершён")
@@ -368,13 +387,14 @@ async def create_run(
         content, display = await prepare_initial(session, project, workspace, run)
         kind = "stage"
     else:
-        content, display = await prepare_rework(session, project, workspace, run)
+        content, display = await prepare_rework(session, project, workspace, run, source)
         kind = "revision"
 
     product = ProductRun(
         project_id=project.id,
         client_request_id=key,
         request_hash=digest,
+        file_ids=sorted(file_ids),
         stage_id=run.stageId,
         parent_run_id=run.parentRunId,
         source_artifact_id=run.sourceArtifactId,
@@ -425,13 +445,65 @@ async def prepare_initial(
     conversation = await session.get(Conversation, project.conversation_id)
     if conversation is not None and project.name:
         conversation.title = project.name[:200]
-    content = initial_prompt(plan, await material_names(session, project))
+    content = initial_prompt(plan, await material_names(session, project, run.fileIds))
     display = run.goal.strip() if not run.title.strip() else f"{run.title.strip()}\n\n{run.goal.strip()}"
     return content, display
 
 
+@dataclass(frozen=True)
+class ReworkSource:
+    artifact_id: int
+    storage_key: str | None
+    sha256: str
+    size_bytes: int
+    content: str
+
+
+async def rework_source(request: Request, session: AsyncSession, project: Project, run: RunBody) -> ReworkSource:
+    # Validate ownership and version before dereferencing an object-storage key.
+    workspace = await load_workspace(session, project)
+    document = workspace.document(run.sourceArtifactId or "")
+    parent = workspace.chain(run.parentRunId or "")
+    if parent is None or workspace.chains[-1] is not parent or parent.status() != "completed":
+        raise ProductError(409, "project_state_conflict", "Доработка доступна только после завершённого запуска")
+    if document is None or (run.stageId, run.documentId, run.sourceVersion) != (
+        document.stage_id, document.document_id, document.version
+    ):
+        raise ProductError(409, "version_conflict", "Исходная версия не совпадает с сохранённой")
+    artifact = await session.get(Artifact, int(document.id.removeprefix("a")))
+    if artifact is None:
+        raise ProductError(409, "version_conflict", "Исходный документ не найден")
+    artifact_id, storage_key, digest, size = artifact.id, artifact.storage_key, artifact.sha256, artifact.size_bytes
+    inline = artifact.content
+    limit = request.app.state.settings.artifact_max_storage_bytes
+    if not digest:
+        raise ProductError(503, "source_unavailable", "У старого снимка нет контрольной суммы; создайте новую сохранённую версию документа")
+    if size is None or size > limit:
+        raise ProductError(503, "source_unavailable", "Полный исходный документ недоступен или превышает лимит")
+    # Release the read transaction before storage I/O. No DB state has been mutated.
+    await session.rollback()
+    storage = getattr(request.app.state, "storage", None)
+    if storage_key:
+        if storage is None:
+            raise ProductError(503, "source_unavailable", "Хранилище исходного документа недоступно")
+        try:
+            async with asyncio.timeout(30):
+                data = await storage.get_bounded(storage_key, limit)
+        except (StorageError, TimeoutError) as error:
+            raise ProductError(503, "source_unavailable", "Не удалось прочитать исходный документ") from error
+    else:
+        data = inline.encode("utf-8") if inline is not None else b""
+    if len(data) != size or hashlib.sha256(data).hexdigest() != digest or b"\x00" in data:
+        raise ProductError(503, "source_unavailable", "Полный исходный документ не прошёл проверку целостности")
+    try:
+        content = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ProductError(409, "source_not_text", "Доработка доступна только для UTF-8 документов") from error
+    return ReworkSource(artifact_id, storage_key, digest, size, content)
+
+
 async def prepare_rework(
-    session: AsyncSession, project: Project, workspace: Workspace, run: RunBody
+    session: AsyncSession, project: Project, workspace: Workspace, run: RunBody, source: ReworkSource | None
 ) -> tuple[str, str]:
     parent = workspace.chain(run.parentRunId or "")
     if parent is None or workspace.chains[-1] is not parent or parent.status() != "completed":
@@ -445,6 +517,11 @@ async def prepare_rework(
         or run.sourceVersion != document.version
     ):
         raise ProductError(409, "version_conflict", "Исходная версия не совпадает с сохранённой")
+    artifact = await session.get(Artifact, int(document.id.removeprefix("a")), populate_existing=True)
+    if source is None or artifact is None or (
+        artifact.id, artifact.storage_key, artifact.sha256, artifact.size_bytes
+    ) != (source.artifact_id, source.storage_key, source.sha256, source.size_bytes):
+        raise ProductError(409, "version_conflict", "Исходный документ изменился во время чтения")
     text = (run.text or "").strip()
     if not text:
         raise ProductError(422, "invalid_request", "Опишите, что доработать")
@@ -452,11 +529,11 @@ async def prepare_rework(
     stage = next(item for item in plan["stages"] if item["id"] == document.stage_id)
     content = rework_prompt(
         plan,
-        await material_names(session, project),
+        await material_names(session, project, run.fileIds),
         stage=stage,
         path=document_path(document.document_id, plan["stages"]),
         version=document.version,
-        content=document.content,
+        content=source.content,
         text=text,
     )
     return content, text
@@ -529,10 +606,11 @@ async def approve(
 ) -> dict[str, Any]:
     key = require_key(idempotency_key)
     project = await require_project(session, project_id, user)
+    await session.execute(select(Project.id).where(Project.id == project.id).with_for_update())
     data = parse(ApproveBody, body)
     previous = await session.scalar(select(ArtifactApproval).where(ArtifactApproval.client_request_id == key))
     if previous is not None:
-        if (previous.project_id, previous.artifact_id, previous.version) != (project.id, artifact_id, data.version):
+        if data.artifactId != artifact_id or (previous.project_id, previous.artifact_id, previous.version) != (project.id, artifact_id, data.version):
             raise ProductError(409, "idempotency_conflict", "Idempotency-Key уже использован для другого запроса")
         return receipt(previous)
     _, chain = await require_chain(session, project, run_id)
@@ -558,7 +636,20 @@ async def approve(
         approved_at=now(),
     )
     session.add(approval)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        # Global keys may race across different project roots. Never turn an
+        # unrelated integrity failure into a successful approval receipt.
+        previous = await session.scalar(select(ArtifactApproval).where(ArtifactApproval.client_request_id == key))
+        if previous is None:
+            raise
+        if data.artifactId != artifact_id or (previous.project_id, previous.artifact_id, previous.version) != (
+            project_id, artifact_id, data.version
+        ):
+            raise ProductError(409, "idempotency_conflict", "Idempotency-Key уже использован для другого запроса") from None
+        return receipt(previous)
     return receipt(approval)
 
 

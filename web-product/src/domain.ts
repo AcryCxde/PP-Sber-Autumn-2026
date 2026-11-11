@@ -78,6 +78,7 @@ export type Usage = {
 export type Run = {
   id: string;
   revision: number;
+  errorCode?: string;
   status: "queued" | "running" | "clarification" | "waiting_for_input" | "review" | "completed" | "failed" | "outcome_unknown";
   stageId: string;
   question?: QuestionGroup;
@@ -175,6 +176,8 @@ const validFile = (f: unknown) =>
   (f.sizeBytes === null || count(f.sizeBytes)) &&
   str(f.downloadUrl) && /^\/api\/runs\/[\w-]+\/events\/\d+\/file$/.test(f.downloadUrl);
 export const isWaiting = (run?: Run) => run?.status === "clarification" || run?.status === "waiting_for_input";
+export const confirmationPending = (run?: Run) => run?.status === "outcome_unknown" && run.errorCode === "artifact_confirmation_pending";
+export const shouldPollRun = (run?: Run) => Boolean(run && (confirmationPending(run) || (!isTerminal(run) && run.status !== "review")));
 export const isTerminal = (run?: Run) => Boolean(run && ["completed", "failed", "outcome_unknown"].includes(run.status));
 export const canRework = (run?: Run) => run?.status === "completed";
 export function parseQuestion(v: unknown): QuestionGroup {
@@ -324,9 +327,11 @@ export function parseRun(v: unknown): Run {
     if (usage.cost !== undefined && !usage.currency)
       throw new Error("Затраты без валюты");
   }
+  if (v.errorCode !== undefined && !nonempty(v.errorCode)) throw new Error("Некорректный код ошибки запуска");
   return {
     id: v.id,
     revision: v.revision as number,
+    ...(v.errorCode ? { errorCode: v.errorCode as string } : {}),
     status: v.status as Run["status"],
     stageId: v.stageId,
     ...(question ? { question } : {}),
@@ -360,8 +365,15 @@ export function mergeRun(p: Project, run: Run): Project {
   if (p.run && p.run.id !== run.id)
     throw new Error("Ответ относится к другому запуску");
   if (p.run && run.revision < p.run.revision) return p;
-  if (isTerminal(p.run) && (run.status !== p.run!.status || run.revision !== p.run!.revision))
+  const confirmationCorrection = confirmationPending(p.run) && run.revision > p.run!.revision &&
+    (run.status === "completed" ||
+      (run.status === "waiting_for_input" && Boolean(run.question)) ||
+      confirmationPending(run) ||
+      (run.status === "outcome_unknown" && run.errorCode === "artifact_confirmation_failed"));
+  if (isTerminal(p.run) && !confirmationCorrection && (run.status !== p.run!.status || run.revision !== p.run!.revision))
     throw new Error("Завершённый Run нельзя переоткрыть или дополнять событиями");
+  if (confirmationCorrection && (run.stageId !== p.run!.stageId || run.parentRunId !== p.run!.parentRunId || run.sourceArtifactId !== p.run!.sourceArtifactId))
+    throw new Error("Подтверждение артефактов изменило принадлежность запуска");
   const artifacts = new Map(p.run?.artifacts.map((a) => [a.id, a]) || []);
   for (const a of run.artifacts) {
     const old = artifacts.get(a.id);
@@ -389,7 +401,7 @@ export function mergeRun(p: Project, run: Run): Project {
       throw new Error("Сервис изменил сообщение в истории");
     messages.set(m.id, m);
   }
-  if (isTerminal(p.run) && (JSON.stringify([...artifacts.values()]) !== JSON.stringify(p.run!.artifacts) ||
+  if (isTerminal(p.run) && !confirmationCorrection && (run.errorCode !== p.run!.errorCode || JSON.stringify([...artifacts.values()]) !== JSON.stringify(p.run!.artifacts) ||
       JSON.stringify([...messages.values()]) !== JSON.stringify(p.run!.messages) ||
       run.stageId !== p.run!.stageId || JSON.stringify(run.usage) !== JSON.stringify(p.run!.usage) ||
       JSON.stringify(run.progress) !== JSON.stringify(p.run!.progress) ||

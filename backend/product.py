@@ -329,6 +329,8 @@ class Chain:
             "messages": messages,
             "artifacts": [item.public() for item in self.documents],
         }
+        if self.last is not None and self.last.error_code:
+            snapshot["errorCode"] = self.last.error_code
         question = self.question()
         if snapshot["status"] == "waiting_for_input" and question is not None:
             snapshot["question"] = question

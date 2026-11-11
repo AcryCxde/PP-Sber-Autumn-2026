@@ -435,7 +435,14 @@ async def execute_accepted_run(
         """Файлы, которые агент создал или изменил не через Write (например, скриптом)."""
         if workspace is None or files_before is None:
             return
-        after = await asyncio.to_thread(workspace_files, workspace, skip_dirs={MATERIALS_DIR})
+        after = await asyncio.to_thread(
+            workspace_files, workspace, skip_dirs={MATERIALS_DIR},
+            max_entries=app_state.settings.artifact_scan_max_entries,
+        )
+        if after.truncated:
+            logger.warning("Artifact discovery truncated", extra={
+                "run_id": acceptance.run_id, "entries_scanned": after.entries_scanned,
+            })
         limit = app_state.settings.artifact_scan_max_files
         saved_count = 0
         for path, fact in sorted(after.items()):
@@ -494,10 +501,17 @@ async def execute_accepted_run(
             acceptance.conversation_id,
             create=True,
         )
-        materials = await conversation_materials(app_state.database, acceptance.conversation_id)
+        materials = await conversation_materials(app_state.database, acceptance.conversation_id, run_id=acceptance.run_id)
         if materials is not None:
             await asyncio.to_thread(write_workspace_materials, workspace, materials.files)
-        files_before = await asyncio.to_thread(workspace_files, workspace, skip_dirs={MATERIALS_DIR})
+        files_before = await asyncio.to_thread(
+            workspace_files, workspace, skip_dirs={MATERIALS_DIR},
+            max_entries=app_state.settings.artifact_scan_max_entries,
+        )
+        if files_before.truncated:
+            logger.warning("Artifact baseline discovery truncated", extra={
+                "run_id": acceptance.run_id, "entries_scanned": files_before.entries_scanned,
+            })
 
         async with app_state.database.session() as session:
             started_event = await mark_run_running(session, acceptance.run_id)

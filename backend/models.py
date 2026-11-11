@@ -450,6 +450,8 @@ class ProductRun(Base):
     # Idempotency-Key клиента и SHA-256 тела: повтор с другим телом отклоняется.
     client_request_id: Mapped[str] = mapped_column(String(64), unique=True)
     request_hash: Mapped[str] = mapped_column(String(64))
+    # Server ProjectFile IDs selected for this chain; null preserves legacy all-files behavior.
+    file_ids: Mapped[list[str] | None] = mapped_column(JSON)
     stage_id: Mapped[str] = mapped_column(String(64))
     parent_run_id: Mapped[str | None] = mapped_column(String(36))
     source_artifact_id: Mapped[str | None] = mapped_column(String(64))

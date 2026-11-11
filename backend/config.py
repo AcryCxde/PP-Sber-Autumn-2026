@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     artifact_max_storage_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
     # Сколько файлов, изменённых агентом не через Write, подбирать после запуска в режиме cli.
     artifact_scan_max_files: int = Field(default=50, ge=0)
+    artifact_scan_max_entries: int = Field(default=10000, ge=1)
     subscription_window_seconds: float = Field(default=15.0, gt=0)
     subscription_poll_interval_seconds: float = Field(default=0.25, gt=0)
     max_concurrent_runs: int = Field(default=4, gt=0)

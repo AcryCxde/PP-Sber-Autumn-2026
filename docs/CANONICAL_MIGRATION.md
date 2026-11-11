@@ -1,6 +1,6 @@
 # Canonical backend migration maintenance
 
-Canonical history preserves master revisions `20261030_0011` (durable artifact confirmations) and `20261030_0012` (retry abandonment delivery). Product workspace, artifact storage and user activity are appended as `20261111_0001`, `20261111_0002`, `20261111_0003`; answer fingerprints follow in `20261111_0004`, the canonical target head.
+Canonical history preserves master revisions `20261030_0011` (durable artifact confirmations) and `20261030_0012` (retry abandonment delivery). Product workspace, artifact storage and user activity are appended as `20261111_0001`, `20261111_0002`, `20261111_0003`; answer fingerprints follow in `20261111_0004` and selected materials in `20261111_0005`, the canonical target head.
 
 The deployed fork reused `20261030_0011` for product workspace, `20261030_0012` for object storage and `20261030_0013` for user activity. **Never run `alembic stamp` to resolve this collision.** A revision identifier alone is not schema evidence.
 
@@ -26,7 +26,7 @@ Only after verifying the backup and stopping writers:
 python -m backend.migration_bridge --source deployed-20261030-0013 --apply --backup-verified
 ```
 
-The tool verifies tables, columns, type affinities/lengths, nullability/defaults, primary/foreign keys, unique constraints, indexes and check constraints against reconstructed historical migrations. Unexpected, partial or mixed schemas abort before DDL. The bridge creates only the missing canonical confirmation schema using the original master revision operations, validates the complete canonical target, then updates the version row in the same transaction. It does not rewrite product rows or storage objects. Preserve its output as historical evidence: source fork, original revision `20261030_0013`, target `20261111_0004`, and preflight/applied status. This mapping does not falsely claim that deployed IDs meant canonical confirmations.
+The tool verifies tables, columns, type affinities/lengths, nullability/defaults, primary/foreign keys, unique constraints, indexes and check constraints against reconstructed historical migrations. Unexpected, partial or mixed schemas abort before DDL. The bridge creates only the missing canonical confirmation schema using the original master revision operations, validates the complete canonical target, then updates the version row in the same transaction. It does not rewrite product rows or storage objects. Preserve its output as historical evidence: source fork, original revision `20261030_0013`, target `20261111_0005`, and preflight/applied status. This mapping does not falsely claim that deployed IDs meant canonical confirmations.
 
 A repeated bridge invocation fails clearly with `Already migrated`; use normal canonical upgrades thereafter. Do not run bridge concurrently. On failure stop, inspect the transaction outcome and restore the verified backup before any retry. No automatic downgrade or reverse mapping is supplied.
 
