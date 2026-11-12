@@ -1,0 +1,98 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_run_id:
+        description: Successful master push CI run ID
+        required: true
+        type: string
+      release_sha:
+        description: Exact 40-character release commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      request: ${{ steps.verify.outputs.request }}
+    steps:
+      - name: Refuse disabled or non-master dispatch
+        env:
+          DEPLOY_ENABLED: ${{ vars.CICD_DEPLOY_ENABLED }}
+        run: |
+          set -euo pipefail
+          if [[ "$DEPLOY_ENABLED" != true ]]; then
+            printf '%s\n' 'Deployment disabled: CICD_DEPLOY_ENABLED must be true.' >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REF" != refs/heads/master || "$GITHUB_REPOSITORY" != AcryCxde/PP-Sber-Autumn-2026 ]]; then
+            printf '%s\n' 'Refused: only official repository master dispatch is allowed.' >&2
+            exit 1
+          fi
+      # Never load tools or scripts from the selected release SHA.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: AcryCxde/PP-Sber-Autumn-2026
+          ref: refs/heads/master
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Verify release provenance and current master
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CICD_DEPLOY_ENABLED: ${{ vars.CICD_DEPLOY_ENABLED }}
+          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+          RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -euo pipefail
+          request=$(python -m tools.cicd.verify_release)
+          printf 'request=%s\n' "$request" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: verify
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && vars.CICD_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      # No checkout or executable artifact in the credential-bearing job.
+      # The root-owned forced-command wrapper independently re-verifies under lock.
+      - name: Send bounded release JSON to reviewed server wrapper
+        env:
+          RELEASE_JSON: ${{ needs.verify.outputs.request }}
+          DEPLOY_HOST: ${{ secrets.CICD_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.CICD_DEPLOY_USER }}
+          DEPLOY_KEY: ${{ secrets.CICD_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.CICD_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ -n "$DEPLOY_KEY" && -n "$DEPLOY_KNOWN_HOSTS" ]]
+          [[ -n "$RELEASE_JSON" && ${#RELEASE_JSON} -le 16383 ]]
+          directory=$(mktemp -d)
+          trap 'rm -rf "$directory"' EXIT
+          umask 077
+          printf '%s\n' "$DEPLOY_KEY" > "$directory/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$directory/known_hosts"
+          unset DEPLOY_KEY DEPLOY_KNOWN_HOSTS
+          printf '%s\n' "$RELEASE_JSON" | ssh -F /dev/null -T \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$directory/known_hosts" -o GlobalKnownHostsFile=/dev/null \
+            -o ConnectTimeout=15 -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+            -i "$directory/key" "$DEPLOY_USER@$DEPLOY_HOST" /usr/local/sbin/coreteams-deploy

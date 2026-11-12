@@ -187,10 +187,10 @@ export function parseQuestion(v: unknown): QuestionGroup {
     if (!obj(q) || !nonempty(q.text) || !(q.header === null || str(q.header)) ||
         typeof q.multi_select !== "boolean" || typeof q.allow_custom !== "boolean" || !Array.isArray(q.options) ||
         q.options.some(o => !obj(o) || !nonempty(o.label) || !(o.description === null || str(o.description))) ||
-        new Set(q.options.map((o: any) => o.label)).size !== q.options.length ||
+        new Set(q.options.map((o: unknown) => obj(o) ? o.label : undefined)).size !== q.options.length ||
         (!q.allow_custom && !q.options.length)) throw new Error("Некорректный вопрос фасилитатора");
   }
-  if (new Set(v.questions.map((q: any) => q.text)).size !== v.questions.length)
+  if (new Set(v.questions.map((q: unknown) => obj(q) ? q.text : undefined)).size !== v.questions.length)
     throw new Error("Одинаковые тексты вопросов: ответы нельзя передать однозначно");
   return v as QuestionGroup;
 }
@@ -249,13 +249,13 @@ export function parseRun(v: unknown): Run {
   const question = isWaiting(v as Run) && !(replacingQuestion && v.question == null) ? parseQuestion(v.question) : undefined;
   if (v.roleEvents !== undefined && (!Array.isArray(v.roleEvents) || v.roleEvents.some(e =>
     !obj(e) || !nonempty(e.id) || !nonempty(e.roleId) || !["role.started", "role.completed", "role.failed"].includes(String(e.type)) ||
-    !str(e.at) || !Number.isFinite(Date.parse(e.at))) || new Set(v.roleEvents.map((e: any) => e.id)).size !== v.roleEvents.length))
+    !str(e.at) || !Number.isFinite(Date.parse(e.at))) || new Set(v.roleEvents.map((e: unknown) => obj(e) ? e.id : undefined)).size !== v.roleEvents.length))
     throw new Error("Некорректные события исполнения ролей");
   if (v.progress !== undefined && (!obj(v.progress) || !["interrupted", "recovering", "working"].includes(String(v.progress.stage)) ||
       (v.progress.attempt !== undefined && (!Number.isInteger(v.progress.attempt) || Number(v.progress.attempt) < 1)) ||
       (v.progress.context_restored !== undefined && typeof v.progress.context_restored !== "boolean")))
     throw new Error("Некорректное состояние восстановления");
-  if (isTerminal(v as Run) && v.progress && (v.progress as any).stage !== "working")
+  if (isTerminal(v as Run) && v.progress && (obj(v.progress) && v.progress.stage) !== "working")
     throw new Error("Терминальный запуск не может продолжать восстановление");
   for (const field of ["parentRunId", "sourceArtifactId"])
     if (v[field] !== undefined && !nonempty(v[field])) throw new Error("Некорректная связь доработки");
@@ -469,7 +469,7 @@ export function readProjects(value: string | null): Project[] {
         (s: unknown) =>
           !obj(s) || !nonempty(s.id) || !str(s.title) || !str(s.goal),
       ) ||
-      new Set(v.stages.map((s: any) => s.id)).size !== v.stages.length
+      new Set(v.stages.map((s: unknown) => obj(s) ? s.id : undefined)).size !== v.stages.length
     )
       throw new Error("Некорректный план");
     if (
@@ -511,9 +511,10 @@ export function readProjects(value: string | null): Project[] {
     )
       throw new Error("Некорректный черновик ответа");
     const p = v as Project;
-    const migrateRun = (r: Run): Run => {
-      const q = r.question as any;
-      const upgraded = data.version === 2 && q && !q.questions && nonempty(q.text)
+    const migrateRun = (r: unknown): Run => {
+      if (!obj(r)) return parseRun(r);
+      const q = r.question;
+      const upgraded = data.version === 2 && obj(q) && !q.questions && nonempty(q.text)
         ? { ...r, question: { id: q.id, questions: [{ text: q.text, header: null, options: [], multi_select: false, allow_custom: true }] } } : r;
       return parseRun(upgraded);
     };

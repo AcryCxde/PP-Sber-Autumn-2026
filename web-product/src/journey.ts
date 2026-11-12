@@ -118,9 +118,13 @@ const token = (v: unknown): v is string =>
   typeof v === "string" && /^[a-zA-Z0-9_.:-]{1,128}$/.test(v);
 const modes: Mode[] = ["active", "wait", "pause", "unobserved"];
 const phases: Phase[] = ["baseline", "prototype", "interface"];
+const obj = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+const member = <T extends string>(values: readonly T[], v: unknown): v is T =>
+  typeof v === "string" && values.some(value => value === v);
 const validDate = (v: unknown): v is string =>
   typeof v === "string" && Number.isFinite(Date.parse(v));
-function cleanFields(input: Fields): Fields {
+function cleanFields(input: { [K in keyof Fields]?: unknown }): Fields {
   const out: Fields = {};
   for (const key of [
     "projectId",
@@ -151,7 +155,7 @@ function cleanFields(input: Fields): Fields {
       out[key] = input[key];
   return out;
 }
-function cleanRatings(input: Ratings): Ratings {
+function cleanRatings(input: { [K in keyof Ratings]?: unknown }): Ratings {
   const out: Ratings = {};
   for (const key of [
     "usefulness",
@@ -159,43 +163,49 @@ function cleanRatings(input: Ratings): Ratings {
     "clarity",
     "verifiability",
   ] as const)
-    if (Number.isInteger(input[key]) && input[key]! >= 1 && input[key]! <= 5)
+    if (typeof input[key] === "number" && Number.isInteger(input[key]) && input[key]! >= 1 && input[key]! <= 5)
       out[key] = input[key];
   return out;
 }
 // Explicit schema validation, including allowlisted fields on reload/export.
 function read(raw: string | null): Session[] {
   if (raw === null) return [];
-  const value = JSON.parse(raw);
-  if (value.version !== 1 || !Array.isArray(value.sessions))
+  const value: unknown = JSON.parse(raw);
+  if (!obj(value) || value.version !== 1 || !Array.isArray(value.sessions))
     throw Error("schema");
-  const sessions: Session[] = value.sessions.map((s: any) => {
+  const sessions: Session[] = value.sessions.map((s: unknown) => {
     if (
+      !obj(s) ||
       !token(s.id) ||
+      typeof s.participantCode !== "string" ||
       !/^[A-Z][0-9]{2,6}$/.test(s.participantCode) ||
+      typeof s.taskCode !== "string" ||
       !/^[A-Z][0-9]{2,6}$/.test(s.taskCode) ||
-      !phases.includes(s.phase) ||
+      !member(phases, s.phase) ||
       !token(s.buildVersion) ||
-      !["local", "deployment", "fixture"].includes(s.environment) ||
-      s.consent?.version !== CONSENT_VERSION ||
+      !member(["local", "deployment", "fixture"] as const, s.environment) ||
+      !obj(s.consent) ||
+      s.consent.version !== CONSENT_VERSION ||
       !validDate(s.consent.at) ||
       !validDate(s.startedAt) ||
       !validDate(s.cursor) ||
-      !modes.includes(s.mode) ||
+      !member(modes, s.mode) ||
       typeof s.open !== "boolean" ||
-      !s.ratings ||
+      !obj(s.ratings) ||
       !Array.isArray(s.segments) ||
       !Array.isArray(s.events) ||
       (s.projectId !== undefined && !token(s.projectId)) ||
       (s.endedAt !== undefined && !validDate(s.endedAt)) ||
+      (s.outcome !== undefined && !member(["completed", "incomplete", "abandoned"] as const, s.outcome)) ||
       (!s.open &&
         (!s.endedAt ||
-          !["completed", "incomplete", "abandoned"].includes(s.outcome)))
+          !member(["completed", "incomplete", "abandoned"] as const, s.outcome)))
     )
       throw Error("session");
-    const segments = s.segments.map((x: any) => {
+    const segments = s.segments.map((x: unknown) => {
       if (
-        !modes.includes(x.mode) ||
+        !obj(x) ||
+        !member(modes, x.mode) ||
         !validDate(x.from) ||
         !validDate(x.to) ||
         Date.parse(x.to) < Date.parse(x.from)
@@ -203,10 +213,11 @@ function read(raw: string | null): Session[] {
         throw Error("interval");
       return { mode: x.mode, from: x.from, to: x.to };
     });
-    const events = s.events.map((e: any) => {
+    const events = s.events.map((e: unknown) => {
       if (
+        !obj(e) ||
         !token(e.id) ||
-        !EVENT_NAMES.includes(e.name) ||
+        !member(EVENT_NAMES, e.name) ||
         !validDate(e.at) ||
         (e.dedupe !== undefined && !token(e.dedupe))
       )
@@ -221,7 +232,7 @@ function read(raw: string | null): Session[] {
     });
     if (
       s.resultKind !== undefined &&
-      !Object.hasOwn(RESULT_KINDS, s.resultKind)
+      !(typeof s.resultKind === "string" && Object.hasOwn(RESULT_KINDS, s.resultKind))
     )
       throw Error("result kind");
     const baselineSteps = readBaselineSteps(s.baselineSteps);
@@ -241,12 +252,12 @@ function read(raw: string | null): Session[] {
       open: s.open,
       projectId: s.projectId,
       endedAt: s.endedAt,
-      outcome: s.outcome,
+      outcome: member(["completed", "incomplete", "abandoned"] as const, s.outcome) ? s.outcome : undefined,
       ratings: cleanRatings(s.ratings),
       segments,
       events,
       baselineSteps,
-      resultKind: s.resultKind,
+      resultKind: s.resultKind as ResultKind | undefined,
     };
   });
   if (

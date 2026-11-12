@@ -57,7 +57,7 @@ test("pending artifact acknowledgement restores parsed facilitator fork; permane
 });
 test("account storage events and pre-request CAS stop stale uploads without overwriting receipts", async () => {
   const key = "drafts:alice";
-  const storage = { value: "original", getItem: (_key: string) => storage.value };
+  const storage = { value: "original", getItem: () => storage.value };
   assert.equal(draftStorageChanged(key, key), true);
   assert.equal(draftStorageChanged(null, key), true);
   assert.equal(draftStorageChanged("drafts:bob", key), false);
@@ -74,6 +74,35 @@ test("account storage events and pre-request CAS stop stale uploads without over
   const api = new CtfApi("http://fixture.invalid/api", true, async () => { requests++; return Response.json({ id: "upload", sha256: hash }); });
   await assert.rejects(api.upload("p", "f", "input.txt", blob, hash, () => assertDraftCurrent(storage, key, "original")), /другой вкладке/);
   assert.equal(requests, 1); // The guard runs after asynchronous byte hashing and before fetch.
+});
+test("create/upload validate unknown receipts without accepting missing IDs or mismatched hashes", async () => {
+  const blob = new Blob(["input"]);
+  const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer())))
+    .map(n => n.toString(16).padStart(2, "0")).join("");
+  for (const receipt of [null, false, 1, "id", [], {}, { id: 1 }, { id: "" }]) {
+    const api = new CtfApi("http://fixture.invalid/api", true, async () => Response.json(receipt));
+    await assert.rejects(api.create({}, "op"), /ID проекта/);
+    await assert.rejects(api.upload("p", "f", "input.txt", blob, hash), /содержимое файла/);
+  }
+  const api = (receipt: unknown) => new CtfApi("http://fixture.invalid/api", true, async () => Response.json(receipt));
+  assert.equal(await api({ id: "p1" }).create({}, "op"), "p1");
+  await assert.rejects(api({ id: "f1", sha256: "wrong" }).upload("p", "f", "input.txt", blob, hash), /содержимое файла/);
+  assert.equal(await api({ id: "f1", sha256: hash }).upload("p", "f", "input.txt", blob, hash), "f1");
+});
+test("validated collections reject malformed entries and duplicate identifiers", () => {
+  for (const entry of [null, 1, "bad", {}]) {
+    assert.throws(() => parseQuestion({ ...group(), questions: [entry] }));
+    assert.throws(() => parseQuestion({ ...group(), questions: [{ ...group().questions[0], options: [entry] }] }));
+    assert.throws(() => parseRun({ ...base(), roleEvents: [entry] }));
+    assert.throws(() => readProjects(JSON.stringify({ version: 3, projects: [{ ...newProject(), stages: [entry] }] })));
+  }
+  const option = group().questions[0].options[0];
+  assert.throws(() => parseQuestion({ ...group(), questions: [{ ...group().questions[0], options: [option, option] }] }));
+  const event = { id: "e1", roleId: "analyst", type: "role.started", at: "2026-10-15T00:00:00Z" };
+  assert.throws(() => parseRun({ ...base(), roleEvents: [event, event] }));
+  const project = newProject();
+  project.stages.push(project.stages[0]);
+  assert.throws(() => readProjects(JSON.stringify({ version: 3, projects: [project] })));
 });
 test("16/18: full structured questions, exact keys and runner comma-space multiselect", () => {
   const q = parseQuestion(group());
