@@ -23,7 +23,7 @@ from backend.ai_access import AiAccessError, change_ai_access, policy_transactio
 from backend import admin_queries
 from backend.models import AiPolicyAudit
 from pydantic import BaseModel
-from sqlalchemy import Select, case, func, select
+from sqlalchemy import Select, case, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import DBAPIError
 
@@ -399,7 +399,8 @@ async def change_policy(user_id: str, request: Request, admin: AdminUser, sessio
     if not request.app.state.settings.admin_policy_management_enabled:
         return _policy_error(AiAccessError("policy_management_unavailable", 503, "Управление AI-доступом пока недоступно."))
     origin = request.headers.get("origin")
-    expected_origin = f"{request.url.scheme}://{request.url.netloc}"
+    expected_origin = (request.app.state.settings.admin_public_origin
+                       or f"{request.url.scheme}://{request.url.netloc}")
     if (request.headers.get("x-coreteams-admin") != "1" or
             (origin is not None and origin != expected_origin) or
             request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json"):
@@ -430,14 +431,20 @@ async def policy_users(admin: AdminUser, session: SessionDependency,
                        page_size: Annotated[int, Query(ge=1, le=100)] = 25):
     del admin
     predicate = User.email.icontains(q.strip(), autoescape=True)
-    total = await session.scalar(select(func.count()).select_from(User).where(predicate))
-    rows = await session.scalars(select(User).where(predicate)
-        .order_by(User.created_at.desc(), User.id.desc()).limit(page_size).offset((page - 1) * page_size))
+    count = select(func.count().label("total")).select_from(User).where(predicate).cte("user_count")
+    selected = (select(User.id).where(predicate)
+        .order_by(User.created_at.desc(), User.id.desc())
+        .limit(page_size).offset((page - 1) * page_size).cte("selected_users"))
+    statement = (select(User, count.c.total).select_from(count)
+        .outerjoin(selected, literal(True)).outerjoin(User, User.id == selected.c.id)
+        .order_by(User.created_at.desc(), User.id.desc()))
+    rows = (await session.execute(statement)).all()
     return JSONResponse({"as_of": datetime.now(UTC).isoformat(), "items": [
         {"id": user.id, "email": user.email, "created_at": utc_iso(user.created_at),
          "last_seen_at": utc_iso(user.last_seen_at) if user.last_seen_at else None,
-         "ai_access": {"frozen": user.ai_frozen, "version": user.ai_policy_version}} for user in rows],
-        "total": total, "page": page, "page_size": page_size}, headers={"Cache-Control": "no-store"})
+         "ai_access": {"frozen": user.ai_frozen, "version": user.ai_policy_version}}
+         for user, _ in rows if user is not None],
+        "total": rows[0].total, "page": page, "page_size": page_size}, headers={"Cache-Control": "no-store"})
 
 
 @v1_router.get("/users/{user_id}/audit")

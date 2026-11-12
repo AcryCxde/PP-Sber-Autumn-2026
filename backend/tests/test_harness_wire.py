@@ -227,6 +227,75 @@ async def test_rejected_backlog_pages_and_reconnect_does_not_resend(tmp_path):
             await asyncio.gather(task, return_exceptions=True)
 
 
+async def test_v1_only_unbound_backlog_does_not_block_fresh_diagnostics(tmp_path):
+    FakeGateway = fake_gateway_class()
+    from ctrunner.harness_diagnostic import DiagnosticReceipts
+
+    count = 520
+    path = tmp_path / "journal"
+    rows = []
+    for i in range(count + 1):
+        rows.extend([
+            {"seq": i * 2 + 1, "ts": 1791273601 + i * 2, "turn_id": f"run-{i}",
+             "kind": "turn_started", "payload": {}},
+            {"seq": i * 2 + 2, "ts": 1791273602 + i * 2, "turn_id": f"run-{i}",
+             "kind": "sdk", "payload": {"type": "result", "session_id": "synthetic",
+                                          "total_cost_usd": 0.1}},
+        ])
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+    class V1OnlyGateway(FakeGateway):
+        async def _handle(self, ws):
+            self._ws = ws
+            async for raw in ws:
+                message = json.loads(raw)
+                self.received.append(message)
+                self._changed.set()
+                if message.get("type") == "hello":
+                    await ws.send(json.dumps({"v": 1, "type": "welcome", "acked_seq": 9999,
+                        "capabilities": {"harness_diagnostic_v1": True}}))
+                elif (message.get("type") == "harness.diagnostic"
+                      and message["transport_run_id"] == f"run-{count}"):
+                    await ws.send(json.dumps({"v": 1, "type": "harness.diagnostic_ack",
+                        "schema": message["schema"], "diagnostic_id": message["diagnostic_id"],
+                        "status": "accepted"}))
+
+    async with V1OnlyGateway() as gateway:
+        def client():
+            return GatewayClient(url=gateway.url, token="gw-secret-token", project_id="p1",
+                runner_version="test", session_id=None, journal=path, health_file=tmp_path / "health",
+                inbox_dir=tmp_path / "inbox", project_root="/workspace/project",
+                last_seq=lambda: len(rows), fork_questions=lambda _: None,
+                poll_s=0.01, heartbeat_s=1, backoff=(0.01,))
+
+        task = asyncio.create_task(client().run())
+        try:
+            await gateway.wait_for(lambda f: f.get("type") == "harness.diagnostic"
+                                   and f["transport_run_id"] == f"run-{count}")
+            last = next(f for f in gateway.received if f.get("type") == "harness.diagnostic"
+                        and f["transport_run_id"] == f"run-{count}")
+            await eventually(lambda: DiagnosticReceipts(path).contains(last["diagnostic_id"]))
+            first = next(f for f in gateway.received if f.get("type") == "harness.diagnostic")
+            assert not DiagnosticReceipts(path).contains(first["diagnostic_id"])
+            before_revisit = sum(f.get("diagnostic_id") == first["diagnostic_id"]
+                                 for f in gateway.received)
+            await eventually(lambda: sum(f.get("diagnostic_id") == first["diagnostic_id"]
+                                        for f in gateway.received) > before_revisit)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        prior = sum(f.get("diagnostic_id") == first["diagnostic_id"] for f in gateway.received)
+        task = asyncio.create_task(client().run())
+        try:
+            await eventually(lambda: sum(f.get("diagnostic_id") == first["diagnostic_id"]
+                                        for f in gateway.received) > prior)
+            assert not DiagnosticReceipts(path).contains(first["diagnostic_id"])
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_corrupt_private_sidecar_does_not_break_legacy_delivery(tmp_path):
     FakeGateway = fake_gateway_class()
     path = tmp_path / "journal"
