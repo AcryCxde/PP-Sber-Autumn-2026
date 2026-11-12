@@ -226,9 +226,14 @@ class GatewayClient:
         self._backoff = backoff
         self._failures = 0
         self._draining = asyncio.Event()
+        self._drain_deadline: float | None = None
+        self._public_flushed = asyncio.Event()
 
     def drain(self) -> None:
         """Выход runner: дослать хвост журнала и закончить `run` без реконнекта."""
+        if self._drain_deadline is None:
+            # Reserve time for socket teardown within RunningGateway.stop's five seconds.
+            self._drain_deadline = time.monotonic() + 4.0
         self._draining.set()
 
     async def run(self) -> None:
@@ -266,17 +271,34 @@ class GatewayClient:
             supports_rejection = (isinstance(capabilities, dict)
                                   and capabilities.get("harness_diagnostic_rejection_v1") is True)
             accepted_diagnostics = DiagnosticAcks()
+            self._public_flushed.clear()
+            public_task = asyncio.create_task(self._send_events(ws, feed))
+            diagnostic_task: asyncio.Task[None] | None = None
+            drain_task = asyncio.create_task(self._draining.wait())
             tasks = [
-                asyncio.create_task(self._send_events(ws, feed)),
+                public_task,
+                drain_task,
                 asyncio.create_task(self._send_heartbeats(ws)),
                 asyncio.create_task(self._receive(ws, accepted_diagnostics,
                                                    supports_rejection=supports_rejection)),
             ]
             capabilities = welcome.get("capabilities")
             if isinstance(capabilities, dict) and capabilities.get("harness_diagnostic_v1") is True:
-                tasks.append(asyncio.create_task(self._send_diagnostics(ws, accepted_diagnostics)))
+                diagnostic_task = asyncio.create_task(
+                    self._send_diagnostics(ws, accepted_diagnostics)
+                )
+                tasks.append(diagnostic_task)
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                if self._draining.is_set() and self._drain_deadline is not None:
+                    flush = [public_task]
+                    if diagnostic_task is not None:
+                        flush.append(diagnostic_task)
+                    remaining = max(0.0, self._drain_deadline - time.monotonic())
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(
+                            asyncio.gather(*(asyncio.shield(task) for task in flush)), remaining
+                        )
             finally:
                 for task in tasks:
                     task.cancel()
@@ -291,6 +313,7 @@ class GatewayClient:
                 for draft in drafts:
                     await ws.send(json.dumps(event_message(seq, draft), ensure_ascii=False))
             if last:
+                self._public_flushed.set()
                 return
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._draining.wait(), self._poll_s)
@@ -302,7 +325,7 @@ class GatewayClient:
         except (OSError, sqlite3.Error) as error:
             # Optional private storage failure must not disconnect legacy delivery.
             diag("gateway_diagnostics_unavailable", error=type(error).__name__)
-            await asyncio.Future()
+            await self._public_flushed.wait()
 
     async def _diagnostic_loop(
         self, ws: ClientConnection, accepted: DiagnosticAcks, receipts: DiagnosticReceipts
@@ -310,7 +333,15 @@ class GatewayClient:
         feed = DiagnosticFeed(self._journal, self._project_id, self._project_root)
         pending: dict[str, dict[str, JsonValue]] = {}
         attempts: dict[str, tuple[int, float]] = {}
-        while not self._draining.is_set():
+        drain_started = False
+        while True:
+            draining = self._draining.is_set()
+            if draining and not drain_started:
+                attempts.clear()  # Shutdown must not inherit the normal thirty-second backoff.
+                drain_started = True
+            if (draining and self._drain_deadline is not None
+                    and time.monotonic() >= self._drain_deadline):
+                return
             for key in tuple(pending):
                 status = accepted.pop(key, None)
                 if status is not None:
@@ -322,15 +353,22 @@ class GatewayClient:
                 key = str(frame["diagnostic_id"])
                 if not await asyncio.to_thread(receipts.contains, key):
                     pending[key] = frame
+            if (draining and self._public_flushed.is_set() and not pending
+                    and await asyncio.to_thread(feed.caught_up)):
+                return
             now = time.monotonic()
             for key, frame in pending.items():
                 count, due = attempts.get(key, (0, 0.0))
                 if now >= due:
                     accepted.awaiting.add(key)
                     await ws.send(json.dumps(frame, ensure_ascii=False))
-                    attempts[key] = (count + 1, now + min(30.0, self._poll_s * 2 ** min(count, 10)))
-            with suppress(TimeoutError):
-                await asyncio.wait_for(self._draining.wait(), self._poll_s)
+                    delay = min(30.0, self._poll_s * 2 ** min(count, 10))
+                    attempts[key] = (count + 1, now + (min(delay, 0.05) if draining else delay))
+            if draining:
+                await asyncio.sleep(min(self._poll_s, 0.05))
+            else:
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._draining.wait(), self._poll_s)
 
     async def _send_heartbeats(self, ws: ClientConnection) -> None:
         while True:

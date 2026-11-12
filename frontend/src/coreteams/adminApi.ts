@@ -97,6 +97,26 @@ async function request<T>(path: string, parse: (v: unknown) => T, signal?: Abort
   }
   return parse(body);
 }
+async function policyRequest<T>(load: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const attempt = new AbortController();
+  const cancel = () => attempt.abort(signal?.reason);
+  signal?.addEventListener('abort', cancel, { once: true });
+  if (signal?.aborted) cancel();
+  const deadline = setTimeout(() => attempt.abort(new Error('AI-access mutation deadline exceeded')), 30000);
+  let rejectAborted!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_, reject) => { rejectAborted = reject; });
+  const onAbort = () => rejectAborted(attempt.signal.reason);
+  attempt.signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    attempt.signal.throwIfAborted();
+    // Bound fetch and body parsing even when either ignores cancellation; the outcome remains uncertain.
+    return await Promise.race([load(attempt.signal), aborted]);
+  } finally {
+    clearTimeout(deadline);
+    signal?.removeEventListener('abort', cancel);
+    attempt.signal.removeEventListener('abort', onAbort);
+  }
+}
 function query(values: object): string { const params = new URLSearchParams(); for (const [key, value] of Object.entries(values)) if (value !== undefined) params.set(key, String(value)); return `?${params}`; }
 export const adminApi = {
   overview: (values: Period & { attention_start: string; attention_end: string; active_page: number; attention_page: number; attention_no_start: boolean }, signal?: AbortSignal) => request(`/overview${query(values)}`, parseOverview, signal),
@@ -104,5 +124,5 @@ export const adminApi = {
   run: (id: string, signal?: AbortSignal) => request(`/runs/${encodeURIComponent(id)}`, details, signal),
   users: (values: { q?: string; page: number }, signal?: AbortSignal) => request(`/users${query(values)}`, (v): Page<AdminUser> => ({ ...page(v, user), as_of: stamp(object(v).as_of) }), signal),
   audit: (id: string, pageNumber: number, signal?: AbortSignal) => request(`/users/${encodeURIComponent(id)}/audit${query({ page: pageNumber })}`, (value): Page<Audit> => ({ ...page(value, (entry) => { const v = object(entry); if (v.action !== 'freeze' && v.action !== 'unfreeze') throw new Error('Неизвестное действие.'); return { id: text(v.id), actor_id: text(v.actor_id), target_id: text(v.target_id), created_at: stamp(v.created_at), action: v.action, reason: nullableText(v.reason), before_version: count(v.before_version), after_version: count(v.after_version) }; }), as_of: stamp(object(value).as_of) }), signal),
-  changeAiAccess: (id: string, mutation: Mutation, key: string, signal?: AbortSignal) => request(`/users/${encodeURIComponent(id)}/ai-access`, (value): MutationResult => { const v = object(value); return { user: user(v.user), audit_id: text(v.audit_id), changed_at: stamp(v.changed_at) }; }, signal, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key, 'X-CoreTeams-Admin': '1' }, body: JSON.stringify(mutation) }),
+  changeAiAccess: (id: string, mutation: Mutation, key: string, signal?: AbortSignal) => policyRequest((attemptSignal) => request(`/users/${encodeURIComponent(id)}/ai-access`, (value): MutationResult => { const v = object(value); return { user: user(v.user), audit_id: text(v.audit_id), changed_at: stamp(v.changed_at) }; }, attemptSignal, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key, 'X-CoreTeams-Admin': '1' }, body: JSON.stringify(mutation) }), signal),
 };

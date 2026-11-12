@@ -29,6 +29,7 @@ from sqlalchemy.exc import DBAPIError
 
 from backend.api.history import SessionDependency
 from backend.auth import AdminUser
+from backend.timestamps import utc_iso
 from backend.models import (
     Artifact,
     ArtifactApproval,
@@ -433,8 +434,8 @@ async def policy_users(admin: AdminUser, session: SessionDependency,
     rows = await session.scalars(select(User).where(predicate)
         .order_by(User.created_at.desc(), User.id.desc()).limit(page_size).offset((page - 1) * page_size))
     return JSONResponse({"as_of": datetime.now(UTC).isoformat(), "items": [
-        {"id": user.id, "email": user.email, "created_at": user.created_at.isoformat(),
-         "last_seen_at": user.last_seen_at.isoformat() if user.last_seen_at else None,
+        {"id": user.id, "email": user.email, "created_at": utc_iso(user.created_at),
+         "last_seen_at": utc_iso(user.last_seen_at) if user.last_seen_at else None,
          "ai_access": {"frozen": user.ai_frozen, "version": user.ai_policy_version}} for user in rows],
         "total": total, "page": page, "page_size": page_size}, headers={"Cache-Control": "no-store"})
 
@@ -451,7 +452,7 @@ async def policy_audit(user_id: str, admin: AdminUser, session: SessionDependenc
         .order_by(AiPolicyAudit.created_at.desc(), AiPolicyAudit.id.desc()).limit(page_size).offset((page - 1) * page_size))
     return JSONResponse({"as_of": datetime.now(UTC).isoformat(), "items": [
         {"id": row.id, "actor_id": row.actor_id, "target_id": row.target_id,
-         "created_at": row.created_at.isoformat(), "action": row.action, "reason": row.reason,
+         "created_at": utc_iso(row.created_at), "action": row.action, "reason": row.reason,
          "before_version": row.before_version, "after_version": row.after_version} for row in rows],
         "total": total, "page": page, "page_size": page_size}, headers={"Cache-Control": "no-store"})
 

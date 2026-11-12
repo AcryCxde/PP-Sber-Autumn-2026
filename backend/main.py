@@ -385,10 +385,44 @@ async def execute_accepted_run(
         if final is not None:
             await deliver_event(final.terminal_event)
         return
-    for context_event in admission.context_events:
-        await deliver_event(context_event)
-    if admission.event is not None:
-        await deliver_event(admission.event)
+    async def store_publication_failure(*, cancelled: bool) -> None:
+        # Admission is committed, but no executor has started. Persist an outcome
+        # independently of the failing subscriber; replay can deliver it later.
+        async def bounded_finalize() -> None:
+            async with asyncio.timeout(10):
+                async with app_state.database.session() as session:
+                    await finalize_run(
+                        session, acceptance.run_id, assistant_content=None, exit_code=None,
+                        status="outcome_unknown" if cancelled else "failed",
+                        error_code="heartbeat_lost" if cancelled else "claude_request_failed",
+                    )
+
+        # Keep ownership until the bounded attempt finishes. shield alone would
+        # detach cleanup if shutdown cancels this task a second time.
+        finalizing = asyncio.create_task(bounded_finalize())
+        cancelled_again = False
+        while not finalizing.done():
+            try:
+                await asyncio.shield(finalizing)
+            except asyncio.CancelledError:
+                cancelled_again = True
+        finalizing.result()
+        if cancelled_again:
+            raise asyncio.CancelledError()
+
+    try:
+        for context_event in admission.context_events:
+            await deliver_event(context_event)
+        if admission.event is not None:
+            await deliver_event(admission.event)
+    except asyncio.CancelledError:
+        if admission.state == AdmissionState.ADMITTED:
+            await store_publication_failure(cancelled=True)
+        raise
+    except Exception:
+        if admission.state == AdmissionState.ADMITTED:
+            await store_publication_failure(cancelled=False)
+        raise
     if admission.state != AdmissionState.ADMITTED:
         return
     if app_state.settings.executor == "runner":

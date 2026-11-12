@@ -26,6 +26,7 @@ from backend.repository import (
     apply_run_context_reset, finalize_run,
 )
 from backend.public_events import run_started_event
+from backend.timestamps import utc_iso
 
 
 class AiAccessError(Exception):
@@ -118,8 +119,8 @@ async def change_ai_access(session: AsyncSession, *, actor_id: str, target_id: s
     audit_id = str(uuid4())
     response: dict[str, object] = {
         "user": {"id": user.id, "email": user.email,
-                 "created_at": user.created_at.isoformat(),
-                 "last_seen_at": user.last_seen_at.isoformat() if user.last_seen_at else None,
+                 "created_at": utc_iso(user.created_at),
+                 "last_seen_at": utc_iso(user.last_seen_at) if user.last_seen_at else None,
                  "ai_access": {"frozen": user.ai_frozen, "version": user.ai_policy_version}},
         "audit_id": audit_id, "changed_at": now.isoformat(),
     }
