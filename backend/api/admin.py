@@ -454,14 +454,22 @@ async def policy_audit(user_id: str, admin: AdminUser, session: SessionDependenc
     del admin
     if await session.get(User, user_id) is None:
         return _policy_error(AiAccessError("user_not_found", 404, "Пользователь не найден."))
-    total = await session.scalar(select(func.count()).select_from(AiPolicyAudit).where(AiPolicyAudit.target_id == user_id))
-    rows = await session.scalars(select(AiPolicyAudit).where(AiPolicyAudit.target_id == user_id)
-        .order_by(AiPolicyAudit.created_at.desc(), AiPolicyAudit.id.desc()).limit(page_size).offset((page - 1) * page_size))
+    predicate = AiPolicyAudit.target_id == user_id
+    count = (select(func.count().label("total")).select_from(AiPolicyAudit)
+        .where(predicate).cte("audit_count"))
+    selected = (select(AiPolicyAudit.id).where(predicate)
+        .order_by(AiPolicyAudit.created_at.desc(), AiPolicyAudit.id.desc())
+        .limit(page_size).offset((page - 1) * page_size).cte("selected_audits"))
+    statement = (select(AiPolicyAudit, count.c.total).select_from(count)
+        .outerjoin(selected, literal(True)).outerjoin(AiPolicyAudit, AiPolicyAudit.id == selected.c.id)
+        .order_by(AiPolicyAudit.created_at.desc(), AiPolicyAudit.id.desc()))
+    rows = (await session.execute(statement)).all()
     return JSONResponse({"as_of": datetime.now(UTC).isoformat(), "items": [
         {"id": row.id, "actor_id": row.actor_id, "target_id": row.target_id,
          "created_at": utc_iso(row.created_at), "action": row.action, "reason": row.reason,
-         "before_version": row.before_version, "after_version": row.after_version} for row in rows],
-        "total": total, "page": page, "page_size": page_size}, headers={"Cache-Control": "no-store"})
+         "before_version": row.before_version, "after_version": row.after_version}
+         for row, _ in rows if row is not None],
+        "total": rows[0].total, "page": page, "page_size": page_size}, headers={"Cache-Control": "no-store"})
 
 
 @v1_router.get("/overview")

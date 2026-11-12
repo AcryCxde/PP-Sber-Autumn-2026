@@ -1,6 +1,6 @@
-import { AdminApiError, type AdminUser, type CurrentPolicy } from './adminApi';
+import { AdminApiError, isRejectedAdminOperation, type AdminUser, type CurrentPolicy } from './adminApi';
 export function isUncertainPolicyError(error: unknown): boolean {
-  return !(error instanceof AdminApiError && ((error.status === 422 && ['invalid_policy_request', 'invalid_reason', 'invalid_idempotency_key'].includes(error.code)) || (error.status === 503 && error.code === 'policy_management_unavailable') || (error.status === 409 && error.code === 'policy_state_conflict')));
+  return !isRejectedAdminOperation(error) && !(error instanceof AdminApiError && ((error.status === 422 && ['invalid_policy_request', 'invalid_reason', 'invalid_idempotency_key'].includes(error.code)) || (error.status === 503 && error.code === 'policy_management_unavailable') || (error.status === 409 && error.code === 'policy_state_conflict')));
 }
 export type PolicyDraft = { user: AdminUser; frozen: boolean; reason: string; key: string; status: 'editing' | 'submitting' | 'conflict' | 'satisfied'; error: string | null; attempted: boolean };
 export function beginPolicy(user: AdminUser, key: string): PolicyDraft { return { user, frozen: !user.ai_access.frozen, reason: '', key, status: 'editing', error: null, attempted: false }; }
