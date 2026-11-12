@@ -29,8 +29,18 @@ export function createAdminPolling<T extends { as_of: string }>(initialLoad: Adm
     if (disposed || hidden || stopped || controller) return;
     clearTimeout(timer); const current = generation; const active = new AbortController(); controller = active;
     update({ refreshing: true });
+    let timedOut = false;
+    let rejectAborted!: (reason: unknown) => void;
+    const aborted = new Promise<never>((_, reject) => { rejectAborted = reject; });
+    const onAbort = () => rejectAborted(active.signal.reason);
+    active.signal.addEventListener('abort', onAbort, { once: true });
+    // Race the deadline as well as aborting fetch: a loader may ignore its signal.
+    const deadline = setTimeout(() => {
+      timedOut = true;
+      active.abort(new Error('Admin request deadline exceeded'));
+    }, 30000);
     try {
-      const data = await load(active.signal);
+      const data = await Promise.race([load(active.signal), aborted]);
       if (disposed || current !== generation) return;
       failures = 0;
       const local = Date.now(); const server = Date.parse(data.as_of);
@@ -40,12 +50,14 @@ export function createAdminPolling<T extends { as_of: string }>(initialLoad: Adm
       clearTimeout(staleTimer);
       if (snapshotAge <= 45000) staleTimer = setTimeout(() => update({ stale: true }), 45001 - snapshotAge);
     } catch (error) {
-      if (disposed || current !== generation || active.signal.aborted) return;
+      if (disposed || current !== generation || (active.signal.aborted && !timedOut)) return;
       if (error instanceof UnauthorizedError) { revoke('unauthorized'); return; }
       if (error instanceof AdminApiError && error.status === 403) { revoke('forbidden'); return; }
       failures++;
       update({ status: value.data ? 'ready' : 'error', refreshError: true });
     } finally {
+      clearTimeout(deadline);
+      active.signal.removeEventListener('abort', onAbort);
       if (current === generation) { controller = null; update({ refreshing: false }); schedule(); }
     }
   }

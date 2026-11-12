@@ -343,12 +343,12 @@ async def handle_run_create(
         app_state.live_run_deliveries = deliveries
     if not acceptance.idempotent_replay:
         deliveries[acceptance.run_id] = deliver_event
-    if acceptance.reset_event is not None:
-        await deliver_event(acceptance.reset_event)
     await deliver_event(
         acceptance.accepted_event,
         idempotent_replay=acceptance.idempotent_replay,
     )
+    if acceptance.reset_event is not None:
+        await deliver_event(acceptance.reset_event)
     del websocket
 
     if acceptance.idempotent_replay:
@@ -385,6 +385,8 @@ async def execute_accepted_run(
         if final is not None:
             await deliver_event(final.terminal_event)
         return
+    for context_event in admission.context_events:
+        await deliver_event(context_event)
     if admission.event is not None:
         await deliver_event(admission.event)
     if admission.state != AdmissionState.ADMITTED:

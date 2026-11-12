@@ -88,6 +88,20 @@ async def catch_up(database: Database, run_id: str, observations: list[dict]) ->
     """Read transport before calling; no transport lock spans this transaction."""
     if not observations:
         return
+    candidates = [wrapper(observation) for observation in observations]
+
+    def advance(previous: object) -> dict:
+        current = previous
+        for candidate in candidates:
+            current = monotonic(current, candidate)
+        return current
+
+    # The optimistic check is read-only. A concurrent writer can only advance the
+    # projection; any actual write still rechecks fresh state under the Run lock.
+    async with database.session() as session:
+        row = (await session.execute(select(Run.harness_estimate).where(Run.id == run_id))).first()
+        if row is None or advance(row[0]) == row[0]:
+            return
     for attempt in range(3):
         try:
             async with database.session() as session:
@@ -100,11 +114,10 @@ async def catch_up(database: Database, run_id: str, observations: list[dict]) ->
                                            .execution_options(populate_existing=True))
                 if run is None:
                     return
-                current = run.harness_estimate
-                for observation in observations:
-                    current = monotonic(current, wrapper(observation))
-                run.harness_estimate = current
-                await session.commit()
+                current = advance(run.harness_estimate)
+                if current != run.harness_estimate:
+                    run.harness_estimate = current
+                    await session.commit()
                 return
         except DBAPIError as error:
             code = getattr(error.orig, "sqlstate", None) or getattr(error.orig, "pgcode", None)

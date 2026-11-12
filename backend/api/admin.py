@@ -6,6 +6,8 @@
 функций дат SQLite и Postgres.
 """
 
+import sqlite3
+
 from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
@@ -498,8 +500,8 @@ async def operational_detail(run_id: str, request: Request, admin: AdminUser, se
         from backend.harness_estimate import catch_up
         try:
             await catch_up(request.app.state.database, run_id, transport.diagnostic_snapshots(run_id))
-        except DBAPIError:
-            # catch_up owns a separate session; its failed transaction is closed.
+        except (DBAPIError, sqlite3.Error):
+            # Transport uses sqlite3 directly; catch_up owns a separate session.
             projection_unavailable = True
         except ValueError as error:
             if str(error) not in {"harness_lineage_conflict", "harness_observation_conflict", "invalid_harness_snapshot"}:

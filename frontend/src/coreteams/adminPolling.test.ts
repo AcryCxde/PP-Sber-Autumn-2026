@@ -21,6 +21,56 @@ describe('admin polling', () => {
     expect(pollStateForLoader(snapshot, first).data).toBe(sample);
     old.dispose(); replacement.dispose();
   });
+  it('times out an abort-ignoring loader and allows an exact manual retry without late restoration', async () => {
+    vi.useFakeTimers();
+    let resolveOld!: (value: typeof sample) => void;
+    let oldSignal!: AbortSignal;
+    const load = vi.fn((signal: AbortSignal) => {
+      oldSignal = signal;
+      return new Promise<typeof sample>((resolve) => { resolveOld = resolve; });
+    }).mockResolvedValueOnce(sample);
+    const poll = createAdminPolling(load);
+    poll.start(); await settle();
+    poll.refresh(); await settle();
+    expect(load).toHaveBeenCalledTimes(2);
+    poll.refresh(); expect(load).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(oldSignal.aborted).toBe(true);
+    expect(poll.state()).toMatchObject({ data: sample, refreshing: false, refreshError: true });
+    load.mockResolvedValueOnce({ ...sample, value: 2 });
+    poll.refresh(); await settle();
+    expect(poll.state().data?.value).toBe(2);
+    resolveOld({ ...sample, value: 99 }); await settle();
+    expect(poll.state().data?.value).toBe(2);
+    poll.dispose();
+  });
+  it('cancels the deadline when disposed during a hanging request', async () => {
+    vi.useFakeTimers();
+    const load = vi.fn(() => new Promise<typeof sample>(() => {}));
+    const poll = createAdminPolling(load);
+    poll.start(); await settle();
+    poll.dispose(); await settle();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(90000);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+  it('automatically retries a timed-out initial request and preserves auth-loss cleanup', async () => {
+    vi.useFakeTimers();
+    const load = vi.fn< (signal: AbortSignal) => Promise<typeof sample> >()
+      .mockImplementationOnce(() => new Promise(() => {}))
+      .mockRejectedValueOnce(new UnauthorizedError());
+    const revoked = vi.fn();
+    const poll = createAdminPolling(load, revoked);
+    poll.start(); await settle();
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(poll.state()).toMatchObject({ status: 'error', refreshing: false });
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(poll.state()).toMatchObject({ status: 'unauthorized', data: null, refreshing: false });
+    expect(revoked).toHaveBeenCalledTimes(1);
+    poll.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it('loads, polls at 15 seconds and pauses while hidden', async () => {
     vi.useFakeTimers();
     const load = vi.fn().mockResolvedValue(sample);

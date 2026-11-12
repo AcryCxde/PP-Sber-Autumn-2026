@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models import AiPolicyAudit, Conversation, Event, Run, User
 from backend.repository import (
     TERMINAL_RUN_STATUSES, _append_event_in_transaction, _lock_run_context,
-    finalize_run,
+    apply_run_context_reset, finalize_run,
 )
 from backend.public_events import run_started_event
 
@@ -55,6 +55,7 @@ class AdmissionResult:
     state: AdmissionState
     event: Event | None = None
     run_id: str | None = None
+    context_events: tuple[Event, ...] = ()
 
 
 def normalize_policy_request(*, frozen: bool, reason: str | None,
@@ -158,6 +159,7 @@ async def admit_run(session: AsyncSession, run_id: str) -> AdmissionResult:
         result = await finalize_run(session, run.id, assistant_content=None, status="failed",
                                     exit_code=None, error_code="ai_access_frozen", commit=False)
         return AdmissionResult(AdmissionState.DENIED, result.terminal_event)
+    reset_event = await apply_run_context_reset(session, run, conversation)
     now = datetime.now(UTC)
     run.admitted_at = now
     run.admission_policy_version = user.ai_policy_version
@@ -165,7 +167,8 @@ async def admit_run(session: AsyncSession, run_id: str) -> AdmissionResult:
     run.started_at = now
     event = await _append_event_in_transaction(session, run.id, run_started_event())
     await session.flush()
-    return AdmissionResult(AdmissionState.ADMITTED, event, run.id)
+    return AdmissionResult(AdmissionState.ADMITTED, event, run.id,
+                           (reset_event,) if reset_event is not None else ())
 
 
 T = TypeVar("T")

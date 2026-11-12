@@ -11,6 +11,15 @@ from backend.tests.test_runner_app import eventually, live_server
 from ctrunner.gateway import GatewayClient
 
 
+def fake_gateway_class():
+    """Load the repository-only fake without depending on runner's PYTHONPATH."""
+    path = Path(__file__).parents[2] / "runner/evals/fake_gateway.py"
+    spec = importlib.util.spec_from_file_location("backend_test_fake_gateway", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.FakeGateway
+
+
 def old_client():
     path = Path(__file__).parent / "fixtures/harness/gateway_a1d6179.py.txt"
     loader = SourceFileLoader("pinned_old_gateway", str(path))
@@ -90,7 +99,7 @@ async def test_harness_pinned_old_sender_lost_ack_capability_toggles(tmp_path):
 
 
 async def test_new_sender_legacy_fake_gateway_sends_no_private_frame(tmp_path):
-    from evals.fake_gateway import FakeGateway
+    FakeGateway = fake_gateway_class()
     path = tmp_path / "journal"
     write_journal(path)
     async with FakeGateway() as gateway:
@@ -144,7 +153,7 @@ async def test_new_sender_pinned_production_old_receiver(tmp_path):
 
 
 async def test_rejected_backlog_pages_and_reconnect_does_not_resend(tmp_path):
-    from evals.fake_gateway import FakeGateway
+    FakeGateway = fake_gateway_class()
     from ctrunner.harness_diagnostic import DiagnosticFeed, DiagnosticReceipts
 
     count = 300
@@ -219,7 +228,7 @@ async def test_rejected_backlog_pages_and_reconnect_does_not_resend(tmp_path):
 
 
 async def test_corrupt_private_sidecar_does_not_break_legacy_delivery(tmp_path):
-    from evals.fake_gateway import FakeGateway
+    FakeGateway = fake_gateway_class()
     path = tmp_path / "journal"
     write_journal(path)
     path.with_name(path.name + ".diagnostic-receipts.sqlite3").write_bytes(b"not sqlite")
@@ -272,7 +281,7 @@ async def test_rejection_requires_sender_optin(tmp_path):
 
 
 async def test_harness_terminal_missing_source_does_not_starve(tmp_path):
-    from evals.fake_gateway import FakeGateway
+    FakeGateway = fake_gateway_class()
     class DiagnosticGateway(FakeGateway):
         async def _handle(self, ws):
             self._ws = ws
