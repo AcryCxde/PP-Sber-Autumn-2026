@@ -947,12 +947,14 @@ def protected_read(path: Path, limit: int) -> bytes:
     return _protected_read(path, limit, 0o022)
 
 
-def protected_credential_read(path: Path) -> bytes:
+def protected_credential_read(path: Path, *, exact_mode: bool = False) -> bytes:
     """Credentials must not grant any group/other access, unlike public CA data."""
-    return _protected_read(path, 16384, 0o077)
+    return _protected_read(path, 16384, 0o077, exact_mode=exact_mode)
 
 
-def _protected_read(path: Path, limit: int, forbidden_mode: int) -> bytes:
+def _protected_read(
+    path: Path, limit: int, forbidden_mode: int, *, exact_mode: bool = False
+) -> bytes:
     """Walk pinned directory descriptors, refusing symlinks at every component.
 
     Parent replacement cannot redirect an opened descriptor. Root-owned parents
@@ -976,6 +978,8 @@ def _protected_read(path: Path, limit: int, forbidden_mode: int) -> bytes:
             _trusted_descriptor(child, directory=False)
             info = os.fstat(child)
             _require(not info.st_mode & forbidden_mode)
+            if exact_mode:
+                _require(stat.S_IMODE(info.st_mode) in {0o400, 0o600})
             _require(info.st_size <= limit)
             with os.fdopen(child, "rb", closefd=False) as stream:
                 raw = stream.read(limit + 1)

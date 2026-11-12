@@ -97,6 +97,64 @@ Local ingress HTTPS 200 и TLS valid; external URL timeout с сервера н�
   фиксированный PATH, отсутствие writable import paths, arbitrary command/manifest arguments.
   Root-owned `/var/lib/coreteams-deploy` (state/lock) и `/etc/coreteams-deploy` (config);
   API credential read-only для нужных contents/actions, не в stdout и не из request JSON.
+### Production credential bootstrap — локально реализован, НЕ активирован
+
+Отдельный entrypoint `tools.cicd.deploy_credentials`; обычный
+`tools.cicd.deploy_server` сохраняет прежний default. Будущий root launcher после
+отдельного review установки должен запускать **ровно этот entrypoint**, например
+(не выполнять сейчас; absolute Python path сначала независимо сверить на сервере):
+
+```sh
+/usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin /usr/local/bin/python3.13 -I -S -B -c 'import sys; sys.path.insert(0, "/opt/coreteams-deploy/runtime"); from tools.cicd.deploy_credentials import main; raise SystemExit(main())'
+```
+
+Interpreter, launcher, runtime/imports и все parents должны быть root-owned и
+недоступны на запись другим; root-only state/lock и существующие schema gates
+остаются обязательными. Это **не installer**, не sudo/key policy и не dry-run.
+Уже установленный INERT launcher не переключается автоматически; credentials не
+установлены, активация/RBAC/pull/rollout здесь не выполняются.
+
+Только protected channel оператора, не CLI args/SSH env/request/logs:
+
+- `/etc/coreteams-deploy/github-token`: ASCII token, опционально один завершающий
+  LF, не более 16384 bytes. Root-owned regular file, **точно 0400 или 0600**.
+  Endpoint фиксирован существующим API: `https://api.github.com`, только repo
+  `AcryCxde/PP-Sber-Autumn-2026`, redirects с token запрещены. Read-only
+  contents/actions permission и отсутствие write permissions — внешняя policy,
+  адаптер не может вывести scope из token. Не использовать локальный широкий token.
+- `/etc/coreteams-deploy/kubeconfig.json`: UTF-8 JSON (не YAML), до 16384 bytes,
+  те же ownership/mode. Только следующая точная форма, без дополнительных ключей;
+  CA/token заменить по protected channel. CA — base64 cluster CA, token — отдельная
+  scoped service-account identity, не root kubeconfig; срок действия обслуживает оператор.
+
+```json
+{
+  "apiVersion": "v1",
+  "kind": "Config",
+  "clusters": [{"name": "coreteams", "cluster": {
+    "server": "https://127.0.0.1:6443",
+    "certificate-authority-data": "BASE64_CLUSTER_CA"
+  }}],
+  "users": [{"name": "coreteams-deploy", "user": {"token": "SCOPED_TOKEN"}}],
+  "contexts": [{"name": "coreteams-deploy", "context": {
+    "cluster": "coreteams", "user": "coreteams-deploy", "namespace": "coreteams"
+  }}],
+  "current-context": "coreteams-deploy"
+}
+```
+
+Оба файла читаются до API/deploy. Missing/unsafe/malformed credential → отказ,
+никакого fallback к `/root/.kube/config`. Все parents root-owned, без group/world
+write, symlinks запрещены на каждом компоненте (descriptor-based validator).
+Запрещены exec/auth-provider, external CA/client-key paths, proxy, insecure TLS,
+impersonation и иной endpoint/context. Существование локального k3s API и matching
+CA/SAN нужно проверить отдельно до установки. kubectl получает фиксированные
+`--kubeconfig=/etc/coreteams-deploy/kubeconfig.json --context=coreteams-deploy`,
+namespace `coreteams`; env содержит только fixed PATH, HOME `/var/empty` и
+KUBECONFIG. Caller GH_TOKEN/KUBECONFIG/proxy/CA env не используются; содержимое
+credentials не печатается и не передаётся в argv. Между validation и kubectl файл
+могут менять только доверенные root operators: не заменять его во время deploy.
+
 - [ ] Namespace-scoped identity: read rollout state, patch только двух фиксированных Deployments;
   secrets/PVC/RBAC/jobs/exec запрещены. GitHub не получает kubeconfig/cluster-admin.
   Server ожидает Deployment и container `backend`/`frontend`; Deployment names ранее совпадали,

@@ -14,7 +14,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -232,13 +232,14 @@ def migration_risk(api: API, baseline: str, candidate: str) -> bool:
     return False
 
 
-def kubectl(args: Sequence[str]) -> str:
+def kubectl(args: Sequence[str], *, env: Mapping[str, str] | None = None) -> str:
     # Only this process's child is terminated/reaped on timeout or signal.
     with subprocess.Popen(
         ["/usr/local/bin/kubectl", "--request-timeout=20s", "-n", "coreteams", *args],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        **({"env": env} if env is not None else {}),
     ) as child:
         try:
             stdout, _ = child.communicate(timeout=200)
@@ -406,7 +407,7 @@ def trusted_path(path: Path, *, directory: bool = False) -> None:
     )
 
 
-def main() -> int:
+def main(*, api: API | None = None, command: Command | None = None) -> int:
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
     def terminate(signum: int, frame: object) -> None:
@@ -427,7 +428,7 @@ def main() -> int:
             clearance = Clearance.parse(protected_read(CONFIG, LIMIT).decode("utf-8"))
         from tools.cicd.verify_release import GitHubAPI, verify_release
 
-        api = GitHubAPI()
+        api = api if api is not None else GitHubAPI()
 
         def verify(request: Release) -> Release:
             return verify_release(
@@ -445,7 +446,7 @@ def main() -> int:
             state_dir=STATE,
             verifier=verify,
             api=api,
-            command=kubectl,
+            command=command if command is not None else kubectl,
             clearance=clearance,
             schema_probe=schema_probe,
         )
