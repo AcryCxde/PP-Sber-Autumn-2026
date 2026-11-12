@@ -1,0 +1,52 @@
+"""Strict metadata boundary for diagnostic client-side session cost snapshots."""
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
+from uuid import UUID
+
+
+def snapshot(value: object) -> dict[str, object]:
+    if not isinstance(value, dict) or set(value) != {"session_ref", "observed_at", "journal_seq", "value_usd"}:
+        raise ValueError("invalid_harness_snapshot")
+    if type(value["journal_seq"]) is not int or value["journal_seq"] < 1:
+        raise ValueError("invalid_harness_snapshot")
+    if not isinstance(value["value_usd"], str) or not 1 <= len(value["value_usd"]) <= 64:
+        raise ValueError("invalid_harness_snapshot")
+    try:
+        amount = Decimal(value["value_usd"])
+        UUID(value["session_ref"])
+        observed = datetime.fromisoformat(value["observed_at"].replace("Z", "+00:00"))
+        if not amount.is_finite() or amount < 0 or observed.tzinfo is None:
+            raise ValueError
+    except (ValueError, TypeError, AttributeError, InvalidOperation):
+        raise ValueError("invalid_harness_snapshot") from None
+    return {"session_ref": value["session_ref"], "observed_at": observed.astimezone(UTC).isoformat(),
+            "journal_seq": value["journal_seq"], "value_usd": str(amount)}
+
+
+def project_snapshot(value: object, *, event_id: str, previous: dict | None) -> dict:
+    safe = snapshot(value)
+    if previous and previous.get("session_ref") == safe["session_ref"]:
+        old_seq = previous.get("source", {}).get("journal_seq")
+        if type(old_seq) is int and old_seq >= safe["journal_seq"]:
+            return previous
+    return {"state": "known", "value_usd": safe["value_usd"], "scope": "session_total",
+            "session_ref": safe["session_ref"], "segment_ref": None, "observed_at": safe["observed_at"],
+            "source": {"kind": "harness_result", "field": "total_cost_usd", "event_id": event_id,
+                       "journal_seq": safe["journal_seq"], "runner_version": None},
+            "baseline": None, "continuity": "unverified", "unavailable_reason": None}
+
+
+def safe_estimate(value: object) -> dict | None:
+    if not isinstance(value, dict) or value.get("scope") != "session_total":
+        return None
+    try:
+        source = value["source"]
+        UUID(source["event_id"])
+        safe = project_snapshot({"session_ref": value["session_ref"], "observed_at": value["observed_at"],
+            "journal_seq": source["journal_seq"], "value_usd": value["value_usd"]},
+            event_id=source["event_id"], previous=None)
+        version = source.get("runner_version")
+        safe["source"]["runner_version"] = version if isinstance(version, str) and len(version) <= 100 else None
+        return safe
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None

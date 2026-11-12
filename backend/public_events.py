@@ -25,6 +25,8 @@ TERMINAL_EVENT_TYPES = {
     "run.outcome_unknown",
 }
 SAFE_FAILURE_CODES = {
+    "ai_access_frozen",
+    "ai_policy_unavailable",
     "artifact_save_failed",
     "container_read",
     "database",

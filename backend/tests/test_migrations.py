@@ -366,6 +366,127 @@ def test_security_migration_redacts_legacy_history(tmp_path) -> None:
         assert secret not in serialized
 
 
+def test_admin_ai_access_additive_upgrade_preserves_history(tmp_path) -> None:
+    database_path = tmp_path / "admin-policy.db"
+    config = migration_config(database_path)
+    command.upgrade(config, "20261111_0005")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO users (id,email,password_hash,created_at) "
+            "VALUES ('owner','owner@example.test','hash','2026-11-11')"
+        )
+        connection.execute(
+            "INSERT INTO conversations "
+            "(id,owner_id,title,status,context_state,next_message_seq,created_at,updated_at) "
+            "VALUES ('conversation','owner','History','active','new',0,'2026-11-11','2026-11-11')"
+        )
+        connection.execute(
+            "INSERT INTO runs "
+            "(id,conversation_id,status,client_request_id,context_mode,next_event_seq) "
+            "VALUES ('historical','conversation','completed','request','new',0)"
+        )
+    command.upgrade(config, "head")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT ai_frozen,ai_policy_version FROM users WHERE id='owner'"
+        ).fetchone() == (0, 0)
+        assert connection.execute(
+            "SELECT status,started_at,cost_usd,admitted_at,admission_policy_version,"
+            "harness_estimate FROM runs WHERE id='historical'"
+        ).fetchone() == ("completed", None, None, None, None, None)
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_policy_audits'"
+        ).fetchone() == ("ai_policy_audits",)
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO ai_policy_audits "
+            "(id,actor_id,target_id,action,reason,before_version,after_version,"
+            "idempotency_key,request_hash,response) "
+            "VALUES ('audit','owner','owner','freeze','private',0,1,'key','hash','{}')"
+        )
+        connection.commit()
+        import pytest
+
+        for action, reason, before, after, key in (
+            ("freeze", "private", 0, 1, "key"),
+            ("freeze", None, 0, 1, "missing-reason"),
+            ("freeze", "   ", 0, 1, "empty-reason"),
+            ("freeze", "x" * 1001, 0, 1, "long-reason"),
+            ("unfreeze", None, -1, 0, "negative-version"),
+            ("unfreeze", None, 1, 3, "jump-version"),
+            ("invalid", "note", 0, 1, "invalid-action"),
+            ("unfreeze", None, 1, 2, ""),
+            ("unfreeze", None, 1, 2, "x" * 65),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO ai_policy_audits "
+                    "(id,actor_id,target_id,action,reason,before_version,after_version,"
+                    "idempotency_key,request_hash,response) "
+                    "VALUES ('invalid','owner','owner',?,?,?,?,?,'hash','{}')",
+                    (action, reason, before, after, key),
+                )
+            connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE users SET ai_policy_version=-1 WHERE id='owner'")
+        connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("DELETE FROM users WHERE id='owner'")
+        connection.rollback()
+
+    command.downgrade(config, "20261111_0005")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT status FROM runs").fetchone() == ("completed",)
+        assert "ai_frozen" not in {
+            row[1] for row in connection.execute("PRAGMA table_info(users)")
+        }
+    command.upgrade(config, "head")
+
+
+def test_admin_policy_constraints_on_selected_database(tmp_path) -> None:
+    import asyncio
+    from datetime import UTC, datetime
+    import pytest
+    from sqlalchemy import insert, select
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from backend.models import AiPolicyAudit, User
+    from backend.tests.databases import database_url
+
+    url = database_url(tmp_path / "policy-constraints.db")
+    config = Config(str(BACKEND_DIR / "alembic.ini"))
+    config.attributes["database_url"] = url
+    command.upgrade(config, "head")
+
+    async def check():
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(insert(User).values(id="owner", email="owner@test.local",
+                    password_hash="hash", created_at=datetime.now(UTC)))
+            async with engine.connect() as connection:
+                row = (await connection.execute(select(User.ai_frozen, User.ai_policy_version))).one()
+                assert tuple(row) == (False, 0)
+            valid = dict(id="first", actor_id="owner", target_id="owner", action="freeze",
+                reason="private", before_version=0, after_version=1, idempotency_key="same",
+                request_hash="hash", response={})
+            async with engine.begin() as connection:
+                await connection.execute(insert(AiPolicyAudit).values(**valid))
+            for overrides in ({"id": "dup"}, {"id": "blank", "idempotency_key": "blank", "reason": "   "},
+                              {"id": "null", "idempotency_key": "null", "reason": None},
+                              {"id": "badversion", "idempotency_key": "badversion", "after_version": 4}):
+                with pytest.raises(IntegrityError):
+                    async with engine.begin() as connection:
+                        await connection.execute(insert(AiPolicyAudit).values(**{**valid, **overrides}))
+        finally:
+            await engine.dispose()
+    asyncio.run(check())
+    command.downgrade(config, "20261111_0005")
+    command.upgrade(config, "head")
+
+
 def test_migrations_match_models_and_0009_downgrades(tmp_path) -> None:
     """На SQLite и (с TEST_POSTGRES_URL) на Postgres схема после миграций совпадает с моделями."""
     import asyncio

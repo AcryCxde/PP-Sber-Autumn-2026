@@ -31,6 +31,7 @@ from backend.models import (
     ProjectFile,
     ProjectRun,
     Run,
+    User,
 )
 from backend.product import (
     ROLES,
@@ -221,7 +222,7 @@ async def start(
         ready.set_result(acceptance)
     except RunAcceptanceError as error:
         await session.rollback()
-        raise ProductError(409, error.code, error.message) from error
+        raise ProductError(403 if error.code == "ai_access_frozen" else 409, error.code, error.message) from error
     except IntegrityError as error:
         await session.rollback()
         raise ProductError(409, "idempotency_conflict", "Запрос уже принят или диалог занят") from error
@@ -358,6 +359,8 @@ async def create_run(
         response.status_code = status.HTTP_200_OK
         _, chain = await require_chain(session, project, previous.id)
         return chain.snapshot()
+    if await session.scalar(select(User.ai_frozen).where(User.id == user.id)):
+        raise ProductError(403, "ai_access_frozen", "AI-доступ временно приостановлен.")
     run = parse(RunBody, body)
     source = await rework_source(request, session, project, run) if run.parentRunId else None
     if source is not None:

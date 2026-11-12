@@ -98,6 +98,28 @@ injected `now`, not 30-second blocking sleeps. Terminal events are last; late ne
 events do not reopen a terminal Run. Fresh work must use a new linked Run in the
 embedding gateway, not mutate an old terminal launch.
 
+## Optional private harness receipts
+
+`RunnerBridge(..., harness_diagnostics_enabled=False)` leaves the old welcome unchanged.
+The application setting `runner_harness_diagnostics_enabled` enables negotiation only after
+acceptance. Private frames never enter public `_append`, never alter legacy event bodies,
+ACK cursor, public sequence, terminal status or `Run.cost_usd`.
+
+Additive transport SQLite tables retain trusted backend command segments, immutable accepted
+usage source/order, and exact diagnostic receipts. Message/answer enqueue and segment registration
+share one SQLite transaction. Answer enqueue is pending until public answer acceptance; gap usage
+remains unbound. Old callers without backend binding remain unknown. Late diagnostics can reference
+only already accepted usage, including after terminal. Identical receipt replay is idempotent;
+changed body for the same ID is a conflict.
+
+Receipt commit precedes private ACK; main database projection is a separate transaction.
+Finalize/detail catch-up can restore a missed projection. It serializes one Run using PostgreSQL
+row locking or SQLite BEGIN IMMEDIATE, rereads persisted JSON and applies only monotonic same-lineage
+observations. Storage uses `storage_schema=harness_estimate.v1` wrapper without legacy top-level
+scope; pinned older mapper returns unknown on downgrade. Receipt retention is additive, never
+removed during rollback. Disable capability before sender rollback; no destructive downgrade.
+Session total is not summed across Runs; missing source/session/binding stays unknown.
+
 ## Arina + Dima: storage boundary remains required
 
 `artifact.created` stores metadata only. A runner `run.completed` is held if any

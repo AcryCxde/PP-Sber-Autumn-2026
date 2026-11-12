@@ -16,6 +16,7 @@ from typing import Final, assert_never, final
 from websockets.asyncio.client import ClientConnection, connect
 
 from ctrunner.diag import diag
+from ctrunner.harness_diagnostic import SCHEMA, DiagnosticFeed
 from ctrunner.inbox import has_command, put
 from ctrunner.protocol import (
     Command,
@@ -245,15 +246,20 @@ class GatewayClient:
             )  # fmt: skip
             await ws.send(json.dumps(hello, ensure_ascii=False))
             async with asyncio.timeout(10):
-                acked = parse_welcome(json.loads(await ws.recv()))
+                welcome = json.loads(await ws.recv())
+                acked = parse_welcome(welcome)
             diag("gateway_connected", acked_seq=acked)
             translator = Translator(self._project_id, self._project_root)
             feed = JournalFeed(self._journal, translator, acked)
+            accepted_diagnostics: set[str] = set()
             tasks = [
                 asyncio.create_task(self._send_events(ws, feed)),
                 asyncio.create_task(self._send_heartbeats(ws)),
-                asyncio.create_task(self._receive(ws)),
+                asyncio.create_task(self._receive(ws, accepted_diagnostics)),
             ]
+            capabilities = welcome.get("capabilities")
+            if isinstance(capabilities, dict) and capabilities.get("harness_diagnostic_v1") is True:
+                tasks.append(asyncio.create_task(self._send_diagnostics(ws, accepted_diagnostics)))
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             finally:
@@ -274,6 +280,26 @@ class GatewayClient:
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._draining.wait(), self._poll_s)
 
+    async def _send_diagnostics(self, ws: ClientConnection, accepted: set[str]) -> None:
+        feed = DiagnosticFeed(self._journal, self._project_id, self._project_root)
+        pending: dict[str, dict[str, JsonValue]] = {}
+        attempts: dict[str, tuple[int, float]] = {}
+        while not self._draining.is_set():
+            for frame in await asyncio.to_thread(feed.poll):
+                pending[str(frame["diagnostic_id"])] = frame
+            now = time.monotonic()
+            for key in tuple(pending):
+                if key in accepted:
+                    pending.pop(key)
+                    attempts.pop(key, None)
+                    continue
+                count, due = attempts.get(key, (0, 0.0))
+                if now >= due:
+                    await ws.send(json.dumps(pending[key], ensure_ascii=False))
+                    attempts[key] = (count + 1, now + min(30.0, self._poll_s * 2 ** min(count, 10)))
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._draining.wait(), self._poll_s)
+
     async def _send_heartbeats(self, ws: ClientConnection) -> None:
         while True:
             beat = await asyncio.to_thread(self._read_heartbeat)
@@ -287,14 +313,21 @@ class GatewayClient:
         except (OSError, ValueError):
             return None  # файла ещё нет или он пишется: следующий heartbeat через период
 
-    async def _receive(self, ws: ClientConnection) -> None:
+    async def _receive(self, ws: ClientConnection, accepted_diagnostics: set[str]) -> None:
         async for raw in ws:
             try:
                 frame = json.loads(raw)
             except ValueError:
                 diag("gateway_bad_frame")
                 continue
-            if not isinstance(frame, dict) or frame.get("type") != "command":
+            if not isinstance(frame, dict):
+                continue
+            if (frame.get("type") == "harness.diagnostic_ack" and frame.get("v") == 1
+                    and frame.get("schema") == SCHEMA and frame.get("status") == "accepted"
+                    and isinstance(frame.get("diagnostic_id"), str)):
+                accepted_diagnostics.add(frame["diagnostic_id"])
+                continue
+            if frame.get("type") != "command":
                 continue
             # Маленький файл в inbox: вызов короткий, а проверка реестра развилок выполняется
             # в потоке цикла событий, где живёт Session.

@@ -47,7 +47,7 @@ WebSocket-клиент runner реализован (`runner/src/ctrunner/gateway
 {"v": 1, "type": "welcome", "acked_seq": 37}
 ```
 
-`acked_seq` и `hello.last_seq` — номера строк журнала runner (`journal_seq`), не `seq` ленты v0 (его присваивает gateway, `events-v0.md` §4). После `welcome` runner заново переводит журнал в события v0 с первой строки и отправляет только строки с `journal_seq > acked_seq`: перевод зависит от предыдущих строк, поэтому читается весь журнал.
+`acked_seq` и `hello.last_seq` — номера строк журнала runner (`journal_seq`), не `seq` ленты v0 (его присваивает gateway, `events-v0.md` §4). После `welcome` runner заново переводит журнал в события v0 с первой строки и отправляет только строки с `journal_seq >= acked_seq` (inclusive replay последней строки: несколько drafts одной строки могут быть доставлены частично): перевод зависит от предыдущих строк, поэтому читается весь журнал.
 
 ### event
 
@@ -60,6 +60,26 @@ WebSocket-клиент runner реализован (`runner/src/ctrunner/gateway
 ```
 
 Событие — публичный контракт `docs/contracts/events-v0.md` (`schema` и `seq` добавляет gateway). Тело вложено в поле `event`, потому что `type` конверта и `type` события иначе совпали бы по имени. Одна строка журнала может дать несколько событий с одним `journal_seq`; дубли после переподключения схлопываются по `event_id`.
+
+### Private harness diagnostics v1 (opt-in, не public events.v0)
+
+Receiver при включённом `runner_harness_diagnostics_enabled` объявляет
+`welcome.capabilities.harness_diagnostic_v1=true`; по умолчанию флаг выключен.
+Sender делает независимый проход retained journal, включая строки ниже public cursor,
+и передаёт `type=harness.diagnostic`, `schema=harness.diagnostic.v1`, `diagnostic_id`,
+`project_id`, `transport_run_id`, `source_event_id`, `source_journal_seq`,
+`payload={session_ref,observed_at,value_usd}`. `value_usd` — canonical decimal-string,
+только оценка session total по харнессу; это не стоимость Run или списание прокси.
+UUID5 session_ref — project-scoped псевдоним, не гарантия анонимности.
+
+`harness.diagnostic_ack` с `status=accepted` означает durable private receipt в transport SQLite,
+не commit проекции в основной БД. Lost ACK вызывает exact replay отдельного ID;
+конфликт canonical body отвергается. ACK не двигает journal/public cursor.
+Исторический source без trusted backend segment binding остаётся unknown. Pending answer
+активируется только после public `user.answer.accepted`; usage в промежутке не связывается.
+Private receipt уже принятого source допустим после terminal, поздний непринятый source — нет.
+Отсутствующая capability (в том числе настоящий старый receiver) оставляет только прежние bytes.
+Rollback sender не меняет legacy events: private envelope имеет независимую identity.
 
 ### heartbeat
 

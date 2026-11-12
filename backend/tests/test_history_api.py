@@ -429,13 +429,14 @@ def test_workspace_error_finalizes_accepted_run(tmp_path, monkeypatch) -> None:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json(run_command("Cannot prepare workspace"))
             accepted = websocket.receive_json()
+            assert websocket.receive_json()["type"] == "run.started"
             failed = websocket.receive_json()
 
         replay = client.get(f"/api/runs/{accepted['run_id']}/events").json()
 
     assert failed["type"] == "run.failed"
     assert failed["error_code"] == "claude_request_failed"
-    assert [event["type"] for event in replay] == ["run.accepted", "run.failed"]
+    assert [event["type"] for event in replay] == ["run.accepted", "run.started", "run.failed"]
 
 
 def test_result_only_answer_is_persisted_and_published(tmp_path, monkeypatch) -> None:
