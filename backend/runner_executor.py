@@ -161,7 +161,8 @@ async def run_via_runner(
             )
         # Diagnostic delivery can lag terminal; admin detail also catches up receipts.
         try:
-            await catch_up(database, run_id, transport.diagnostic_snapshots(run_id))
+            snapshots = await asyncio.to_thread(transport.diagnostic_snapshots, run_id)
+            await catch_up(database, run_id, snapshots)
         except (DBAPIError, sqlite3.Error, ValueError):
             # The durable receipt remains recoverable by detail; diagnostics cannot undo completion.
             logger.warning("Harness diagnostic projection pending", extra={"run_id": run_id})

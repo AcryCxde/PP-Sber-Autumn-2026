@@ -6,7 +6,7 @@ import weakref
 from collections.abc import AsyncIterator
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -22,7 +22,7 @@ from backend.api.product import router as product_router
 from backend.api.projects import router as projects_router
 from backend.artifact_confirmations import reconcile_artifact_confirmations
 from backend.auth import CurrentUser, owns_conversation, owns_run, websocket_user_id
-from backend.ai_access import AiAccessError, AdmissionState, admit_run, policy_transaction
+from backend.ai_access import AiAccessError, AdmissionResult, AdmissionState, admit_run, policy_transaction
 from backend.config import PROJECT_ROOT, Settings
 from backend.container_registry import ContainerRegistry
 from backend.containers import ContainerError, ContainerManager
@@ -375,16 +375,28 @@ async def execute_accepted_run(
     deliver_event: Any,
 ) -> None:
     """Commit the unique admission before any executor or workspace side effect."""
-    try:
-        async with app_state.database.session() as session:
-            admission = await policy_transaction(session, lambda: admit_run(session, acceptance.run_id))
-    except AiAccessError:
-        # Admission failures must not strand accepted background work as pending.
-        async with app_state.database.session() as session:
-            final = await fail_unadmitted_run(session, acceptance.run_id)
-        if final is not None:
-            await deliver_event(final.terminal_event)
-        return
+    committed_admission: AdmissionResult | None = None
+
+    async def owned_admission() -> AdmissionResult:
+        nonlocal committed_admission
+        # Resolve commit ownership before propagating shutdown cancellation. Otherwise
+        # commit may have succeeded while its caller never received AdmissionResult.
+        async with asyncio.timeout(30):
+            async with app_state.database.session() as session:
+                committed_admission = await policy_transaction(session, lambda: admit_run(session, acceptance.run_id))
+                return committed_admission
+
+    OwnedResult = TypeVar("OwnedResult")
+
+    async def await_owned(task: asyncio.Task[OwnedResult]) -> tuple[OwnedResult, bool]:
+        interrupted = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                interrupted = True
+        return task.result(), interrupted
+
     async def store_publication_failure(*, cancelled: bool) -> None:
         # Admission is committed, but no executor has started. Persist an outcome
         # independently of the failing subscriber; replay can deliver it later.
@@ -409,6 +421,32 @@ async def execute_accepted_run(
         finalizing.result()
         if cancelled_again:
             raise asyncio.CancelledError()
+
+    async def fail_pending() -> Any:
+        async with asyncio.timeout(10):
+            async with app_state.database.session() as session:
+                return await fail_unadmitted_run(session, acceptance.run_id)
+
+    admitting = asyncio.create_task(owned_admission())
+    try:
+        admission, interrupted = await await_owned(admitting)
+    except (AiAccessError, TimeoutError):
+        # Session cleanup may time out after commit but before returning the result.
+        # The captured result proves ownership; never infer it from running status.
+        if committed_admission is not None and committed_admission.state == AdmissionState.ADMITTED:
+            await store_publication_failure(cancelled=True)
+            raise
+        # Only unclaimed work belongs to this failed attempt, never another worker.
+        final, interrupted = await await_owned(asyncio.create_task(fail_pending()))
+        if interrupted or asyncio.current_task().cancelling():
+            raise asyncio.CancelledError()
+        if final is not None:
+            await deliver_event(final.terminal_event)
+        return
+    if interrupted:
+        if admission.state == AdmissionState.ADMITTED:
+            await store_publication_failure(cancelled=True)
+        raise asyncio.CancelledError()
 
     try:
         for context_event in admission.context_events:

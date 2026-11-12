@@ -139,7 +139,7 @@ async def test_publication_finalization_failure_is_not_silent(reset_db, monkeypa
 
     monkeypatch.setattr(main, "finalize_run", broken_finalize)
     if failure == "deadline":
-        monkeypatch.setattr(asyncio, "timeout", lambda delay: original_timeout(0.001))
+        monkeypatch.setattr(asyncio, "timeout", lambda delay: original_timeout(0.001 if delay == 10 else delay))
     state = SimpleNamespace(database=database, settings=SimpleNamespace(executor="runner"))
     expected = RuntimeError if failure == "database" else TimeoutError
     with pytest.raises(expected) as caught:
