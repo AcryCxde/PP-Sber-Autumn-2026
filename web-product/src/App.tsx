@@ -327,7 +327,9 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
   function finishTour() {
     try {
       localStorage.setItem(`${KEY}:learned`, "true");
-    } catch {}
+    } catch {
+      /* Remembering tour completion is optional; startProject reports draft storage failures. */
+    }
     startProject();
   }
   function openProject(project: Project) {

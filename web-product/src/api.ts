@@ -120,8 +120,8 @@ export class CtfApi {
     }
   }
   async create(body: Record<string, unknown>, key: string): Promise<string> {
-    const v = (await this.request("projects", body, key)) as any;
-    if (!v || typeof v.id !== "string" || !v.id)
+    const v = await this.request("projects", body, key);
+    if (!v || typeof v !== "object" || !("id" in v) || typeof v.id !== "string" || !v.id)
       throw new Error("Сервис не подтвердил ID проекта");
     return v.id;
   }
@@ -141,12 +141,13 @@ export class CtfApi {
     body.append("clientFileId", fileId);
     body.append("sha256", sha256);
     beforeRequest?.(); // Hashing awaits above; re-check account draft immediately before sending bytes.
-    const v = (await this.request(
+    const v = await this.request(
       `projects/${encodeURIComponent(projectId)}/files`,
       body,
       fileId,
-    )) as any;
-    if (!v || typeof v.id !== "string" || !v.id || v.sha256 !== sha256)
+    );
+    if (!v || typeof v !== "object" || !("id" in v) || typeof v.id !== "string" || !v.id ||
+      !("sha256" in v) || v.sha256 !== sha256)
       throw new Error("Сервис не подтвердил содержимое файла");
     return v.id;
   }

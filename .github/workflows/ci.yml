@@ -15,58 +15,214 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  python:
+  classify:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Install CI contract dependencies
+        run: python -m pip install -r tools/cicd/requirements.txt
+      - name: Test CI contracts
+        run: python -m pytest -c tools/cicd/pytest.ini tools/cicd/tests -q
+      - name: Classify changed paths
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: python -m tools.cicd.classify
+
+  gate:
+    if: ${{ always() }}
+    needs: [classify, build, python, frontend, web-product, compose, schema-postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: "3.12"
-      - name: Install Python dependencies
+      - name: Check required results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python -m tools.cicd.gate
+
+  build:
+    needs: classify
+    if: needs.classify.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    # Cold dependency downloads took 36 minutes for runner alone locally.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Build final images and preserve build stages
+        run: bash tools/cicd/check-images.sh build images
+      - name: Smoke exact final image IDs without external services
+        run: bash tools/cicd/check-images.sh smoke images
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: checked-images
+          path: |
+            images/backend.tar
+            images/backend.image-id
+            images/frontend.tar
+            images/frontend.image-id
+            images/runner.tar
+            images/runner.image-id
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: frontend-checks
+          path: |
+            images/frontend-checks.tar
+            images/frontend-checks.image-id
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: product-checks
+          path: |
+            images/product-checks.tar
+            images/product-checks.image-id
+          if-no-files-found: error
+          retention-days: 7
+
+  schema-postgres:
+    needs: classify
+    if: needs.classify.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SCHEMA_PG16_TESTS: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Install isolated schema test dependencies
+        run: python -m pip install -r tools/cicd/requirements.txt '.[test]'
+      - name: Cache the pinned disposable PostgreSQL fixture image
+        run: docker pull postgres@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+      - name: Test schema contracts against owned PostgreSQL servers
+        run: >-
+          python -m pytest -c tools/cicd/pytest.ini tools/cicd/tests -q
+          -o asyncio_default_fixture_loop_scope=function
+
+  python:
+    needs: [classify, build]
+    if: needs.classify.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Install source test dependencies in isolated environment
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install ".[test]" "./runner"
-      - name: Test backend
-        run: python -m pytest backend/tests -q
-      - name: Test runner
-        run: python -m pytest runner/tests -q
+          python -m venv .ci-tests
+          .ci-tests/bin/python -m pip install ".[test]" "./runner" ruff==0.17.4
+      - name: Lint backend
+        run: .ci-tests/bin/ruff check backend --select E4,E7,E9,F
+      - name: Lint runner with strict project configuration
+        working-directory: runner
+        run: ../.ci-tests/bin/ruff check src tests evals
+      - name: Test backend sources separately from production image
+        run: .ci-tests/bin/python -m pytest backend/tests -q
+      - name: Test installed runner from runner project directory
+        working-directory: runner
+        run: ../.ci-tests/bin/python -m pytest tests -q
 
   frontend:
+    needs: [classify, build]
+    if: needs.classify.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          node-version: "20.19.x"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Install frontend dependencies
-        run: npm --prefix frontend ci
-      - name: Test frontend
-        run: npm --prefix frontend test
-      - name: Build frontend
-        run: npm --prefix frontend run build
+          name: frontend-checks
+          path: images
+      - name: Test and lint saved frontend build stage
+        run: |
+          docker image load --input images/frontend-checks.tar
+          bash tools/cicd/check-images.sh checks images frontend-checks
 
   web-product:
+    needs: [classify, build]
+    if: needs.classify.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          node-version: "22.x"
-      - name: Install pinned pnpm
-        run: npm install --global pnpm@10.11.0
-      - name: Install web-product dependencies
-        run: pnpm --dir web-product install --frozen-lockfile
-      - name: Test web-product
-        run: pnpm --dir web-product test
-      - name: Typecheck web-product
-        run: pnpm --dir web-product typecheck
-      - name: Build web-product
-        run: pnpm --dir web-product build
+          name: product-checks
+          path: images
+      - name: Test, typecheck and lint saved product build stage
+        run: |
+          docker image load --input images/product-checks.tar
+          bash tools/cicd/check-images.sh checks images product-checks
+
+  publish:
+    needs: [classify, build, python, frontend, web-product, compose, schema-postgres, gate]
+    if: >-
+      ${{ success() && github.event_name == 'push' &&
+          github.ref == 'refs/heads/master' &&
+          needs.classify.outputs.docs_only == 'false' &&
+          vars.CICD_PUBLISH_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      # No token/run-id/repository override: download only from this workflow run.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: checked-images
+          path: images
+      - name: Publish and verify exact tested images
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          CICD_PUBLISH_ENABLED: ${{ vars.CICD_PUBLISH_ENABLED }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          trap 'rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          unset GHCR_TOKEN
+          python -m tools.cicd.release
+      - name: Upload complete verified release only
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release.json
+          if-no-files-found: error
+          retention-days: 7
 
   compose:
+    needs: [classify, build]
+    if: needs.classify.outputs.docs_only != 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Render Compose configuration

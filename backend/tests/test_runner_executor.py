@@ -276,14 +276,28 @@ def test_immediate_save_ignores_unrelated_confirmation_conflict(tmp_path, monkey
         ]
 
     app = make_runner_app(tmp_path, docker)
-    async def reconcile_with_unrelated_conflict(database, transport, settings):
+    reconcile_current = main_module.reconcile_artifact_confirmations
+    immediate_results = []
+
+    async def no_background_reconciliation(database, transport, settings):
         return ReconciliationResult(
-            claimed=1,
-            confirmed=0,
-            conflicted=1,
-            rescheduled=0,
-            conflicted_confirmation_ids=frozenset({"unrelated-confirmation"}),
-            terminal_events=(),
+            claimed=0, confirmed=0, conflicted=0, rescheduled=0,
+            conflicted_confirmation_ids=frozenset(), terminal_events=(),
+        )
+
+    # This scenario owns immediate delivery; a background pass must not rescue it.
+    monkeypatch.setattr(main_module, "reconcile_artifact_confirmations", no_background_reconciliation)
+
+    async def reconcile_with_unrelated_conflict(database, transport, settings):
+        current = await reconcile_current(database, transport, settings)
+        immediate_results.append(current)
+        return ReconciliationResult(
+            claimed=current.claimed + 1,
+            confirmed=current.confirmed,
+            conflicted=current.conflicted + 1,
+            rescheduled=current.rescheduled,
+            conflicted_confirmation_ids=current.conflicted_confirmation_ids | {"unrelated-confirmation"},
+            terminal_events=current.terminal_events,
         )
 
     monkeypatch.setattr(
@@ -302,6 +316,9 @@ def test_immediate_save_ignores_unrelated_confirmation_conflict(tmp_path, monkey
             runner.halt.set()
 
     assert events[-1]["type"] == "run.completed"
+    assert len(immediate_results) == 1
+    assert immediate_results[0].confirmed == 1
+    assert immediate_results[0].conflicted == 0
 
 
 def test_runner_startup_reconciles_before_orphaning_awaiting_storage(tmp_path, monkeypatch):

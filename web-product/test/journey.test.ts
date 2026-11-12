@@ -13,6 +13,7 @@ import {
   csv,
   exportStudy,
   summary,
+  type Fields,
 } from "../src/journey.ts";
 function fixture() {
   const values = new Map<string, string>();
@@ -73,11 +74,34 @@ test("opt-in, fixed pseudonyms; baseline excludes product events and arbitrary t
   );
   assert(r.start(input()));
   assert.equal(r.record("request_started", { projectId: "p1" }), false);
-  r.record("help_observed", { text: "SECRET CONTENT" } as any, undefined, true);
+  const extraFields: Fields & { text: string } = { text: "SECRET CONTENT" };
+  r.record("help_observed", extraFields, undefined, true);
   assert(
     !JSON.stringify(exportStudy(r.getSnapshot().sessions)).includes("SECRET"),
   );
   assert.equal(summary(r.active()!).help_requests_n, 1);
+});
+test("malformed stored session, interval and event boundaries stop without overwriting storage", () => {
+  const source = fixture(), recorder = source.create();
+  recorder.start(input("prototype"));
+  recorder.record("request_started", { requestId: "r1" });
+  source.advance(1);
+  recorder.finish("completed", {});
+  const session = recorder.getSnapshot().sessions[0];
+  const malformed: unknown[] = [null, 1, {},
+    { ...session, consent: null }, { ...session, phase: "unknown" },
+    { ...session, segments: [null] }, { ...session, segments: [{ mode: "unknown", from: session.startedAt, to: session.cursor }] },
+    { ...session, events: [null] }, { ...session, events: [{ ...session.events[0], name: "unknown" }] },
+  ];
+  for (const value of malformed) {
+    const f = fixture();
+    const raw = JSON.stringify({ version: 1, sessions: [value] });
+    f.values.set(JOURNEY_KEY, raw);
+    const recovered = f.create();
+    assert(recovered.getSnapshot().issue);
+    assert.equal(recovered.checkpoint(), false);
+    assert.equal(f.storage.getItem(JOURNEY_KEY), raw);
+  }
 });
 test("separate active/wait/pause and first saved boundaries; missing is null not zero", () => {
   const f = fixture(),
@@ -186,11 +210,12 @@ test("export strips unknown fields; CSV has blank unavailable values and observe
   const f = fixture(),
     r = f.create();
   r.start(input("interface"));
-  r.record("request_started", {
+  const extraFields: Fields & { prompt: string } = {
     requestId: "req1",
     durationMs: -1,
     prompt: "SECRET PROMPT",
-  } as any);
+  };
+  r.record("request_started", extraFields);
   const sessions = r
     .getSnapshot()
     .sessions.map((s) => ({ ...s, task_text: "SECRET TASK" }));
@@ -271,7 +296,7 @@ test("old journal remains compatible; interrupted steps stay unfinished; free te
   r.finish("incomplete", {});
   const data = r.getSnapshot().sessions;
   assert.equal(data[0].baselineSteps![0].outcome, "unfinished");
-  (data[0].baselineSteps![0] as any).prompt = "SECRET";
+  Object.assign(data[0].baselineSteps![0], { prompt: "SECRET" });
   assert(!JSON.stringify(exportStudy(data)).includes("SECRET"));
   assert.equal(
     exportStudy(data.map((s) => ({ ...s, baselineSteps: undefined })))

@@ -3,7 +3,6 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.history import SessionDependency
