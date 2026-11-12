@@ -789,7 +789,7 @@ function App({ user, onLogout }: AppProps) {
       <aside className="sidebar">
         <div className="sidebar-header">
           <div>
-            <a className="eyebrow back-to-projects" href="#home">← CoreTeams</a>
+            <a className="eyebrow back-to-projects" href="/product/">← CoreTeams</a>
             <h1>Свободный диалог</h1>
           </div>
           <button className="new-chat-button" type="button" onClick={startNewConversation} disabled={isRunning || isReplaying} title="Новый диалог">+</button>

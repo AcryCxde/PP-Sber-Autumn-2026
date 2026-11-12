@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { User } from "./auth.tsx";
+import { BrandMark } from "./BrandMark.tsx";
 
 /** Engagement panel for the admin role: /api/admin (backend/api/admin.py). */
 type Totals = {
@@ -288,7 +289,8 @@ export function AdminPanel({ user, onLogout }: { user: User; onLogout: () => voi
     <div className="app admin-app">
       <header className="topbar">
         <a className="brand" href="/">
-          <span aria-hidden>C</span>CoreTeams
+          <BrandMark />
+          <span>coreteams</span>
         </a>
         <span className="top-caption">Администрирование</span>
         <nav aria-label="Основная навигация">

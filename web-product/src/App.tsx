@@ -32,6 +32,7 @@ import { JourneyPanel } from "./JourneyPanel.tsx";
 import { JourneyRecorder, accountJourneyKey, type EventName, type Fields } from "./journey.ts";
 import type { User } from "./auth.tsx";
 import { LegacyProjects } from "./LegacyProjects.tsx";
+import { BrandMark } from "./BrandMark.tsx";
 
 // By default the same-origin CoreTeams backend serves contract V2 at /api/v2; the session
 // cookie comes from signing in to the main interface.
@@ -752,20 +753,75 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
       });
     }
   }, [view, p?.id, sample, sideTab, a?.id]);
+  const onboarding = view === "onboard" && p && !sample;
+  const inProject = Boolean(p) && !sample && (view === "onboard" || view === "workspace");
+  const prepLocked = Boolean(p?.run || p?.pending);
+  const answeredCount = p ? p.answers.findIndex((x) => !x.trim()) : 0;
+  // Questions open one at a time; an already answered later question stays visible.
+  const lastAnswered = p
+    ? p.answers.reduce((last, x, i) => (x.trim() ? i : last), -1)
+    : -1;
+  const visibleQuestions = !p
+    ? 0
+    : answeredCount === -1
+      ? QUESTIONS.length
+      : Math.max(answeredCount, lastAnswered) + 1;
+  const statusLine = sample
+    ? "Учебный пример · CTF не запускался"
+    : run
+      ? labels[run.status]
+      : p?.step === 4
+        ? "Работа ещё не запущена"
+        : "Черновик в этом браузере";
+  const nextStep = !p
+    ? ""
+    : p.step === 0
+      ? "Назовите проект и опишите задачу"
+      : p.step === 1
+        ? answeredCount === -1
+          ? "Посмотреть и выбрать команду"
+          : "Ответьте на вопрос фасилитатора"
+        : p.step === 2
+          ? "Проверьте состав команды"
+          : "Согласуйте этапы и результаты";
+  function goToStep(i: number) {
+    if (!p || block) return;
+    if (i === 4) {
+      setView("workspace");
+      setStageId(run?.stageId || p.stages[0].id);
+      setSideTab("artifacts");
+      return;
+    }
+    if (view === "workspace") track("workspace_left", { runId: run?.id });
+    patch({ step: i });
+    setView("onboard");
+  }
   function team() {
     return (
       <>
-        <div className="role-card">
-          <strong>Фасилитатор</strong>
-          <p>Связывает работу ролей и обсуждает с вами вопросы и результаты.</p>
+        <div className="team-list">
+          <article className="team-role-row fixed">
+            <span className="team-role-number" aria-hidden>
+              ✳
+            </span>
+            <div>
+              <strong>Фасилитатор</strong>
+              <p>Связывает работу ролей и обсуждает с вами вопросы и результаты.</p>
+            </div>
+          </article>
+          {ROLES.filter((r) => p?.team.includes(r.id)).map((r, i) => (
+            <article className="team-role-row" key={r.id}>
+              <span className="team-role-number" aria-hidden>
+                {String(i + 1).padStart(2, "0")}
+              </span>
+              <div>
+                <strong>{r.name}</strong>
+                <p>{r.purpose}</p>
+                <small>Результат: {r.output}</small>
+              </div>
+            </article>
+          ))}
         </div>
-        {ROLES.filter((r) => p?.team.includes(r.id)).map((r) => (
-          <div className="role-card" key={r.id}>
-            <strong>{r.name}</strong>
-            <p>{r.purpose}</p>
-            <small>Результат: {r.output}</small>
-          </div>
-        ))}
         {p?.teamNote ? (
           <p className="note">Ваше уточнение: {p.teamNote}</p>
         ) : null}
@@ -774,15 +830,33 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
             ? "Состав учебного примера. CTF не запускался."
             : "Выбранные AI-роли — часть согласуемого плана. Их доступность и назначение должен подтвердить backend."}
         </p>
-        {!sample ? <div className="role-evidence">
-          <h3>Исполнение по событиям сервиса</h3>
-          {p && projectRuns(p).some(r => r.roleEvents?.length) ? <ul>
-            {projectRuns(p).flatMap(r => (r.roleEvents || []).map(e => <li key={`${r.id}:${e.id}`}>
-              {ROLES.find(role => role.id === e.roleId)?.name || e.roleId}: {e.type === "role.started" ? "работа начата" : e.type === "role.completed" ? "работа завершена" : "сообщена ошибка"}
-              <small> · {new Date(e.at).toLocaleString("ru")}</small>
-            </li>))}
-          </ul> : <p className="muted">Подтверждённых событий ролей пока нет. Выбор команды и названия ролей в запросе не доказывают их исполнение.</p>}
-        </div> : null}
+        {!sample ? (
+          <div className="role-evidence">
+            <h3>Исполнение по событиям сервиса</h3>
+            {p && projectRuns(p).some((r) => r.roleEvents?.length) ? (
+              <ul>
+                {projectRuns(p).flatMap((r) =>
+                  (r.roleEvents || []).map((e) => (
+                    <li key={`${r.id}:${e.id}`}>
+                      {ROLES.find((role) => role.id === e.roleId)?.name || e.roleId}:{" "}
+                      {e.type === "role.started"
+                        ? "работа начата"
+                        : e.type === "role.completed"
+                          ? "работа завершена"
+                          : "сообщена ошибка"}
+                      <small> · {new Date(e.at).toLocaleString("ru")}</small>
+                    </li>
+                  )),
+                )}
+              </ul>
+            ) : (
+              <p className="muted">
+                Подтверждённых событий ролей пока нет. Выбор команды и названия
+                ролей в запросе не доказывают их исполнение.
+              </p>
+            )}
+          </div>
+        ) : null}
       </>
     );
   }
@@ -792,7 +866,9 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
         {p?.files.map((f) => (
           <li key={f.id}>
             <button className="file-link" onClick={() => inspectFile(f.id)}>
-              <span aria-hidden>▤</span>
+              <span className="file-icon" aria-hidden>
+                ▤
+              </span>
               <span>
                 {f.name}
                 <small>
@@ -818,1202 +894,1363 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
       </ul>
     );
   }
+  function stageNav() {
+    if (!p) return null;
+    return (
+      <nav className="nav-list" aria-label="Этапы работы">
+        {p.stages.map((s, i) => {
+          const result = latest(artifacts, s.id);
+          const ids = new Set(
+            artifacts.filter((a) => a.stageId === s.id).map((a) => a.documentId),
+          );
+          const phaseApproved =
+            ids.size > 0 &&
+            [...ids].every((id) => {
+              const version = artifacts
+                .filter((a) => a.stageId === s.id && a.documentId === id)
+                .sort((a, b) => b.version - a.version)[0];
+              return version && (sample ? version.approved : approved(p, version));
+            });
+          const active = selectedStage?.id === s.id;
+          return (
+            <button
+              key={s.id}
+              className={`nav-button stage-nav${active ? " active" : ""}${phaseApproved ? " done" : ""}`}
+              onClick={() => {
+                setStageId(s.id);
+                setDocumentId("");
+                setArtifactId("");
+                setSideTab("artifacts");
+              }}
+              aria-current={active ? "step" : undefined}
+            >
+              <span className="nav-num">
+                {phaseApproved ? "✓" : i + 1}
+              </span>
+              <span className="nav-text">
+                <strong>{s.title}</strong>
+                <small>
+                  {result
+                    ? phaseApproved
+                      ? "Последние версии согласованы"
+                      : `Артефактов: ${ids.size}`
+                    : run?.stageId === s.id
+                      ? labels[run.status]
+                      : "Планируется"}
+                </small>
+              </span>
+            </button>
+          );
+        })}
+      </nav>
+    );
+  }
   return (
-    <div className={view === "workspace" ? "app workspace-app" : "app"}>
+    <>
       <a className="skip" href="#main">
         Перейти к содержимому
       </a>
-      <header className="topbar">
-        <button className="brand" onClick={home} disabled={busy}>
-          <span aria-hidden>C</span>CoreTeams
-        </button>
-        <span className="top-caption">Рабочее пространство с AI-командой</span>
-        <nav aria-label="Основная навигация">
+      <div className={`shell${view === "workspace" ? " workspace-app" : ""}`}>
+        <aside className="sidebar" aria-label="Навигация по проекту">
+          <button className="brand" onClick={home} disabled={busy}>
+            <BrandMark />
+            <span>coreteams</span>
+          </button>
           <button
-            className="text-btn"
-            onClick={() => {
-              setTourStep(0);
-              setView("tour");
-            }}
+            className={`projects-link${view === "home" ? " active" : ""}`}
+            onClick={home}
             disabled={busy}
           >
-            Как это работает
+            Мои проекты <span>{projects.length}</span>
           </button>
-          <button className="text-btn" onClick={home} disabled={busy}>
-            Мои проекты
-          </button>
-          <a className="text-btn" href="/chat/">
-            Свободный чат
-          </a>
-          {user.role === "admin" ? (
-            <a className="text-btn" href="#admin">
-              Админка
-            </a>
-          ) : null}
-        </nav>
-        <span className="account">
-          <span title={user.email}>{user.email}</span>
-          <button className="text-btn" onClick={onLogout} disabled={busy}>
-            Выйти
-          </button>
-        </span>
-        {sample || !api.available ? (
-          <span className="service-status">
-            {sample ? "Учебный пример" : "CTF не подключён"}
-          </span>
-        ) : null}
-      </header>
-      <JourneyPanel
-        recorder={study}
-        configured={api.available}
-        projectId={p?.id}
-        hasRun={Boolean(run)}
-        sample={sample}
-        savedArtifact={
-          !sample &&
-          a?.saved &&
-          run &&
-          view === "workspace" &&
-          sideTab === "artifacts"
-            ? { artifactId: a.id, runId: artifactRunId(p!, a.id)! }
-            : undefined
-        }
-      />
-      {issue ? (
-        <div role="alert" className="banner error">
-          {issue}
-        </div>
-      ) : null}
-      {error ? (
-        <div role="alert" className="banner error">
-          {error}
-        </div>
-      ) : null}
-      {notice ? (
-        <div role="status" className="banner notice">
-          {notice}
-        </div>
-      ) : null}
-      <main id="main">
-        {view === "home" ? (
-          <div className="home-page">
-            <section className="hero">
-              <div>
-                <p className="eyebrow">ВАША ЗАДАЧА. НУЖНАЯ КОМАНДА.</p>
-                <h1>
-                  Когда одной
-                  <br />
-                  экспертизы мало
-                </h1>
-                <p className="identity">{IDENTITY}</p>
-                <p className="lead">
-                  Принесите вводные. Обсудите вопросы с фасилитатором. Выберите
-                  команду и план. Проверяйте результаты по этапам и
-                  возвращайтесь к версиям.
-                </p>
-                <div className="actions">
-                  <button
-                    className="primary"
-                    onClick={() => {
-                      setTourStep(0);
-                      setView("tour");
-                    }}
-                  >
-                    Посмотреть пример пути <span aria-hidden>↗</span>
-                  </button>
-                  <button
-                    className="secondary"
-                    disabled={block}
-                    onClick={begin}
-                  >
-                    Начать свою задачу
-                  </button>
-                </div>
-                <p className="muted">
-                  {api.available
-                    ? "Подготовьте проект и запустите AI-команду. Пример можно изучить без запуска."
-                    : "Сейчас можно подготовить проект и изучить пример. Реальное исполнение появится после интеграции CTF."}
-                </p>
-              </div>
-              <div className="hero-example">
-                <p className="eyebrow">ПРИМЕР, НЕ ЗАПУСК CTF</p>
-                <h2>
-                  Проверить идею
-                  <br />
-                  до первых вложений
-                </h2>
-                <ol>
-                  <li>
-                    <span>01</span>
-                    <div>
-                      <strong>Контекст</strong>
-                      <p>Что известно и что пока нельзя менять</p>
-                    </div>
-                  </li>
-                  <li>
-                    <span>02</span>
-                    <div>
-                      <strong>AI-команда и план</strong>
-                      <p>Исследование, сравнение и проверка рисков</p>
-                    </div>
-                  </li>
-                  <li>
-                    <span>03</span>
-                    <div>
-                      <strong>Артефакты по этапам</strong>
-                      <p>Выводы, версии и ваш следующий шаг</p>
-                    </div>
-                  </li>
-                </ol>
-              </div>
-            </section>
-            <section className="capabilities">
-              <h2>С чем можно начать</h2>
-              <div>
-                <article>
-                  <span>01 / РЕШЕНИЕ</span>
-                  <h3>Разобраться в незнакомой области</h3>
-                  <p>
-                    Собрать основания, сравнить варианты, обозначить
-                    неизвестное.
-                  </p>
-                </article>
-                <article>
-                  <span>02 / МАТЕРИАЛЫ</span>
-                  <h3>Подготовить документ или план</h3>
-                  <p>Приложить вводные и согласовать ожидаемый результат.</p>
-                </article>
-                <article>
-                  <span>03 / ПРОВЕРКА</span>
-                  <h3>Посмотреть на задачу с разных сторон</h3>
-                  <p>Обсудить состав AI-команды и проверить допущения.</p>
-                </article>
-              </div>
-            </section>
-            <section className="projects-section">
-              <div className="section-heading">
-                <h2>Мои проекты</h2>
-                <button className="text-btn" disabled={block} onClick={begin}>
-                  + Новый проект
-                </button>
-              </div>
-              {projects.length ? (
-                <div className="project-cards">
-                  {projects.map((x) => (
+          {inProject && p ? (
+            <div className="sidebar-group">
+              <p className="sidebar-caption">Подготовка проекта</p>
+              <nav className="nav-list" aria-label="Подготовка проекта">
+                {NAV_STEPS.map((name, i) => {
+                  const current =
+                    i === 4 ? view === "workspace" : view === "onboard" && p.step === i;
+                  const enabled =
+                    i === 4 ? p.step === 4 : !prepLocked && i <= p.step;
+                  return (
                     <button
-                      key={x.id}
-                      className="project-card"
-                      onClick={() => openProject(x)}
+                      key={name}
+                      className={`nav-button${current ? " active" : ""}${i < p.step && !current ? " done" : ""}`}
+                      disabled={block || !enabled}
+                      aria-current={current ? "step" : undefined}
+                      onClick={() => goToStep(i)}
                     >
-                      <span className="eyebrow">
-                        {x.run
-                          ? labels[x.run.status]
-                          : x.step === 4
-                            ? "План подготовлен"
-                            : "Черновик вводных"}
+                      <span className="nav-num">
+                        {i < p.step && !current ? "✓" : i + 1}
                       </span>
-                      <strong>{x.title || "Новый проект"}</strong>
-                      <small>
-                        {x.files.length} файлов · {x.stages.length} этапов ·{" "}
-                        {new Date(x.updatedAt).toLocaleDateString("ru")}
-                      </small>
+                      <span className="nav-text">{name}</span>
                     </button>
-                  ))}
-                </div>
-              ) : (
-                <p className="empty">
-                  Начните с примера пути, затем создайте свой проект. Черновики
-                  и файлы пока хранятся на этом устройстве.
-                </p>
-              )}
-            </section>
-            <LegacyProjects />
-          </div>
-        ) : null}
-        {view === "tour" ? (
-          <section className="tour-page">
-            <p className="eyebrow">
-              СНАЧАЛА ПРИМЕР · {tourStep + 1} ИЗ {TOUR.length}
-            </p>
-            <h1>Как работает CoreTeams</h1>
-            <p className="lead">
-              Разберём путь на идее кофейни. Здесь нет реальных пользовательских
-              данных или результатов CTF.
-            </p>
-            <nav className="tour-steps" aria-label="Шаги примера">
-              {TOUR.map((s, i) => (
-                <button
-                  key={s.title}
-                  onClick={() => setTourStep(i)}
-                  className={tourStep === i ? "active" : ""}
-                  aria-current={tourStep === i ? "step" : undefined}
-                >
-                  {String(i + 1).padStart(2, "0")}
-                  <span>
-                    {["Задача", "Вопросы", "Команда", "План", "Результаты"][i]}
-                  </span>
-                </button>
-              ))}
-            </nav>
-            <div className="tour-content">
-              <span className="tour-number">
-                {String(tourStep + 1).padStart(2, "0")}
-              </span>
-              <div>
-                <h2>{TOUR[tourStep].title}</h2>
-                <p>{TOUR[tourStep].body}</p>
-                <p className="note">{TOUR[tourStep].detail}</p>
-              </div>
-            </div>
-            <div className="actions">
-              {tourStep > 0 ? (
-                <button
-                  className="secondary"
-                  onClick={() => setTourStep(tourStep - 1)}
-                >
-                  Назад
-                </button>
-              ) : null}
-              {tourStep < 4 ? (
-                <button
-                  className="primary"
-                  onClick={() => setTourStep(tourStep + 1)}
-                >
-                  Дальше
-                </button>
-              ) : (
-                <>
-                  <button
-                    className="primary"
-                    onClick={() => {
-                      setSample(true);
-                      setView("workspace");
-                      setStageId("options");
-                      setArtifactId("");
-                      setSideTab("artifacts");
-                      setError("");
-                    }}
-                  >
-                    Открыть рабочее пространство примера
-                  </button>
-                  <button
-                    className="secondary"
-                    disabled={block}
-                    onClick={finishTour}
-                  >
-                    Начать свой проект
-                  </button>
-                </>
-              )}
-            </div>
-          </section>
-        ) : null}
-        {view === "onboard" && p ? (
-          <section className="onboarding">
-            <div className="onboarding-heading">
-              <p className="eyebrow">ГОТОВИМ ВАШ ПРОЕКТ</p>
-              <h1>
-                {p.step === 0
-                  ? "Что вы хотите сделать?"
-                  : p.step === 1
-                    ? "Уточним задачу вместе"
-                    : p.step === 2
-                      ? "Выберите команду вокруг задачи"
-                      : "Согласуйте путь к результату"}
-              </h1>
-              <nav className="wizard-steps" aria-label="Подготовка проекта">
-                {STEP_NAMES.map((name, i) => (
-                  <button
-                    key={name}
-                    disabled={i > p.step || block}
-                    aria-current={p.step === i ? "step" : undefined}
-                    onClick={() => patch({ step: i })}
-                  >
-                    {i + 1}
-                    <span>{name}</span>
-                  </button>
-                ))}
+                  );
+                })}
               </nav>
             </div>
-            <div className="onboarding-grid">
-              <div className="form-panel">
-                {p.step === 0 ? (
-                  <>
-                    <label>
-                      Название проекта
-                      <input
-                        name="project-title"
-                        autoComplete="off"
-                        value={p.title}
-                        onChange={(e) => patch({ title: e.target.value })}
-                        disabled={block}
-                        placeholder="Например, проверить идею нового сервиса"
-                      />
-                    </label>
-                    <label>
-                      Какую задачу нужно решить?
-                      <textarea
-                        name="project-goal"
-                        autoComplete="off"
-                        rows={4}
-                        value={p.goal}
-                        onChange={(e) => patch({ goal: e.target.value })}
-                        disabled={block}
-                        placeholder="Что хочется понять или получить?"
-                      />
-                    </label>
-                    <label>
-                      Направление
-                      <select
-                        name="scenario"
-                        value={p.scenario}
-                        onChange={(e) => patch({ scenario: e.target.value })}
-                        disabled={block}
-                      >
-                        <option value="other">
-                          Другая задача / пока не знаю
-                        </option>
-                        <option value="business">Бизнес и новая идея</option>
-                        <option value="course">Обучение и курс</option>
-                        <option value="book">Книга и материалы</option>
-                      </select>
-                    </label>
-                    <label>
-                      Контекст, факты и ссылки
-                      <textarea
-                        name="context"
-                        autoComplete="off"
-                        rows={5}
-                        value={p.context}
-                        onChange={(e) => patch({ context: e.target.value })}
-                        disabled={block}
-                        placeholder="Аудитория, ограничения, известные источники, что нельзя менять…"
-                      />
-                    </label>
-                    <div className="section-heading">
-                      <h2>Вводные файлы</h2>
-                      <label className="upload-label">
-                        + Добавить файлы
-                        <input
-                          name="input-files"
-                          type="file"
-                          multiple
-                          aria-label="Добавить вводные файлы"
-                          onChange={(e) => {
-                            void upload(e.target.files);
-                            e.target.value = "";
-                          }}
-                          disabled={block}
-                        />
-                      </label>
-                    </div>
-                    {fileList()}
-                    <p className="muted">
-                      Храним полное содержимое файлов локально, не только
-                      названия. Передача сервису начнётся после явного запуска.
-                      Не добавляйте секреты и персональные данные.
-                    </p>
-                    <button
-                      className="primary"
-                      disabled={block || !p.title.trim() || !p.goal.trim()}
-                      onClick={() => patch({ step: 1 })}
-                    >
-                      К вопросам фасилитатора
-                    </button>
-                  </>
-                ) : null}
-                {p.step === 1 ? (
-                  <>
-                    <p className="note">
-                      {api.available
-                        ? "Это вопросы для подготовки: ответы уйдут команде вместе с задачей. Во время работы фасилитатор может задать дополнительные вопросы."
-                        : "Пока CTF не подключён, это вопросы для подготовки. Ваши ответы сохраняются в контексте; во время реального запуска фасилитатор сможет задавать дополнительные вопросы."}
-                    </p>
-                    {QUESTIONS.map((q, i) => (
-                      <label key={q}>
-                        {q}
-                        <textarea
-                          name={`preparation-${i}`}
-                          autoComplete="off"
-                          rows={3}
-                          value={p.answers[i]}
-                          onChange={(e) =>
-                            patch({
-                              answers: p.answers.map((s, n) =>
-                                n === i ? e.target.value : s,
-                              ),
-                            })
-                          }
-                          disabled={block}
-                          placeholder="Свой ответ или «пока не знаю»"
-                        />
-                      </label>
+          ) : null}
+          {view === "workspace" && p ? (
+            <div className="sidebar-group">
+              <p className="sidebar-caption">Этапы работы</p>
+              {stageNav()}
+            </div>
+          ) : null}
+          {view === "workspace" && p ? (
+            <div className="sidebar-extra">
+              {run ? (
+                <details className="run-history">
+                  <summary>История запусков · {projectRuns(p).length}</summary>
+                  <ol>
+                    {projectRuns(p).map((attempt, i) => (
+                      <li key={attempt.id}>
+                        <strong>
+                          Запуск {i + 1}
+                          {attempt.id === run.id ? " · текущий" : ""}
+                        </strong>
+                        <small>{labels[attempt.status]}</small>
+                        <code>{attempt.id}</code>
+                        {attempt.sourceArtifactId ? (
+                          <small>Доработка версии: {attempt.sourceArtifactId}</small>
+                        ) : null}
+                      </li>
                     ))}
-                    <button
-                      className="primary"
-                      disabled={block || p.answers.some((a) => !a.trim())}
-                      onClick={() => patch({ step: 2 })}
-                    >
-                      Посмотреть и выбрать команду
-                    </button>
-                  </>
-                ) : null}
-                {p.step === 2 ? (
-                  <>
+                  </ol>
+                  <p className="muted">
+                    Диалог и версии всех запусков остаются в этом проекте.
+                    Техническое завершение не означает ваше одобрение.
+                  </p>
+                </details>
+              ) : null}
+              <p className="sidebar-caption">Материалы</p>
+              {p.files.length ? (
+                fileList()
+              ) : (
+                <p className="muted">
+                  {sample
+                    ? "В примере используются только текстовые вводные."
+                    : "Вводные файлы не добавлены"}
+                </p>
+              )}
+              <details>
+                <summary>Контекст задачи</summary>
+                <p className="context-text">{p.goal}</p>
+                <p className="context-text">
+                  {p.context || "Дополнительный контекст не указан"}
+                </p>
+              </details>
+            </div>
+          ) : null}
+          <div className="sidebar-bottom">
+            <div className="draft-note">
+              <strong>
+                {sample
+                  ? "Учебные данные"
+                  : p && view !== "home" && view !== "tour"
+                    ? `${p.files.length} файлов · ${bytes(p.files.reduce((n, f) => n + f.size, 0))}`
+                    : "Черновики на этом устройстве"}
+              </strong>
+              {sample
+                ? "Не пользовательский результат."
+                : "Черновики и файлы хранятся в этом браузере. Сохранение на сервере подтверждается отдельно."}
+            </div>
+            <div className="account">
+              <span title={user.email}>{user.email}</span>
+              <button className="text-btn" onClick={onLogout} disabled={busy}>
+                Выйти
+              </button>
+            </div>
+          </div>
+        </aside>
+        <div className="main-shell">
+          <header className="topbar">
+            <div className="topbar-left">
+              <span className="project-label">
+                {view === "home"
+                  ? "Мои проекты"
+                  : view === "tour"
+                    ? "Как работает CoreTeams"
+                    : p?.title || "Новый проект"}
+              </span>
+              {view === "onboard" || view === "workspace" ? (
+                <>
+                  <span className="topbar-dot" aria-hidden />
+                  <span className="topbar-sub">{statusLine}</span>
+                </>
+              ) : null}
+            </div>
+            <nav className="topbar-actions" aria-label="Основная навигация">
+              <button
+                className="text-btn"
+                onClick={() => {
+                  setTourStep(0);
+                  setView("tour");
+                }}
+                disabled={busy}
+              >
+                Как это работает
+              </button>
+              <a className="text-btn" href="/chat/">
+                Свободный чат
+              </a>
+              {user.role === "admin" ? (
+                <a className="text-btn" href="#admin">
+                  Админка
+                </a>
+              ) : null}
+              {sample || !api.available ? (
+                <span className="service-status">
+                  {sample ? "Учебный пример" : "CTF не подключён"}
+                </span>
+              ) : null}
+            </nav>
+          </header>
+          <JourneyPanel
+            recorder={study}
+            configured={api.available}
+            projectId={p?.id}
+            hasRun={Boolean(run)}
+            sample={sample}
+            savedArtifact={
+              !sample &&
+              a?.saved &&
+              run &&
+              view === "workspace" &&
+              sideTab === "artifacts"
+                ? { artifactId: a.id, runId: artifactRunId(p!, a.id)! }
+                : undefined
+            }
+          />
+          {issue || error || notice ? (
+            <div className="banners">
+              {issue ? (
+                <div role="alert" className="banner error">
+                  {issue}
+                </div>
+              ) : null}
+              {error ? (
+                <div role="alert" className="banner error">
+                  {error}
+                </div>
+              ) : null}
+              {notice ? (
+                <div role="status" className="banner notice">
+                  {notice}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <div className={`work-grid${onboarding ? " with-aside" : ""}`}>
+            <main className="main-content" id="main">
+              {view === "home" ? (
+                <div className="home-page">
+                  <section aria-labelledby="home-title">
+                    <p className="eyebrow">CORETEAMS · ВАША ЗАДАЧА, НУЖНАЯ КОМАНДА</p>
+                    <h1 className="page-title" id="home-title">
+                      Когда одной экспертизы мало — <em>соберите команду.</em>
+                    </h1>
+                    <p className="identity">{IDENTITY}</p>
                     <p className="lead">
-                      Фасилитатор связывает работу команды. Посмотрите вклад
-                      каждой AI-роли: вы можете изменить состав и указать
-                      недостающую экспертизу.
+                      Принесите вводные. Обсудите вопросы с фасилитатором.
+                      Выберите команду и план. Проверяйте результаты по этапам и
+                      возвращайтесь к версиям.
                     </p>
-                    <div className="role-card fixed-role">
-                      <strong>Фасилитатор · связывает работу</strong>
-                      <p>
-                        Уточняет задачу, передаёт контекст ролям и возвращается
-                        к вам за решением.
-                      </p>
+                    <div className="actions">
+                      <button className="primary" disabled={block} onClick={begin}>
+                        Начать свою задачу
+                      </button>
+                      <button
+                        className="secondary"
+                        onClick={() => {
+                          setTourStep(0);
+                          setView("tour");
+                        }}
+                      >
+                        Посмотреть пример пути <span aria-hidden>↗</span>
+                      </button>
                     </div>
-                    <div className="role-options">
-                      {ROLES.map((r) => (
-                        <label
-                          className={
-                            p.team.includes(r.id)
-                              ? "role-option chosen"
-                              : "role-option"
-                          }
-                          key={r.id}
-                        >
-                          <input
-                            name="selected-roles"
-                            value={r.id}
-                            type="checkbox"
-                            checked={p.team.includes(r.id)}
-                            disabled={block}
-                            onChange={(e) =>
-                              patch({
-                                team: e.target.checked
-                                  ? [...p.team, r.id]
-                                  : p.team.filter((id) => id !== r.id),
-                              })
-                            }
-                          />
-                          <span>
-                            <strong>{r.name}</strong>
-                            <span>{r.purpose}</span>
-                            <small>Результат: {r.output}</small>
+                    <p className="notice-line">
+                      {api.available
+                        ? "Подготовьте проект и запустите AI-команду. Пример можно изучить без запуска."
+                        : "Сейчас можно подготовить проект и изучить пример. Реальное исполнение появится после интеграции CTF."}
+                    </p>
+                  </section>
+                  <section className="section-block capabilities" aria-labelledby="capabilities-title">
+                    <p className="section-kicker">С ЧЕГО МОЖНО НАЧАТЬ</p>
+                    <h2 className="section-title" id="capabilities-title">
+                      Какие задачи решает команда
+                    </h2>
+                    <div className="card-grid">
+                      {CAPABILITIES.map((c, i) => (
+                        <article className="card" key={c.title}>
+                          <span className="card-symbol" aria-hidden>
+                            {["◇", "⌘", "✳"][i]}
                           </span>
-                        </label>
+                          <span className="card-kicker">{c.kicker}</span>
+                          <h3>{c.title}</h3>
+                          <p>{c.text}</p>
+                        </article>
                       ))}
                     </div>
-                    <label>
-                      Что изменить в составе или какую экспертизу добавить?
-                      <textarea
-                        name="team-note"
-                        autoComplete="off"
-                        rows={3}
-                        value={p.teamNote}
-                        onChange={(e) => patch({ teamNote: e.target.value })}
-                        disabled={block}
-                        placeholder="Например, нужен взгляд специалиста по закупкам…"
-                      />
-                    </label>
-                    <p className="muted">
-                      Сейчас это черновик выбора, не запущенные агенты. CTF
-                      должен подтвердить доступность ролей. Нельзя создать
-                      рабочего специалиста одним названием.
-                    </p>
-                    <button
-                      className="primary"
-                      disabled={block || !p.team.length}
-                      onClick={() => patch({ step: 3 })}
-                    >
-                      Команда подходит — к плану
-                    </button>
-                  </>
-                ) : null}
-                {p.step === 3 ? (
-                  <>
-                    <p className="note">Цель: {p.goal}</p>
-                    {p.stages.map((s, i) => (
-                      <div className="plan-stage" key={s.id}>
-                        <span className="eyebrow">ЭТАП {i + 1}</span>
-                        <label>
-                          Название этапа {i + 1}
-                          <input
-                            name={`stage-title-${i}`}
-                            autoComplete="off"
-                            value={s.title}
-                            disabled={block}
-                            onChange={(e) =>
-                              patch({
-                                stages: p.stages.map((x) =>
-                                  x.id === s.id
-                                    ? { ...x, title: e.target.value }
-                                    : x,
-                                ),
-                              })
-                            }
-                          />
-                        </label>
-                        <label>
-                          Результат этапа {i + 1}
-                          <textarea
-                            name={`stage-goal-${i}`}
-                            autoComplete="off"
-                            rows={2}
-                            value={s.goal}
-                            disabled={block}
-                            onChange={(e) =>
-                              patch({
-                                stages: p.stages.map((x) =>
-                                  x.id === s.id
-                                    ? { ...x, goal: e.target.value }
-                                    : x,
-                                ),
-                              })
-                            }
-                          />
-                        </label>
-                        {p.stages.length > 1 ? (
+                  </section>
+                  <section className="section-block projects-section" aria-labelledby="projects-title">
+                    <div className="section-heading">
+                      <h2 className="section-title" id="projects-title">
+                        Мои проекты · {projects.length}
+                      </h2>
+                      <button className="secondary small" disabled={block} onClick={begin}>
+                        + Новый проект
+                      </button>
+                    </div>
+                    {projects.length ? (
+                      <div className="project-list">
+                        {projects.map((x) => (
                           <button
-                            className="text-btn"
+                            key={x.id}
+                            className="project-row"
+                            onClick={() => openProject(x)}
+                          >
+                            <span className="project-details">
+                              <span className="project-status">
+                                {x.run
+                                  ? labels[x.run.status]
+                                  : x.step === 4
+                                    ? "План подготовлен"
+                                    : "Черновик вводных"}
+                              </span>
+                              <strong>{x.title || "Новый проект"}</strong>
+                              <small>
+                                {x.files.length} файлов · {x.stages.length} этапов ·{" "}
+                                {new Date(x.updatedAt).toLocaleDateString("ru")}
+                              </small>
+                            </span>
+                            <span className="project-open" aria-hidden>
+                              Открыть →
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="empty">
+                        Начните с примера пути, затем создайте свой проект.
+                        Черновики и файлы пока хранятся на этом устройстве.
+                      </p>
+                    )}
+                  </section>
+                  <LegacyProjects />
+                </div>
+              ) : null}
+              {view === "tour" ? (
+                <section className="tour-page" aria-labelledby="tour-title">
+                  <p className="eyebrow">
+                    СНАЧАЛА ПРИМЕР · {tourStep + 1} ИЗ {TOUR.length}
+                  </p>
+                  <h1 className="page-title" id="tour-title">
+                    Как работает CoreTeams
+                  </h1>
+                  <p className="lead">
+                    Разберём путь на идее кофейни. Здесь нет реальных
+                    пользовательских данных или результатов CTF.
+                  </p>
+                  <nav className="tour-steps" aria-label="Шаги примера">
+                    {TOUR.map((s, i) => (
+                      <button
+                        key={s.title}
+                        onClick={() => setTourStep(i)}
+                        className={tourStep === i ? "active" : ""}
+                        aria-current={tourStep === i ? "step" : undefined}
+                      >
+                        <span className="nav-num">{String(i + 1).padStart(2, "0")}</span>
+                        <span>
+                          {["Задача", "Вопросы", "Команда", "План", "Результаты"][i]}
+                        </span>
+                      </button>
+                    ))}
+                  </nav>
+                  <div className="tour-content surface">
+                    <span className="tour-number">
+                      {String(tourStep + 1).padStart(2, "0")}
+                    </span>
+                    <div>
+                      <h2>{TOUR[tourStep].title}</h2>
+                      <p>{TOUR[tourStep].body}</p>
+                      <p className="note">{TOUR[tourStep].detail}</p>
+                    </div>
+                  </div>
+                  <div className="actions">
+                    {tourStep > 0 ? (
+                      <button
+                        className="secondary"
+                        onClick={() => setTourStep(tourStep - 1)}
+                      >
+                        Назад
+                      </button>
+                    ) : null}
+                    {tourStep < 4 ? (
+                      <button
+                        className="primary"
+                        onClick={() => setTourStep(tourStep + 1)}
+                      >
+                        Дальше
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          className="primary"
+                          onClick={() => {
+                            setSample(true);
+                            setView("workspace");
+                            setStageId("options");
+                            setArtifactId("");
+                            setSideTab("artifacts");
+                            setError("");
+                          }}
+                        >
+                          Открыть рабочее пространство примера
+                        </button>
+                        <button
+                          className="secondary"
+                          disabled={block}
+                          onClick={finishTour}
+                        >
+                          Начать свой проект
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </section>
+              ) : null}
+              {view === "onboard" && p ? (
+                <section className="onboarding" aria-labelledby="onboard-title">
+                  <p className="eyebrow">
+                    ГОТОВИМ ВАШ ПРОЕКТ · ШАГ {p.step + 1} ИЗ 4
+                  </p>
+                  <h1 className="page-title" id="onboard-title">
+                    {
+                      [
+                        <>Что вы хотите <em>сделать?</em></>,
+                        <>Уточним задачу <em>вместе.</em></>,
+                        <>Выберите команду <em>вокруг задачи.</em></>,
+                        <>Согласуйте путь <em>к результату.</em></>,
+                      ][p.step]
+                    }
+                  </h1>
+                  <p className="lead">
+                    {
+                      [
+                        "Достаточно сути. Факты, ссылки и файлы помогут команде не подменять вашу задачу предположениями.",
+                        "Фасилитатор задаёт вопросы по одному. Ответ «пока не знаю» лучше выдуманного факта.",
+                        "Посмотрите вклад каждой AI-роли: вы можете изменить состав и указать недостающую экспертизу.",
+                        "Проверьте этапы и ожидаемые результаты. Работа запускается отдельно после вашего подтверждения.",
+                      ][p.step]
+                    }
+                  </p>
+                  {p.step > 0 ? (
+                    <div className="workspace-summary">
+                      <small>ВАША ЗАДАЧА · {p.title}</small>
+                      <strong>{p.goal}</strong>
+                    </div>
+                  ) : null}
+                  {p.step === 0 ? (
+                    <div className="brief-box surface">
+                      <p className="section-kicker">01 / СУТЬ ЗАДАЧИ</p>
+                      <label className="field">
+                        <span className="field-label">Название проекта</span>
+                        <input
+                          className="input"
+                          name="project-title"
+                          autoComplete="off"
+                          value={p.title}
+                          onChange={(e) => patch({ title: e.target.value })}
+                          disabled={block}
+                          placeholder="Например, проверить идею нового сервиса"
+                        />
+                      </label>
+                      <label className="field">
+                        <span className="field-label">Какую задачу нужно решить?</span>
+                        <textarea
+                          className="textarea"
+                          name="project-goal"
+                          autoComplete="off"
+                          rows={4}
+                          value={p.goal}
+                          onChange={(e) => patch({ goal: e.target.value })}
+                          disabled={block}
+                          placeholder="Что хочется понять или получить?"
+                        />
+                      </label>
+                      <label className="field">
+                        <span className="field-label">Направление</span>
+                        <select
+                          className="input"
+                          name="scenario"
+                          value={p.scenario}
+                          onChange={(e) => patch({ scenario: e.target.value })}
+                          disabled={block}
+                        >
+                          <option value="other">Другая задача / пока не знаю</option>
+                          <option value="business">Бизнес и новая идея</option>
+                          <option value="course">Обучение и курс</option>
+                          <option value="book">Книга и материалы</option>
+                        </select>
+                      </label>
+                      <label className="field">
+                        <span className="field-label">Контекст, факты и ссылки</span>
+                        <textarea
+                          className="textarea"
+                          name="context"
+                          autoComplete="off"
+                          rows={5}
+                          value={p.context}
+                          onChange={(e) => patch({ context: e.target.value })}
+                          disabled={block}
+                          placeholder="Аудитория, ограничения, известные источники, что нельзя менять…"
+                        />
+                      </label>
+                      <div className="section-heading">
+                        <p className="section-kicker">02 / ВВОДНЫЕ ФАЙЛЫ</p>
+                        <label className="upload-label">
+                          <PaperclipIcon />
+                          Добавить файлы
+                          <input
+                            name="input-files"
+                            type="file"
+                            multiple
+                            aria-label="Добавить вводные файлы"
+                            onChange={(e) => {
+                              void upload(e.target.files);
+                              e.target.value = "";
+                            }}
                             disabled={block}
+                          />
+                        </label>
+                      </div>
+                      {fileList()}
+                      <p className="helper">
+                        Храним полное содержимое файлов локально, не только
+                        названия. Передача сервису начнётся после явного запуска.
+                        Не добавляйте секреты и персональные данные.
+                      </p>
+                      <div className="form-actions">
+                        <button
+                          className="primary"
+                          disabled={block || !p.title.trim() || !p.goal.trim()}
+                          onClick={() => patch({ step: 1 })}
+                        >
+                          К вопросам фасилитатора
+                        </button>
+                        <span className="notice-line">
+                          Сроки, ограничения и детали уточним в диалоге.
+                        </span>
+                      </div>
+                    </div>
+                  ) : null}
+                  {p.step === 1 ? (
+                    <div className="facilitator-chat surface" aria-label="Вопросы фасилитатора">
+                      <div className="chat-header">
+                        <div className="question-top">
+                          <span className="facilitator-icon" aria-hidden>
+                            ✳
+                          </span>
+                          <div>
+                            <strong>Фасилитатор</strong>
+                            <small>
+                              {answeredCount === -1
+                                ? "Основные вопросы пройдены. Можно уточнить ответы."
+                                : api.available
+                                  ? "Вопросы для подготовки: ответы уйдут команде вместе с задачей."
+                                  : "Вопросы для подготовки. Во время запуска фасилитатор сможет задать дополнительные."}
+                            </small>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="chat-thread" role="log" aria-label="Вопросы и ответы">
+                        {QUESTIONS.slice(0, visibleQuestions).map((q, i) => (
+                          <div className="chat-pair" key={q}>
+                            <div
+                              className={`chat-message facilitator${i === answeredCount ? " current" : ""}`}
+                            >
+                              <small>Фасилитатор · вопрос {i + 1}</small>
+                              <p>{q}</p>
+                            </div>
+                            <label className="chat-message user answer">
+                              <small>Ваш ответ</small>
+                              <textarea
+                                className="chat-answer"
+                                name={`preparation-${i}`}
+                                aria-label={q}
+                                autoComplete="off"
+                                rows={2}
+                                value={p.answers[i]}
+                                onChange={(e) =>
+                                  patch({
+                                    answers: p.answers.map((s, n) =>
+                                      n === i ? e.target.value : s,
+                                    ),
+                                  })
+                                }
+                                disabled={block}
+                                placeholder="Свой ответ или «пока не знаю»"
+                              />
+                              {!p.answers[i].trim() ? (
+                                <button
+                                  type="button"
+                                  className="chip"
+                                  disabled={block}
+                                  onClick={() =>
+                                    patch({
+                                      answers: p.answers.map((s, n) =>
+                                        n === i ? "Пока не знаю" : s,
+                                      ),
+                                    })
+                                  }
+                                >
+                                  Пока не знаю
+                                </button>
+                              ) : null}
+                            </label>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="chat-footer">
+                        <small>
+                          Ответы сохраняются в этом браузере по мере ввода.
+                        </small>
+                        <button
+                          className="primary"
+                          disabled={block || p.answers.some((a) => !a.trim())}
+                          onClick={() => patch({ step: 2 })}
+                        >
+                          Посмотреть и выбрать команду
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {p.step === 2 ? (
+                    <>
+                      <div className="team-pane surface">
+                        <div className="team-pane-head">
+                          <div>
+                            <p className="section-kicker">01 / КОМАНДА</p>
+                            <h2 className="section-title">Кто участвует</h2>
+                          </div>
+                        </div>
+                        <div className="team-list">
+                          <article className="team-role-row fixed">
+                            <span className="team-role-number" aria-hidden>
+                              ✳
+                            </span>
+                            <div>
+                              <strong>Фасилитатор · связывает работу</strong>
+                              <p>
+                                Уточняет задачу, передаёт контекст ролям и
+                                возвращается к вам за решением.
+                              </p>
+                            </div>
+                            <span className="team-added-label">Всегда в команде</span>
+                          </article>
+                          {ROLES.map((r) => (
+                            <label
+                              className={`team-role-row selectable${p.team.includes(r.id) ? " chosen" : ""}`}
+                              key={r.id}
+                            >
+                              <input
+                                name="selected-roles"
+                                value={r.id}
+                                type="checkbox"
+                                checked={p.team.includes(r.id)}
+                                disabled={block}
+                                onChange={(e) =>
+                                  patch({
+                                    team: e.target.checked
+                                      ? [...p.team, r.id]
+                                      : p.team.filter((id) => id !== r.id),
+                                  })
+                                }
+                              />
+                              <div>
+                                <strong>{r.name}</strong>
+                                <p>{r.purpose}</p>
+                                <small>Результат: {r.output}</small>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                        <label className="field">
+                          <span className="field-label">
+                            Что изменить в составе или какую экспертизу добавить?
+                          </span>
+                          <textarea
+                            className="textarea"
+                            name="team-note"
+                            autoComplete="off"
+                            rows={3}
+                            value={p.teamNote}
+                            onChange={(e) => patch({ teamNote: e.target.value })}
+                            disabled={block}
+                            placeholder="Например, нужен взгляд специалиста по закупкам…"
+                          />
+                        </label>
+                        <p className="helper">
+                          Сейчас это черновик выбора, не запущенные агенты. CTF
+                          должен подтвердить доступность ролей. Нельзя создать
+                          рабочего специалиста одним названием.
+                        </p>
+                      </div>
+                      <div className="confirm-bar">
+                        <button
+                          className="secondary"
+                          disabled={block}
+                          onClick={() => patch({ step: 1 })}
+                        >
+                          ← Вернуться к вопросам
+                        </button>
+                        <span>Выбранные роли станут частью плана.</span>
+                        <button
+                          className="primary"
+                          disabled={block || !p.team.length}
+                          onClick={() => patch({ step: 3 })}
+                        >
+                          Команда подходит — к плану
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+                  {p.step === 3 ? (
+                    <>
+                      <div className="team-pane surface">
+                        <div className="team-pane-head">
+                          <div>
+                            <p className="section-kicker">02 / ПЛАН</p>
+                            <h2 className="section-title">Как придём к результату</h2>
+                          </div>
+                          <button
+                            className="secondary small"
+                            disabled={block || p.stages.length >= MAX_PLAN_STAGES}
                             onClick={() =>
+                              p.stages.length < MAX_PLAN_STAGES &&
                               patch({
-                                stages: p.stages.filter((x) => x.id !== s.id),
+                                stages: [
+                                  ...p.stages,
+                                  {
+                                    id: crypto.randomUUID(),
+                                    title: "Новый этап",
+                                    goal: "Какой артефакт нужен?",
+                                  },
+                                ],
                               })
                             }
                           >
-                            Убрать этап {i + 1}
+                            + Добавить этап
                           </button>
-                        ) : null}
+                        </div>
+                        <div className="plan-editor">
+                          {p.stages.map((s, i) => (
+                            <fieldset className="plan-edit-step" key={s.id}>
+                              <legend>
+                                <b>{String(i + 1).padStart(2, "0")}</b> Этап {i + 1}
+                              </legend>
+                              <label className="field">
+                                <span className="field-label">Название этапа {i + 1}</span>
+                                <input
+                                  className="input"
+                                  name={`stage-title-${i}`}
+                                  autoComplete="off"
+                                  value={s.title}
+                                  disabled={block}
+                                  onChange={(e) =>
+                                    patch({
+                                      stages: p.stages.map((x) =>
+                                        x.id === s.id ? { ...x, title: e.target.value } : x,
+                                      ),
+                                    })
+                                  }
+                                />
+                              </label>
+                              <label className="field">
+                                <span className="field-label">Результат этапа {i + 1}</span>
+                                <textarea
+                                  className="textarea"
+                                  name={`stage-goal-${i}`}
+                                  autoComplete="off"
+                                  rows={2}
+                                  value={s.goal}
+                                  disabled={block}
+                                  onChange={(e) =>
+                                    patch({
+                                      stages: p.stages.map((x) =>
+                                        x.id === s.id ? { ...x, goal: e.target.value } : x,
+                                      ),
+                                    })
+                                  }
+                                />
+                              </label>
+                              {p.stages.length > 1 ? (
+                                <button
+                                  className="text-btn danger"
+                                  disabled={block}
+                                  onClick={() =>
+                                    patch({
+                                      stages: p.stages.filter((x) => x.id !== s.id),
+                                    })
+                                  }
+                                >
+                                  Убрать этап {i + 1}
+                                </button>
+                              ) : null}
+                            </fieldset>
+                          ))}
+                        </div>
+                        <p className="helper">
+                          В плане — от 1 до {MAX_PLAN_STAGES} этапов (ограничение
+                          сервиса). Фактическое потребление покажем из CTF, когда
+                          появятся подтверждённые данные.
+                        </p>
                       </div>
-                    ))}
+                      <div className="confirm-bar">
+                        <button
+                          className="secondary"
+                          disabled={block}
+                          onClick={() => patch({ step: 2 })}
+                        >
+                          ← Вернуться к команде
+                        </button>
+                        <span>Это план. Работа запустится отдельно в рабочем пространстве.</span>
+                        <button
+                          className="primary"
+                          disabled={
+                            block ||
+                            p.stages.length < 1 ||
+                            p.stages.length > MAX_PLAN_STAGES ||
+                            p.stages.some((s) => !s.title.trim() || !s.goal.trim())
+                          }
+                          onClick={() => {
+                            patch({ step: 4 });
+                            setView("workspace");
+                            setStageId(p.stages[0].id);
+                            setSideTab("artifacts");
+                          }}
+                        >
+                          План подходит — в рабочее пространство
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+                  {p.step === 1 ? (
                     <button
-                      className="secondary"
-                      disabled={block || p.stages.length >= MAX_PLAN_STAGES}
-                      onClick={() =>
-                        p.stages.length < MAX_PLAN_STAGES && patch({
-                          stages: [
-                            ...p.stages,
-                            {
-                              id: crypto.randomUUID(),
-                              title: "Новый этап",
-                              goal: "Какой артефакт нужен?",
-                            },
-                          ],
-                        })
-                      }
-                    >
-                      + Добавить этап
-                    </button>
-                    <p className="muted">
-                      В плане — от 1 до {MAX_PLAN_STAGES} этапов (ограничение сервиса).
-                      Фактическое потребление покажем из CTF, когда появятся
-                      подтверждённые данные.
-                    </p>
-                    <button
-                      className="primary"
-                      disabled={
-                        block ||
-                        p.stages.length < 1 || p.stages.length > MAX_PLAN_STAGES ||
-                        p.stages.some((s) => !s.title.trim() || !s.goal.trim())
-                      }
-                      onClick={() => {
-                        patch({ step: 4 });
-                        setView("workspace");
-                        setStageId(p.stages[0].id);
-                        setSideTab("artifacts");
-                      }}
-                    >
-                      План подходит — в рабочее пространство
-                    </button>
-                  </>
-                ) : null}
-              </div>
-              <aside className="guide-panel">
-                <p className="eyebrow">ВЫ ОПРЕДЕЛЯЕТЕ ЗАДАЧУ</p>
-                <h2>
-                  {
-                    [
-                      "Не нужно начинать с идеального ТЗ",
-                      "Неизвестное можно назвать неизвестным",
-                      "Вы участвуете в выборе",
-                      "Каждый этап оставляет результат",
-                    ][p.step]
-                  }
-                </h2>
-                <p>
-                  {
-                    [
-                      "Расскажите о ситуации и добавьте имеющиеся материалы. Команда получает содержание файлов только при явном запуске.",
-                      "Ответ «пока не знаю» лучше выдуманного факта. Во время работы фасилитатор вернётся за уточнением.",
-                      "Вы видите, зачем нужна роль и что она должна передать дальше. Роли ИИ не заменяют проверку реальными специалистами.",
-                      "Артефакты и версии появятся справа. В центре можно задать вопрос, попросить доработку или согласовать результат.",
-                    ][p.step]
-                  }
-                </p>
-                {api.available ? null : (
-                  <div className="service-note">
-                    CTF пока не подключён. Подготовка проекта работает локально.
-                  </div>
-                )}
-              </aside>
-            </div>
-            {p.step > 0 ? (
-              <button
-                className="text-btn"
-                disabled={block}
-                onClick={() => patch({ step: p.step - 1 })}
-              >
-                ← Назад
-              </button>
-            ) : null}
-          </section>
-        ) : null}
-        {view === "workspace" && p ? (
-          <section className="workspace">
-            {sample ? (
-              <div className="sample-banner">
-                <strong>Учебный пример · CTF не запускался</strong>
-                <span>
-                  Изучите этапы и версии. Данные и роли здесь подготовлены
-                  заранее.
-                </span>
-                <button
-                  className="primary"
-                  onClick={finishTour}
-                  disabled={block}
-                >
-                  Начать свой проект
-                </button>
-              </div>
-            ) : null}
-            <div className="workspace-heading">
-              <div>
-                <p className="eyebrow">ВАШ ПРОЕКТ</p>
-                <h1>{p.title}</h1>
-                <p>
-                  {sample
-                    ? "Пример пути"
-                    : run
-                      ? labels[run.status]
-                      : "Вводные, команда и план подготовлены. Работа ещё не запущена."}
-                </p>
-              </div>
-              <div className="actions">
-                {!sample && !run ? (
-                  <>
-                    <button
-                      className="secondary"
-                      disabled={block || Boolean(p.pending)}
-                      onClick={() => {
-                        patch({ step: 0 });
-                        setView("onboard");
-                      }}
-                    >
-                      Изменить вводные
-                    </button>
-                    <button
-                      className="primary"
+                      className="text-btn back-link"
                       disabled={block}
-                      onClick={() => {
-                        try {
-                          void perform("start", {
-                            ...projectPayload(p),
-                            stageId: p.stages[0].id,
-                            files: p.files,
-                          });
-                        } catch (e) {
-                          setError(e instanceof Error ? e.message : "Проверьте план");
-                        }
-                      }}
+                      onClick={() => patch({ step: 0 })}
                     >
-                      {p.pending
-                        ? "Повторить прежний запрос"
-                        : "Запустить работу команды"}
+                      ← Вернуться к задаче
                     </button>
-                  </>
-                ) : null}
-                {!sample && run ? (
-                  <button
-                    className="secondary"
-                    disabled={block}
-                    onClick={refresh}
-                  >
-                    Обновить статус
-                  </button>
-                ) : null}
-              </div>
-            </div>
-            {p.pending && !sample ? (
-              <div className="banner pending">
-                {p.pending.legacy || p.pending.action === "message"
-                  ? "Сохранён запрос прежнего формата. Он не повторяется новым протоколом. Нужна сверка его исхода с сервером; данные не удалены."
-                  : p.pending.rejected ? "Прежний вопрос отклонён. Обновите статус; старый ответ не повторяется."
-                  : "Исход доставки запроса не подтверждён. Это не терминальный outcome_unknown. Сначала обновите статус; повтор вручную использует прежние данные и тот же ID."}
-                <button
-                  className="text-btn"
-                  disabled={block || p.pending.legacy || p.pending.rejected || p.pending.action === "message"}
-                  onClick={() =>
-                    perform(
-                      p.pending!.action,
-                      p.pending!.body,
-                      p.pending!.targetId,
-                    )
-                  }
-                >
-                  Повторить запрос
-                </button>
-              </div>
-            ) : null}
-            <div className="workspace-columns">
-              <aside className="project-sidebar">
-                <h2>Путь проекта</h2>
-                <nav aria-label="Этапы работы">
-                  {p.stages.map((s, i) => {
-                    const result = latest(artifacts, s.id);
-                    const ids = new Set(
-                      artifacts
-                        .filter((a) => a.stageId === s.id)
-                        .map((a) => a.documentId),
-                    );
-                    const phaseApproved =
-                      ids.size > 0 &&
-                      [...ids].every(
-                        (id) => {
-                          const version = artifacts
-                            .filter(
-                              (a) => a.stageId === s.id && a.documentId === id,
-                            )
-                            .sort((a, b) => b.version - a.version)[0];
-                          return version && (sample ? version.approved : approved(p, version));
-                        },
-                      );
-                    return (
+                  ) : null}
+                </section>
+              ) : null}
+              {view === "workspace" && p ? (
+                <section className="workspace" aria-labelledby="workspace-title">
+                  {sample ? (
+                    <div className="work-honesty sample-banner" role="note">
+                      <div>
+                        <strong>Учебный пример · CTF не запускался</strong>
+                        <span>
+                          Изучите этапы и версии. Данные и роли здесь
+                          подготовлены заранее.
+                        </span>
+                      </div>
+                      <button className="primary small" onClick={finishTour} disabled={block}>
+                        Начать свой проект
+                      </button>
+                    </div>
+                  ) : null}
+                  <div className="workspace-heading">
+                    <div>
+                      <p className="eyebrow">РАБОЧЕЕ ПРОСТРАНСТВО</p>
+                      <h1 className="page-title" id="workspace-title">
+                        {p.title}
+                      </h1>
+                      <p className="lead">
+                        {sample
+                          ? "Пример пути"
+                          : run
+                            ? labels[run.status]
+                            : "Вводные, команда и план подготовлены. Работа ещё не запущена."}
+                      </p>
+                    </div>
+                    <div className="actions">
+                      {!sample && !run ? (
+                        <>
+                          <button
+                            className="secondary"
+                            disabled={block || Boolean(p.pending)}
+                            onClick={() => {
+                              patch({ step: 0 });
+                              setView("onboard");
+                            }}
+                          >
+                            Изменить вводные
+                          </button>
+                          <button
+                            className="primary"
+                            disabled={block}
+                            onClick={() => {
+                              try {
+                                void perform("start", {
+                                  ...projectPayload(p),
+                                  stageId: p.stages[0].id,
+                                  files: p.files,
+                                });
+                              } catch (e) {
+                                setError(e instanceof Error ? e.message : "Проверьте план");
+                              }
+                            }}
+                          >
+                            {p.pending
+                              ? "Повторить прежний запрос"
+                              : "Запустить работу команды"}
+                          </button>
+                        </>
+                      ) : null}
+                      {!sample && run ? (
+                        <button className="secondary" disabled={block} onClick={refresh}>
+                          Обновить статус
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  {p.pending && !sample ? (
+                    <div className="banner pending">
+                      <span>
+                        {p.pending.legacy || p.pending.action === "message"
+                          ? "Сохранён запрос прежнего формата. Он не повторяется новым протоколом. Нужна сверка его исхода с сервером; данные не удалены."
+                          : p.pending.rejected
+                            ? "Прежний вопрос отклонён. Обновите статус; старый ответ не повторяется."
+                            : "Исход доставки запроса не подтверждён. Это не терминальный outcome_unknown. Сначала обновите статус; повтор вручную использует прежние данные и тот же ID."}
+                      </span>
                       <button
-                        key={s.id}
-                        className={
-                          selectedStage?.id === s.id
-                            ? "stage-nav active"
-                            : "stage-nav"
+                        className="text-btn"
+                        disabled={
+                          block ||
+                          p.pending.legacy ||
+                          p.pending.rejected ||
+                          p.pending.action === "message"
                         }
-                        onClick={() => {
-                          setStageId(s.id);
-                          setDocumentId("");
-                          setArtifactId("");
-                          setSideTab("artifacts");
-                        }}
-                        aria-current={
-                          selectedStage?.id === s.id ? "step" : undefined
+                        onClick={() =>
+                          perform(p.pending!.action, p.pending!.body, p.pending!.targetId)
                         }
                       >
-                        <span>
-                          {phaseApproved ? "✓" : String(i + 1).padStart(2, "0")}
-                        </span>
-                        <span>
-                          <strong>{s.title}</strong>
-                          <small>
-                            {result
-                              ? phaseApproved
-                                ? "Последние версии согласованы"
-                                : `Артефактов: ${ids.size}`
-                              : run?.stageId === s.id
-                                ? labels[run.status]
-                                : "Планируется"}
-                          </small>
-                        </span>
+                        Повторить запрос
                       </button>
-                    );
-                  })}
-                </nav>
-                <div className="sidebar-divider">
-                  {run ? <details className="run-history">
-                    <summary>История запусков · {projectRuns(p).length}</summary>
-                    <ol>{projectRuns(p).map((attempt, i) => <li key={attempt.id}>
-                      <strong>Запуск {i + 1}{attempt.id === run.id ? " · текущий" : ""}</strong>
-                      <small>{labels[attempt.status]}</small>
-                      <code>{attempt.id}</code>
-                      {attempt.sourceArtifactId ? <small>Доработка версии: {attempt.sourceArtifactId}</small> : null}
-                    </li>)}</ol>
-                    <p className="muted">Диалог и версии всех запусков остаются в этом проекте. Техническое завершение не означает ваше одобрение.</p>
-                  </details> : null}
-                  <h2>Материалы</h2>
-                  {p.files.length ? (
-                    fileList()
-                  ) : (
-                    <p className="muted">
-                      {sample
-                        ? "В примере используются только текстовые вводные."
-                        : "Вводные файлы не добавлены"}
-                    </p>
-                  )}
-                  <details>
-                    <summary>Контекст задачи</summary>
-                    <p className="context-text">{p.goal}</p>
-                    <p className="context-text">
-                      {p.context || "Дополнительный контекст не указан"}
-                    </p>
-                  </details>
-                </div>
-                <p className="local-note">
-                  {sample
-                    ? "Учебные данные"
-                    : `${p.files.length} файлов · ${bytes(p.files.reduce((n, f) => n + f.size, 0))}`}
-                  <br />
-                  {sample
-                    ? "Не пользовательский результат"
-                    : "Черновики и файлы на этом устройстве"}
-                </p>
-              </aside>
-              <section className="conversation">
-                <div className="pane-heading">
-                  <div>
-                    <span className="eyebrow">РАБОТА НАД ЗАДАЧЕЙ</span>
-                    <h2>Диалог с фасилитатором</h2>
-                  </div>
-                  <span className="status-pill">
-                    {sample
-                      ? "Пример"
-                      : run
-                        ? labels[run.status]
-                        : "Не запущено"}
-                  </span>
-                </div>
-                <div className="conversation-body">
-                  {!run ? (
-                    <div className="welcome-message">
-                      <span className="message-avatar">C</span>
-                      <div>
-                        <strong>Ваш следующий шаг</strong>
-                        <p>
-                          Контекст, материалы, команда и план собраны.{" "}
-                          {api.available ? "Нажмите" : "После подключения CTF нажмите"} «Запустить работу команды».
-                          Здесь появятся реальные вопросы, объяснения и
-                          результаты.
-                        </p>
-                        <p className="muted">
-                          До запуска ничего не передаём сервису. Сейчас нет
-                          выполненных артефактов или измеренного потребления.
-                        </p>
-                      </div>
                     </div>
-                  ) : (
-                    projectMessages(p).map((m) => (
-                      <article key={m.id} className={`message ${m.role}`}>
-                        <span className="message-avatar">
-                          {m.role === "user" ? "Вы" : "C"}
+                  ) : null}
+                  <div className="result-dashboard">
+                    <section className="facilitator-chat surface conversation">
+                      <div className="chat-header">
+                        <div className="question-top">
+                          <span className="facilitator-icon" aria-hidden>
+                            ✳
+                          </span>
+                          <div>
+                            <h2>Диалог с фасилитатором</h2>
+                            <small>Работа над задачей</small>
+                          </div>
+                        </div>
+                        <span className="status-pill">
+                          {sample ? "Пример" : run ? labels[run.status] : "Не запущено"}
                         </span>
-                        <div>
-                          <div className="message-label">
-                            {m.role === "user"
-                              ? "Вы"
-                              : m.role === "facilitator"
-                                ? "Фасилитатор"
-                                : "Сервис"}
-                            {sample ? " · учебный пример" : ""}
-                          </div>
-                          <p>{m.text}</p>
-                        </div>
-                      </article>
-                    ))
-                  )}
-                  {isWaiting(run) && run?.question ? <FacilitatorQuestions
-                    group={run.question} draft={answerDraft}
-                    disabled={block || sample || Boolean(p.pending) || !questionReady}
-                    onChange={answers => patch({ answerDraft: { questionId: run.question!.id, answers } })}
-                    onSubmit={answers => void perform("answer", { questionId: run.question!.id, answers })}
-                  /> : null}
-                  {run?.progress ? <p className="note" role="status">
-                    {run.progress.stage === "interrupted" ? "Связь с исполнением прервана. Ожидаем состояние сервера."
-                      : run.progress.stage === "recovering" ? "Сервис восстанавливает выполнение. Повторный запуск не создаём."
-                      : "Сервис сообщает: выполнение продолжается."}
-                    {run.progress.attempt ? ` Попытка восстановления: ${run.progress.attempt}.` : ""}
-                    {run.progress.context_restored === true ? " Восстановление контекста подтверждено сервером." : ""}
-                  </p> : null}
-                  {run?.status === "outcome_unknown" ? <p className="error-note" role="status">Сервер сообщил неизвестный исход. Успех и сохранение не подтверждены этим статусом. Проверьте версии и состояние с командой; автоматического повтора или нового запуска нет.</p> : null}
-                  {run?.status === "failed" ? (
-                    <p className="error-note">
-                      Запуск завершился ошибкой. ID: {run.id}. Новый запуск не
-                      создаётся автоматически.
-                    </p>
-                  ) : null}
-                </div>
-                <form
-                  className="composer"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    try {
-                      if (p.draftMessage.trim() && canRework(run) && a?.saved)
-                        void perform("rework", {
-                        ...projectPayload(p),
-                        text: p.draftMessage.trim(),
-                        stageId: selectedStage?.id,
-                        parentRunId: run!.id,
-                        sourceArtifactId: a.id,
-                        documentId: a.documentId,
-                        sourceVersion: a.version,
-                        fileIds: p.files.map(f => f.uploadedId),
-                      });
-                    } catch (e) {
-                      setError(e instanceof Error ? e.message : "Проверьте план");
-                    }
-                  }}
-                >
-                  <label>
-                    Вопрос или замечание к результату
-                    <textarea
-                      name="revision-message"
-                      autoComplete="off"
-                      rows={3}
-                      disabled={sample || block || Boolean(p.pending) || !canRework(run) || !a?.saved}
-                      value={sample ? "" : p.draftMessage}
-                      onChange={(e) => patch({ draftMessage: e.target.value })}
-                      placeholder={
-                        sample
-                          ? "В учебном примере отправка отключена"
-                          : "Что уточнить или доработать? Укажите нужный этап или версию…"
-                      }
-                    />
-                  </label>
-                  <div className="composer-footer">
-                    <small>
-                      {sample
-                        ? "Для своей задачи создайте проект"
-                        : run
-                          ? canRework(run) ? "Доработка создаст новый запуск в этом же проекте. Выбранные документ, версия и история сохранят связь."
-                            : "Дождитесь завершения запуска. На вопросы отвечайте в форме выше; доработка не переоткрывает завершённый Run."
-                          : "Черновик замечания сохранён. Для отправки нужен запуск CTF."}
-                    </small>
-                    <button
-                      className="primary"
-                      disabled={
-                        sample ||
-                        block ||
-                        !canRework(run) || !a?.saved ||
-                        Boolean(p.pending) ||
-                        !p.draftMessage.trim()
-                      }
-                    >
-                      Доработать в новом запуске
-                    </button>
-                  </div>
-                </form>
-              </section>
-              <aside className="results-pane">
-                <nav className="pane-tabs" aria-label="Панель проекта">
-                  {(["artifacts", "team", "usage"] as const).map((t) => (
-                    <button
-                      key={t}
-                      aria-pressed={sideTab === t}
-                      className={sideTab === t ? "active" : ""}
-                      onClick={() => setSideTab(t)}
-                    >
-                      {t === "artifacts"
-                        ? "Артефакты"
-                        : t === "team"
-                          ? "Команда"
-                          : "Замеры"}
-                    </button>
-                  ))}
-                </nav>
-                <div className="results-body">
-                  {sideTab === "team" ? team() : null}
-                  {sideTab === "usage" ? (
-                    <>
-                      <p className="eyebrow">ФАКТИЧЕСКОЕ ПОТРЕБЛЕНИЕ</p>
-                      <h2>Замеры CTF</h2>
-                      <p className="muted">Данные текущего запуска, не сумма по проекту. Запусков в истории: {projectRuns(p).length}.</p>
-                      <dl className="usage-list">
-                        {[
-                          ["Входные токены", run?.usage?.inputTokens],
-                          ["Выходные токены", run?.usage?.outputTokens],
-                          ["Запросы", run?.usage?.requests],
-                          ["Время вычисления, с", run?.usage?.computeSeconds],
-                        ].map(([label, value]) => (
-                          <div key={String(label)}>
-                            <dt>{label}</dt>
-                            <dd>
-                              {value === undefined
-                                ? "Не измерено"
-                                : Number(value).toLocaleString("ru")}
-                            </dd>
-                          </div>
-                        ))}
-                        <div>
-                          <dt>Затраты</dt>
-                          <dd>
-                            {run?.usage?.cost === undefined
-                              ? "Не измерено"
-                              : `${run.usage.cost.toFixed(4)} ${run.usage.currency}`}
-                          </dd>
-                        </div>
-                      </dl>
-                      <p className="note">
-                        Продуктовые ограничения по токенам, запускам и проектам
-                        пока не включены. Неизмеренные значения не заменяются
-                        нулём.
-                      </p>
-                      <p className="muted">
-                        Показываем данные из backend, не прогноз. Ограничения
-                        безопасности и техническая ёмкость сервера/браузера
-                        сохраняются.
-                      </p>
-                    </>
-                  ) : null}
-                  {sideTab === "artifacts" ? (
-                    <>
-                      <span className="eyebrow">РЕЗУЛЬТАТ ЭТАПА</span>
-                      <h2>{selectedStage?.title}</h2>
-                      <p className="muted">{selectedStage?.goal}</p>
-                      {a ? (
-                        <>
-                          <label>
-                            Артефакт этапа
-                            <select
-                              name="artifact-document"
-                              aria-label="Артефакт этапа"
-                              value={activeDocument?.documentId}
-                              onChange={(e) => {
-                                setDocumentId(e.target.value);
-                                setArtifactId("");
-                              }}
-                            >
-                              {documents.map((d) => (
-                                <option value={d.documentId} key={d.documentId}>
-                                  {d.title}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="version-select">
-                            Версия артефакта
-                            <select
-                              name="artifact-version"
-                              aria-label="Версия артефакта"
-                              value={a.id}
-                              onChange={(e) => setArtifactId(e.target.value)}
-                            >
-                              {versions.map((v) => (
-                                <option key={v.id} value={v.id}>
-                                  v{v.version} · {v.title}
-                                  {(sample ? v.approved : approved(p, v)) ? " · одобрена" : ""}
-                                </option>
-                              ))}
-                            </select>
-                          </label>
-                          <div className="artifact-heading">
-                            <h3>{a.title}</h3>
-                            <span className="status-pill">v{a.version}</span>
-                          </div>
-                          {a.content || !a.file ? (
-                            <Document content={a.content} />
-                          ) : (
-                            <p className="note">
-                              Файл «{a.file.name}» не текстовый или слишком большой для просмотра.
-                              Скачайте его, чтобы открыть.
+                      </div>
+                      <div className="chat-thread" role="log" aria-label="История диалога">
+                        {!run ? (
+                          <div className="chat-message facilitator current">
+                            <small>Ваш следующий шаг</small>
+                            <p>
+                              Контекст, материалы, команда и план собраны.{" "}
+                              {api.available ? "Нажмите" : "После подключения CTF нажмите"}{" "}
+                              «Запустить работу команды». Здесь появятся реальные
+                              вопросы, объяснения и результаты.
                             </p>
-                          )}
-                          <p className="artifact-status">
-                            {sample
-                              ? "Учебная версия, не результат CTF"
-                              : a.saved
-                                ? `Сервер подтвердил запись${a.savedAt ? ` · ${new Date(a.savedAt).toLocaleString("ru")}` : ""}`
-                                : "Постоянное сохранение не подтверждено"}
-                          </p>
-                          {!sample ? <p className="artifact-status">{approved(p, a) ? "Одобрено вами · подтверждено сервером для этой версии" : "Пользовательское одобрение этой версии не подтверждено"}</p> : null}
-                          <div className="artifact-actions">
-                            {a.file && !sample ? (
-                              <a
-                                className="primary"
-                                href={a.file.downloadUrl}
-                                download={a.file.name}
-                                onClick={() =>
-                                  track("file_download_handed", {
-                                    runId: artifactRunId(p, a.id),
-                                    artifactId: a.id,
-                                  })
-                                }
-                              >
-                                Скачать файл{a.file.sizeBytes !== null ? ` · ${bytes(a.file.sizeBytes)}` : ""}
-                              </a>
-                            ) : null}
-                            <button
-                              className="secondary"
-                              hidden={!a.content && Boolean(a.file)}
-                              onClick={() => {
-                                downloadText(a);
-                                track("text_download_handed", {
-                                  runId: artifactRunId(p, a.id),
-                                  artifactId: a.id,
-                                });
-                              }}
-                            >
-                              Скачать текст версии
-                            </button>
-                            {!sample ? (
-                              <button
-                                className="secondary"
-                                disabled={
-                                  block ||
-                                  !a.saved ||
-                                  !p.serverId ||
-                                  Boolean(p.pending)
-                                }
-                                onClick={downloadZip}
-                              >
-                                Скачать ZIP версии
-                              </button>
-                            ) : null}
-                            {!sample ? (
-                              <button
-                                className="primary"
-                                disabled={
-                                  block ||
-                                  Boolean(p.pending) ||
-                                  approved(p, a) ||
-                                  a.id !== versions[0]?.id ||
-                                  !a.saved
-                                }
-                                onClick={() =>
-                                  perform(
-                                    "approve",
-                                    { artifactId: a.id, version: a.version },
-                                    a.id,
-                                  )
-                                }
-                              >
-                                {approved(p, a)
-                                  ? "Версия согласована"
-                                  : "Согласовать результат"}
-                              </button>
-                            ) : null}
-                          </div>
-                          {!sample ? (
                             <p className="muted">
-                              Для доработки напишите замечание в центре. Новая
-                              версия появится только из ответа CTF; прежняя
-                              останется доступна.
+                              До запуска ничего не передаём сервису. Сейчас нет
+                              выполненных артефактов или измеренного потребления.
                             </p>
-                          ) : null}
-                        </>
-                      ) : (
-                        <div className="artifact-empty">
-                          <span aria-hidden>▤</span>
-                          <h3>Здесь появится артефакт этапа</h3>
-                          <p>
-                            Результат, его версии и подтверждение сохранения
-                            будут получены из сервиса. Пока этап только в плане.
+                          </div>
+                        ) : (
+                          projectMessages(p).map((m) => (
+                            <article
+                              key={m.id}
+                              className={`chat-message ${m.role === "user" ? "user" : m.role === "facilitator" ? "facilitator" : "system"}`}
+                            >
+                              <small>
+                                {m.role === "user"
+                                  ? "Вы"
+                                  : m.role === "facilitator"
+                                    ? "Фасилитатор"
+                                    : "Сервис"}
+                                {sample ? " · учебный пример" : ""}
+                              </small>
+                              <p>{m.text}</p>
+                            </article>
+                          ))
+                        )}
+                        {isWaiting(run) && run?.question ? (
+                          <FacilitatorQuestions
+                            group={run.question}
+                            draft={answerDraft}
+                            disabled={block || sample || Boolean(p.pending) || !questionReady}
+                            onChange={(answers) =>
+                              patch({ answerDraft: { questionId: run.question!.id, answers } })
+                            }
+                            onSubmit={(answers) =>
+                              void perform("answer", { questionId: run.question!.id, answers })
+                            }
+                          />
+                        ) : null}
+                        {run?.progress ? (
+                          <p className="note" role="status">
+                            {run.progress.stage === "interrupted"
+                              ? "Связь с исполнением прервана. Ожидаем состояние сервера."
+                              : run.progress.stage === "recovering"
+                                ? "Сервис восстанавливает выполнение. Повторный запуск не создаём."
+                                : "Сервис сообщает: выполнение продолжается."}
+                            {run.progress.attempt
+                              ? ` Попытка восстановления: ${run.progress.attempt}.`
+                              : ""}
+                            {run.progress.context_restored === true
+                              ? " Восстановление контекста подтверждено сервером."
+                              : ""}
                           </p>
+                        ) : null}
+                        {run?.status === "outcome_unknown" ? (
+                          <p className="error-note" role="status">
+                            Сервер сообщил неизвестный исход. Успех и сохранение не
+                            подтверждены этим статусом. Проверьте версии и состояние
+                            с командой; автоматического повтора или нового запуска нет.
+                          </p>
+                        ) : null}
+                        {run?.status === "failed" ? (
+                          <p className="error-note">
+                            Запуск завершился ошибкой. ID: {run.id}. Новый запуск не
+                            создаётся автоматически.
+                          </p>
+                        ) : null}
+                      </div>
+                      <form
+                        className="chat-composer"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          try {
+                            if (p.draftMessage.trim() && canRework(run) && a?.saved)
+                              void perform("rework", {
+                                ...projectPayload(p),
+                                text: p.draftMessage.trim(),
+                                stageId: selectedStage?.id,
+                                parentRunId: run!.id,
+                                sourceArtifactId: a.id,
+                                documentId: a.documentId,
+                                sourceVersion: a.version,
+                                fileIds: p.files.map((f) => f.uploadedId),
+                              });
+                          } catch (e) {
+                            setError(e instanceof Error ? e.message : "Проверьте план");
+                          }
+                        }}
+                      >
+                        <label className="field">
+                          <span className="field-label">Вопрос или замечание к результату</span>
+                          <textarea
+                            className="textarea"
+                            name="revision-message"
+                            autoComplete="off"
+                            rows={3}
+                            disabled={
+                              sample || block || Boolean(p.pending) || !canRework(run) || !a?.saved
+                            }
+                            value={sample ? "" : p.draftMessage}
+                            onChange={(e) => patch({ draftMessage: e.target.value })}
+                            placeholder={
+                              sample
+                                ? "В учебном примере отправка отключена"
+                                : "Что уточнить или доработать? Укажите нужный этап или версию…"
+                            }
+                          />
+                        </label>
+                        <div className="composer-footer">
+                          <small>
+                            {sample
+                              ? "Для своей задачи создайте проект"
+                              : run
+                                ? canRework(run)
+                                  ? "Доработка создаст новый запуск в этом же проекте. Выбранные документ, версия и история сохранят связь."
+                                  : "Дождитесь завершения запуска. На вопросы отвечайте в форме выше; доработка не переоткрывает завершённый Run."
+                                : "Черновик замечания сохранён. Для отправки нужен запуск CTF."}
+                          </small>
+                          <button
+                            className="primary"
+                            disabled={
+                              sample ||
+                              block ||
+                              !canRework(run) ||
+                              !a?.saved ||
+                              Boolean(p.pending) ||
+                              !p.draftMessage.trim()
+                            }
+                          >
+                            Доработать в новом запуске
+                          </button>
                         </div>
-                      )}
-                    </>
-                  ) : null}
+                      </form>
+                    </section>
+                    <aside className="results-pane surface">
+                      <nav className="pane-tabs" aria-label="Панель проекта">
+                        {(["artifacts", "team", "usage"] as const).map((t) => (
+                          <button
+                            key={t}
+                            aria-pressed={sideTab === t}
+                            className={sideTab === t ? "active" : ""}
+                            onClick={() => setSideTab(t)}
+                          >
+                            {t === "artifacts" ? "Артефакты" : t === "team" ? "Команда" : "Замеры"}
+                          </button>
+                        ))}
+                      </nav>
+                      <div className="results-body">
+                        {sideTab === "team" ? team() : null}
+                        {sideTab === "usage" ? (
+                          <>
+                            <p className="section-kicker">ФАКТИЧЕСКОЕ ПОТРЕБЛЕНИЕ</p>
+                            <h2 className="section-title">Замеры CTF</h2>
+                            <p className="muted">
+                              Данные текущего запуска, не сумма по проекту. Запусков в
+                              истории: {projectRuns(p).length}.
+                            </p>
+                            <dl className="usage-list">
+                              {[
+                                ["Входные токены", run?.usage?.inputTokens],
+                                ["Выходные токены", run?.usage?.outputTokens],
+                                ["Запросы", run?.usage?.requests],
+                                ["Время вычисления, с", run?.usage?.computeSeconds],
+                              ].map(([label, value]) => (
+                                <div key={String(label)}>
+                                  <dt>{label}</dt>
+                                  <dd>
+                                    {value === undefined
+                                      ? "Не измерено"
+                                      : Number(value).toLocaleString("ru")}
+                                  </dd>
+                                </div>
+                              ))}
+                              <div>
+                                <dt>Затраты</dt>
+                                <dd>
+                                  {run?.usage?.cost === undefined
+                                    ? "Не измерено"
+                                    : `${run.usage.cost.toFixed(4)} ${run.usage.currency}`}
+                                </dd>
+                              </div>
+                            </dl>
+                            <p className="note">
+                              Продуктовые ограничения по токенам, запускам и проектам
+                              пока не включены. Неизмеренные значения не заменяются
+                              нулём.
+                            </p>
+                            <p className="muted">
+                              Показываем данные из backend, не прогноз. Ограничения
+                              безопасности и техническая ёмкость сервера/браузера
+                              сохраняются.
+                            </p>
+                          </>
+                        ) : null}
+                        {sideTab === "artifacts" ? (
+                          <>
+                            <p className="section-kicker">РЕЗУЛЬТАТ ЭТАПА</p>
+                            <h2 className="section-title">{selectedStage?.title}</h2>
+                            <p className="muted">{selectedStage?.goal}</p>
+                            {a ? (
+                              <>
+                                <div className="artifact-selects">
+                                  <label className="field">
+                                    <span className="field-label">Артефакт этапа</span>
+                                    <select
+                                      className="input"
+                                      name="artifact-document"
+                                      aria-label="Артефакт этапа"
+                                      value={activeDocument?.documentId}
+                                      onChange={(e) => {
+                                        setDocumentId(e.target.value);
+                                        setArtifactId("");
+                                      }}
+                                    >
+                                      {documents.map((d) => (
+                                        <option value={d.documentId} key={d.documentId}>
+                                          {d.title}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                  <label className="field">
+                                    <span className="field-label">Версия артефакта</span>
+                                    <select
+                                      className="input"
+                                      name="artifact-version"
+                                      aria-label="Версия артефакта"
+                                      value={a.id}
+                                      onChange={(e) => setArtifactId(e.target.value)}
+                                    >
+                                      {versions.map((v) => (
+                                        <option key={v.id} value={v.id}>
+                                          v{v.version} · {v.title}
+                                          {(sample ? v.approved : approved(p, v)) ? " · одобрена" : ""}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                </div>
+                                <div className="artifact">
+                                  <div className="artifact-head">
+                                    <span className="artifact-icon" aria-hidden>
+                                      v{a.version}
+                                    </span>
+                                    <div>
+                                      <h3>{a.title}</h3>
+                                      <small>
+                                        {sample
+                                          ? "Учебная версия, не результат CTF"
+                                          : a.saved
+                                            ? `Сервер подтвердил запись${a.savedAt ? ` · ${new Date(a.savedAt).toLocaleString("ru")}` : ""}`
+                                            : "Постоянное сохранение не подтверждено"}
+                                      </small>
+                                      {!sample ? (
+                                        <small>
+                                          {approved(p, a)
+                                            ? "Одобрено вами · подтверждено сервером для этой версии"
+                                            : "Пользовательское одобрение этой версии не подтверждено"}
+                                        </small>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                  {a.content || !a.file ? (
+                                    <Document content={a.content} />
+                                  ) : (
+                                    <p className="note">
+                                      Файл «{a.file.name}» не текстовый или слишком
+                                      большой для просмотра. Скачайте его, чтобы открыть.
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="artifact-actions">
+                                  {!sample ? (
+                                    <button
+                                      className="primary"
+                                      disabled={
+                                        block ||
+                                        Boolean(p.pending) ||
+                                        approved(p, a) ||
+                                        a.id !== versions[0]?.id ||
+                                        !a.saved
+                                      }
+                                      onClick={() =>
+                                        perform("approve", { artifactId: a.id, version: a.version }, a.id)
+                                      }
+                                    >
+                                      {approved(p, a) ? "Версия согласована" : "Согласовать результат"}
+                                    </button>
+                                  ) : null}
+                                  {a.file && !sample ? (
+                                    <a
+                                      className="secondary"
+                                      href={a.file.downloadUrl}
+                                      download={a.file.name}
+                                      onClick={() =>
+                                        track("file_download_handed", {
+                                          runId: artifactRunId(p, a.id),
+                                          artifactId: a.id,
+                                        })
+                                      }
+                                    >
+                                      Скачать файл
+                                      {a.file.sizeBytes !== null ? ` · ${bytes(a.file.sizeBytes)}` : ""}
+                                    </a>
+                                  ) : null}
+                                  <button
+                                    className="secondary"
+                                    hidden={!a.content && Boolean(a.file)}
+                                    onClick={() => {
+                                      downloadText(a);
+                                      track("text_download_handed", {
+                                        runId: artifactRunId(p, a.id),
+                                        artifactId: a.id,
+                                      });
+                                    }}
+                                  >
+                                    Скачать текст версии
+                                  </button>
+                                  {!sample ? (
+                                    <button
+                                      className="secondary"
+                                      disabled={block || !a.saved || !p.serverId || Boolean(p.pending)}
+                                      onClick={downloadZip}
+                                    >
+                                      Скачать ZIP версии
+                                    </button>
+                                  ) : null}
+                                </div>
+                                {!sample ? (
+                                  <p className="helper">
+                                    Для доработки напишите замечание в диалоге. Новая
+                                    версия появится только из ответа CTF; прежняя
+                                    останется доступна.
+                                  </p>
+                                ) : null}
+                              </>
+                            ) : (
+                              <div className="artifact-empty">
+                                <span aria-hidden>▤</span>
+                                <h3>Здесь появится артефакт этапа</h3>
+                                <p>
+                                  Результат, его версии и подтверждение сохранения
+                                  будут получены из сервиса. Пока этап только в плане.
+                                </p>
+                              </div>
+                            )}
+                          </>
+                        ) : null}
+                      </div>
+                    </aside>
+                  </div>
+                </section>
+              ) : null}
+            </main>
+            {onboarding && p ? (
+              <aside className="aside" aria-label="Состояние работы">
+                <h3>Сейчас</h3>
+                <div className="aside-item">
+                  <small>Этап</small>
+                  <strong>{STEP_NAMES[p.step]}</strong>
+                  <div className="progress-track" aria-hidden>
+                    <div className="progress-fill" style={{ width: `${((p.step + 1) / 5) * 100}%` }} />
+                  </div>
+                </div>
+                <div className="aside-item">
+                  <small>Следующий шаг</small>
+                  <strong>{nextStep}</strong>
+                </div>
+                <div className="aside-item">
+                  <small>{GUIDE[p.step].title}</small>
+                  <p>{GUIDE[p.step].text}</p>
+                </div>
+                <div className="aside-item">
+                  <small>Сервис</small>
+                  <strong>
+                    {api.available
+                      ? "CTF подключён — запуск после согласования плана"
+                      : "CTF пока не подключён. Подготовка проекта работает локально."}
+                  </strong>
                 </div>
               </aside>
-            </div>
-          </section>
-        ) : null}
-      </main>
+            ) : null}
+          </div>
+        </div>
+      </div>
       {preview ? (
         <div className="modal-backdrop">
           <section
@@ -2024,22 +2261,63 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
           >
             <div className="section-heading">
               <h2 id="file-preview-title">{preview.name}</h2>
-              <button
-                autoFocus
-                className="secondary"
-                onClick={() => setPreview(null)}
-              >
+              <button autoFocus className="secondary small" onClick={() => setPreview(null)}>
                 Закрыть просмотр
               </button>
             </div>
             <p className="muted">
-              Без выполнения содержимого. Для текстовых файлов — первые16КБ,
+              Без выполнения содержимого. Для текстовых файлов — первые 16 КБ,
               оригинал хранится полностью.
             </p>
             <pre>{preview.text}</pre>
           </section>
         </div>
       ) : null}
-    </div>
+    </>
+  );
+}
+
+const NAV_STEPS = [...STEP_NAMES, "Рабочее пространство"];
+const GUIDE = [
+  {
+    title: "Не нужно начинать с идеального ТЗ",
+    text: "Расскажите о ситуации и добавьте имеющиеся материалы. Команда получает содержание файлов только при явном запуске.",
+  },
+  {
+    title: "Неизвестное можно назвать неизвестным",
+    text: "Ответ «пока не знаю» лучше выдуманного факта. Во время работы фасилитатор вернётся за уточнением.",
+  },
+  {
+    title: "Вы участвуете в выборе",
+    text: "Вы видите, зачем нужна роль и что она должна передать дальше. Роли ИИ не заменяют проверку реальными специалистами.",
+  },
+  {
+    title: "Каждый этап оставляет результат",
+    text: "Артефакты и версии появятся в рабочем пространстве. Там можно задать вопрос, попросить доработку или согласовать результат.",
+  },
+];
+const CAPABILITIES = [
+  {
+    kicker: "01 / РЕШЕНИЕ",
+    title: "Разобраться в незнакомой области",
+    text: "Собрать основания, сравнить варианты, обозначить неизвестное.",
+  },
+  {
+    kicker: "02 / МАТЕРИАЛЫ",
+    title: "Подготовить документ или план",
+    text: "Приложить вводные и согласовать ожидаемый результат.",
+  },
+  {
+    kicker: "03 / ПРОВЕРКА",
+    title: "Посмотреть на задачу с разных сторон",
+    text: "Обсудить состав AI-команды и проверить допущения.",
+  },
+];
+
+function PaperclipIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m20.5 11.5-8.8 8.8a5 5 0 0 1-7.1-7.1l9.2-9.2a3.5 3.5 0 0 1 5 5l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5" />
+    </svg>
   );
 }
