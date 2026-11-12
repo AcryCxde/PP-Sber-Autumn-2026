@@ -275,7 +275,6 @@ async def accept_run_in_transaction(
     if conversation_id is None and owner_id is not None and await session.scalar(select(User.ai_frozen).where(User.id == owner_id)):
         raise RunAcceptanceError("ai_access_frozen", "AI-доступ временно приостановлен.")
 
-    reset_message: Message | None = None
     if conversation_id is None:
         if requested_context_mode == "reset":
             raise RunAcceptanceError(
@@ -333,8 +332,6 @@ async def accept_run_in_transaction(
     previous_session_id = conversation.claude_session_id
     if requested_context_mode == "reset":
         context_mode = "reset"
-        conversation.claude_session_id = None
-        conversation.context_state = "reset"
     elif conversation.claude_session_id:
         context_mode = "resume"
     else:
@@ -349,24 +346,6 @@ async def accept_run_in_transaction(
     )
     session.add(run)
     await session.flush()
-
-    reset_event: Event | None = None
-    if context_mode == "reset":
-        reset_message = Message(
-            conversation_id=conversation.id,
-            run_id=run.id,
-            role="system",
-            kind="context_reset",
-            sequence=await _next_message_sequence(session, conversation.id),
-            content="Контекст Claude был явно сброшен.",
-        )
-        session.add(reset_message)
-        await session.flush()
-        reset_event = await _append_event_in_transaction(
-            session,
-            run.id,
-            context_reset_event(message_payload(reset_message)),
-        )
 
     user_message = Message(
         conversation_id=conversation.id,
@@ -399,7 +378,7 @@ async def accept_run_in_transaction(
         resume_session_id=run.resume_session_id,
         user_message=user_message,
         accepted_event=accepted_event,
-        reset_event=reset_event,
+        reset_event=None,
         idempotent_replay=False,
     )
 
@@ -487,13 +466,39 @@ async def create_request(
     )
 
 
+async def apply_run_context_reset(
+    session: AsyncSession, run: Run, conversation: Conversation,
+) -> Event | None:
+    """Apply reset intent under the caller's conversation/Run locks, without commit."""
+    if run.context_mode != "reset":
+        return None
+    existing = await session.scalar(select(Event).where(
+        Event.run_id == run.id, Event.type == "context.reset"))
+    if existing is not None:
+        return None
+    conversation.claude_session_id = None
+    conversation.context_state = "reset"
+    reset_message = Message(
+        conversation_id=conversation.id, run_id=run.id, role="system", kind="context_reset",
+        sequence=await _next_message_sequence(session, conversation.id),
+        content="Контекст Claude был явно сброшен.",
+    )
+    session.add(reset_message)
+    await session.flush()
+    return await _append_event_in_transaction(
+        session, run.id, context_reset_event(message_payload(reset_message)),
+    )
+
+
 async def mark_run_running(session: AsyncSession, run_id: str) -> Event | None:
-    run = await session.get(Run, run_id)
-    if run is None:
+    locked = await _lock_run_context(session, run_id)
+    if locked is None:
         raise LookupError(f"Run {run_id} was not found")
+    run, conversation = locked
     if run.status != "pending":
         return None
 
+    await apply_run_context_reset(session, run, conversation)
     run.status = "running"
     run.started_at = datetime.now(UTC)
     event = await _append_event_in_transaction(

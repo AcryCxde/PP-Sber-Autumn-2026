@@ -205,6 +205,8 @@ class RunnerTransport:
                 PRIMARY KEY(run,id));
             """)
             diagnostics.initialize(db)
+            db.execute("CREATE INDEX IF NOT EXISTS diagnostic_source_order "
+                       "ON diagnostic_sources(command_id,source_public_seq DESC)")
 
     @contextmanager
     def _db(self) -> Iterator[sqlite3.Connection]:
@@ -398,8 +400,27 @@ class RunnerTransport:
             raise TransportError(str(error)) from error
 
     def diagnostic_snapshots(self, backend_run: str) -> list[dict]:
+        """Return the latest accepted observation of this immutable Run segment."""
         with self._db() as db:
-            return diagnostics.snapshots(db, backend_run)
+            segment = db.execute("SELECT command_id,project,transport_run FROM diagnostic_segments "
+                                 "WHERE backend_run=?", (backend_run,)).fetchone()
+            if segment is None:
+                return []
+            # Scan the indexed segment backwards; an unreceived source is not a snapshot.
+            row = db.execute(
+                "SELECT r.canonical_body,s.source_public_seq,s.source_journal_seq "
+                "FROM diagnostic_sources s INDEXED BY diagnostic_source_order "
+                "JOIN diagnostic_receipts r ON r.source_event_id=s.source_event_id "
+                "WHERE s.command_id=? ORDER BY s.source_public_seq DESC LIMIT 1",
+                (segment["command_id"],),
+            ).fetchone()
+            if row is None:
+                return []
+            return [{"frame": json.loads(row["canonical_body"]),
+                     "lineage": {"project": segment["project"], "transport_run": segment["transport_run"],
+                                 "command_id": segment["command_id"]},
+                     "source_order": {"public_seq": row["source_public_seq"],
+                                      "journal_seq": row["source_journal_seq"]}}]
 
     def _finish_if_saved(self, db: sqlite3.Connection, project: str, run: str) -> None:
         row = self._run(db, project, run)

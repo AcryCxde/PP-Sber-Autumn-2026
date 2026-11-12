@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import sqlite3
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -161,7 +162,7 @@ async def run_via_runner(
         # Diagnostic delivery can lag terminal; admin detail also catches up receipts.
         try:
             await catch_up(database, run_id, transport.diagnostic_snapshots(run_id))
-        except (DBAPIError, ValueError):
+        except (DBAPIError, sqlite3.Error, ValueError):
             # The durable receipt remains recoverable by detail; diagnostics cannot undo completion.
             logger.warning("Harness diagnostic projection pending", extra={"run_id": run_id})
         return finalization.terminal_event
