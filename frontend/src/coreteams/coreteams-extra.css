@@ -1,4 +1,58 @@
 /* Дополнения к стилям v9 для настоящего бэкенда: аккаунт, неопределённый прогресс, Markdown. */
+.ct .admin-root { max-width: 1280px; }
+.ct .admin-page { min-width: 0; }
+.ct .admin-nav, .ct .admin-refresh, .ct .admin-pagination, .ct .admin-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-block: 20px; }
+.ct .admin-nav { border-bottom: 1px solid var(--line); padding-bottom: 16px; }
+.ct .admin-nav a { color: var(--ink); padding: 8px 12px; }
+.ct .admin-nav a[aria-current="page"] { background: var(--lavender); border-radius: 8px; font-weight: 700; }
+.ct .admin-refresh { justify-content: space-between; color: var(--muted); font-size: 14px; }
+.ct .admin-section { padding: 24px; margin-block: 24px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper); }
+.ct .admin-section h2, .ct .admin-section h3 { margin-top: 0; }
+.ct .admin-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.ct .admin-period { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; border: 1px solid var(--line); padding: 16px; border-radius: 8px; min-width: 0; }
+.ct .admin-period legend { font-weight: 700; }
+.ct .admin-period label, .ct .admin-search { display: grid; gap: 6px; max-width: 100%; }
+.ct .admin-period small { flex-basis: 100%; overflow-wrap: anywhere; }
+.ct .admin-root input:not([type="checkbox"]), .ct .admin-root select, .ct .admin-policy-dialog textarea { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); min-width: 0; max-width: 100%; font: inherit; }
+.ct .admin-search { max-width: 420px; }
+.ct .admin-check { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; }
+.ct .admin-table-wrap { max-width: 100%; }
+.ct .admin-table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: 14px; }
+.ct .admin-table th, .ct .admin-table td { text-align: left; vertical-align: top; padding: 14px 10px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.ct .admin-table th { font-weight: 700; color: var(--muted); }
+.ct .admin-table small { display: block; margin-top: 6px; color: var(--muted); }
+.ct .admin-table button { text-align: left; margin-inline-end: 12px; margin-block: 4px; }
+.ct .admin-detail-panel > .btn { display: inline-block; margin: 8px 12px 8px 0; }
+.ct .admin-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.ct .admin-totals div { padding: 12px; border-left: 2px solid var(--line); }
+.ct .admin-totals dt { font-size: 14px; }
+.ct .admin-totals dd { margin: 10px 0 0; font-size: 22px; }
+.ct .admin-details { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 3fr); gap: 12px; }
+.ct .admin-details dd { margin: 0; overflow-wrap: anywhere; }
+.ct .admin-detail-panel { border: 2px solid var(--line-accent); padding: 24px; border-radius: var(--radius); background: var(--paper); margin-top: 24px; overflow-wrap: anywhere; }
+.ct .admin-notice { padding: 16px; background: var(--tint); border-left: 3px solid var(--ink); }
+.ct .admin-policy-dialog { color: var(--ink); background: var(--paper); width: min(620px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 24px; }
+.ct .admin-policy-dialog::backdrop { background: rgb(0 0 0 / 45%); }
+.ct .admin-policy-dialog textarea { display: block; width: 100%; min-height: 110px; margin-top: 8px; resize: vertical; box-sizing: border-box; }
+.ct .admin-policy-dialog p, .ct .admin-audit li { overflow-wrap: anywhere; }
+.ct .admin-audit { padding-left: 20px; }
+.ct .admin-audit li { padding-block: 12px; border-bottom: 1px solid var(--line); }
+@media (max-width: 720px) {
+  .ct .admin-filters { grid-template-columns: minmax(0, 1fr); }
+  .ct .admin-section, .ct .admin-detail-panel { padding: 16px; }
+  .ct .admin-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ct .admin-table, .ct .admin-table tbody, .ct .admin-table tr, .ct .admin-table td { display: block; width: auto; }
+  .ct .admin-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .ct .admin-table tr { margin-block: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .ct .admin-table td { border: 0; padding: 8px 0; }
+  .ct .admin-table td::before { content: attr(data-label); display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .ct .admin-details { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .ct .admin-details dt { font-weight: 700; margin-top: 8px; }
+}
+@media (forced-colors: active) {
+  .ct .admin-nav a[aria-current="page"] { outline: 2px solid CanvasText; }
+  .ct .admin-section, .ct .admin-detail-panel, .ct .admin-table tr { border-color: CanvasText; }
+}
 .ct.ct-root {
   min-height: 100dvh;
   display: flex;

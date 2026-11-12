@@ -104,7 +104,8 @@ async def test_pending_terminal_gets_bounded_correction_subscription(
     app = main.create_app(database, settings)
     socket = Socket(app)
 
-    async def pending_runner(state, acceptance, content, deliver):
+    async def pending_runner(state, acceptance, content, deliver, *, admission):
+        assert admission.run_id == acceptance.run_id
         await add_confirmation(database, acceptance.run_id, acceptance.conversation_id, "artifact")
         async with database.session() as session:
             final = await finalize_run(session, acceptance.run_id, status="completed", session_id="runner", assistant_content=None, exit_code=None)
@@ -128,7 +129,8 @@ async def test_pending_terminal_gets_bounded_correction_subscription(
         assert correction["seq"] > pending["seq"]
         complete = await socket.until("replay.complete")
         assert complete["terminal"] is True
-        assert [event["seq"] for event in socket.events if "seq" in event] == [1, 2, 3]
+        assert [event["seq"] for event in socket.events if "seq" in event] == [1, 2, 3, 4]
+        assert socket.events[1]["type"] == "run.started"
         assert app.state.live_run_deliveries == {}
     finally:
         tasks = list(getattr(socket, "_gateway_subscriptions", {}).values())

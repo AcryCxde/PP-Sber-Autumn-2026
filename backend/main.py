@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from backend import models  # noqa: F401
-from backend.api.admin import router as admin_router
+from backend.api.admin import router as admin_router, v1_router as admin_v1_router
 from backend.api.auth import router as auth_router
 from backend.api.conversation_files import router as conversation_files_router
 from backend.api.history import router as history_router
@@ -22,13 +22,14 @@ from backend.api.product import router as product_router
 from backend.api.projects import router as projects_router
 from backend.artifact_confirmations import reconcile_artifact_confirmations
 from backend.auth import CurrentUser, owns_conversation, owns_run, websocket_user_id
+from backend.ai_access import AiAccessError, AdmissionState, admit_run, policy_transaction
 from backend.config import PROJECT_ROOT, Settings
 from backend.container_registry import ContainerRegistry
 from backend.containers import ContainerError, ContainerManager
 from backend.db import Database
 from backend.artifact_files import save_agent_file
 from backend.materials import MATERIALS_DIR, conversation_materials, materials_note, write_workspace_materials
-from backend.models import Event, Message, Run
+from backend.models import Event, Message, Run, User
 from backend.parser import (
     NormalizedEvent,
     normalized_event,
@@ -45,7 +46,6 @@ from backend.repository import (
     client_request_exists,
     finalize_run,
     list_run_events,
-    mark_run_running,
     reconcile_orphaned_runs,
 )
 from backend.runner_app import RunnerBridge, create_runner_router
@@ -373,9 +373,23 @@ async def execute_accepted_run(
     content: str,
     deliver_event: Any,
 ) -> None:
-    """Выполняет принятый запуск; deliver_event доставляет сохранённые события подписчику."""
+    """Commit the unique admission before any executor or workspace side effect."""
+    try:
+        async with app_state.database.session() as session:
+            admission = await policy_transaction(session, lambda: admit_run(session, acceptance.run_id))
+    except AiAccessError:
+        # Admission failures must not strand accepted background work as pending.
+        async with app_state.database.session() as session:
+            final = await finalize_run(session, acceptance.run_id, assistant_content=None,
+                status="failed", exit_code=None, error_code="ai_policy_unavailable")
+        await deliver_event(final.terminal_event)
+        return
+    if admission.event is not None:
+        await deliver_event(admission.event)
+    if admission.state != AdmissionState.ADMITTED:
+        return
     if app_state.settings.executor == "runner":
-        await run_via_runner(app_state, acceptance, content, deliver_event)
+        await run_via_runner(app_state, acceptance, content, deliver_event, admission=admission)
         return
 
     process: subprocess.Popen[str] | None = None
@@ -512,11 +526,6 @@ async def execute_accepted_run(
             logger.warning("Artifact baseline discovery truncated", extra={
                 "run_id": acceptance.run_id, "entries_scanned": files_before.entries_scanned,
             })
-
-        async with app_state.database.session() as session:
-            started_event = await mark_run_running(session, acceptance.run_id)
-        if started_event is not None:
-            await deliver_event(started_event)
 
         process = await start_claude(
             content + materials_note(materials),
@@ -1030,6 +1039,11 @@ async def dispatch_project_run(
                     client_request_id=client_request_id,
                 )
                 return
+            if await session.scalar(select(User.ai_frozen).where(User.id == owner_id)):
+                await send_command_error(websocket, code="ai_access_frozen",
+                    message="AI-доступ временно приостановлен.", client_request_id=client_request_id,
+                    conversation_id=project.conversation_id)
+                return
             try:
                 prepared = await prepare_run(session, project, kind=kind, text=text)
             except ProjectRunError as error:
@@ -1176,6 +1190,7 @@ def create_app(
     application.state.live_run_deliveries = {}
     application.include_router(auth_router)
     application.include_router(admin_router)
+    application.include_router(admin_v1_router)
     application.include_router(history_router)
     application.include_router(conversation_files_router)
     application.include_router(projects_router)
@@ -1193,6 +1208,7 @@ def create_app(
         bridge = RunnerBridge(
             transport,
             heartbeat_timeout=selected_settings.runner_heartbeat_timeout_seconds,
+            harness_diagnostics_enabled=selected_settings.runner_harness_diagnostics_enabled,
         )
         application.state.runner_transport = transport
         application.state.runner_manager = ContainerManager(

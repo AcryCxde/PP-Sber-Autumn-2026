@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool = False
     # Legacy compatibility only; unverified email addresses never grant administrator roles.
     admin_emails: str = ""
+    # Включать только после enforcement всех путей запуска и race-проверок.
+    admin_policy_management_enabled: bool = False
+    runner_harness_diagnostics_enabled: bool = False
 
     # "cli" — claude подпроцессом в контейнере backend; "runner" — контейнер ctrunner на сессию.
     executor: Literal["cli", "runner"] = "cli"

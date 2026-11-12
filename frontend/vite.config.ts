@@ -10,7 +10,8 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: backendUrl,
-        changeOrigin: true,
+        // Preserve the browser origin for the backend's same-origin mutation guard.
+        changeOrigin: false,
       },
       '/ws': {
         target: backendUrl.replace(/^http/, 'ws'),

@@ -11,7 +11,7 @@ from sqlalchemy import case, exists, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import Artifact, ArtifactConfirmation, Conversation, Event, Message, Project, Run
+from backend.models import Artifact, ArtifactConfirmation, Conversation, Event, Message, Project, Run, User
 from backend.storage import StoredFile
 from backend.public_events import (
     SAFE_FAILURE_CODES,
@@ -272,6 +272,9 @@ async def accept_run_in_transaction(
     if requested_context_mode not in {"resume", "reset"}:
         raise RunAcceptanceError("invalid_context_mode", "Некорректный context_mode.")
 
+    if conversation_id is None and owner_id is not None and await session.scalar(select(User.ai_frozen).where(User.id == owner_id)):
+        raise RunAcceptanceError("ai_access_frozen", "AI-доступ временно приостановлен.")
+
     reset_message: Message | None = None
     if conversation_id is None:
         if requested_context_mode == "reset":
@@ -323,6 +326,9 @@ async def accept_run_in_transaction(
             )
         if conversation.next_message_seq == 0 and conversation.title == NEW_CONVERSATION_TITLE:
             conversation.title = make_title(content)
+
+    if owner_id is not None and await session.scalar(select(User.ai_frozen).where(User.id == owner_id)):
+        raise RunAcceptanceError("ai_access_frozen", "AI-доступ временно приостановлен.")
 
     previous_session_id = conversation.claude_session_id
     if requested_context_mode == "reset":

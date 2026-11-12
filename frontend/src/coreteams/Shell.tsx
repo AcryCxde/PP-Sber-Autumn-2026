@@ -10,8 +10,21 @@ import { ProjectPage } from './ProjectPage';
 import { useRoute } from './router';
 import { SocketContext, useGatewaySocket } from './socket';
 import { Modal } from './ui';
+import { AdminOverview } from './AdminOverview';
+import { AdminUsers } from './AdminUsers';
+import { AdminAccessContext } from './adminHooks';
+import { AdminAvailability } from './AdminShared';
+
+const ADMIN_SHELL_ENABLED = import.meta.env.VITE_ADMIN_SHELL_ENABLED === 'true';
 import './coreteams.css';
 import './coreteams-extra.css';
+
+function AdminArea({ user, section }: { user: User; section: 'overview' | 'users' }) {
+  const [access, setAccess] = useState<'unauthorized' | 'forbidden' | null>(null);
+  const revoke = useCallback((status: 'unauthorized' | 'forbidden') => setAccess(status), []);
+  if (user.role !== 'admin' || access) return <div className="page"><h1>{access === 'unauthorized' ? 'Требуется вход' : 'Недостаточно прав'}</h1><p>Данные администрирования очищены.</p></div>;
+  return <AdminAccessContext.Provider value={revoke}><div className="page admin-root"><nav className="admin-nav" aria-label="Разделы администрирования"><a href="#admin/overview" aria-current={section === 'overview' ? 'page' : undefined}>Обзор</a><a href="#admin/users" aria-current={section === 'users' ? 'page' : undefined}>Пользователи</a></nav>{section === 'overview' ? <AdminOverview /> : <AdminUsers currentUserId={user.id} />}</div></AdminAccessContext.Provider>;
+}
 
 function Brand() {
   return (
@@ -74,7 +87,8 @@ export default function Shell({ user, onLogout }: { user: User; onLogout: () => 
   }
 
   let page: ReactNode = <div className="page"><p className="helper">{loadError ?? 'Загрузка…'}</p></div>;
-  if (shell) {
+  if (route.page === 'admin') page = <AdminAvailability enabled={ADMIN_SHELL_ENABLED}><AdminArea key={user.id} user={user} section={route.section} /></AdminAvailability>;
+  else if (shell) {
     if (route.page === 'catalog') page = <Catalog />;
     else if (route.page === 'profile') page = <Profile />;
     else if (route.page === 'project') page = <ProjectPage key={route.projectId} route={route} />;
@@ -95,8 +109,7 @@ export default function Shell({ user, onLogout }: { user: User; onLogout: () => 
             {NAV.map(([key, label]) => (
               <a key={key} href={`#${key}`} aria-current={current === key ? 'page' : undefined}>{label}</a>
             ))}
-            {/* Панель вовлечённости живёт в web-product, который раздаётся на /product/. */}
-            {user.role === 'admin' && <a href="/product/#admin">Админка</a>}
+            {user.role === 'admin' && <a href="#admin/overview" aria-current={current === 'admin' ? 'page' : undefined}>Администрирование</a>}
           </nav>
           <span className="demo-label ct-account">
             <button
