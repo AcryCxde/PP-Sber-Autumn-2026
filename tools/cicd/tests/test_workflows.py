@@ -101,6 +101,9 @@ def test_postgres_suite_is_required_and_opted_in():
     assert job["timeout-minutes"] == 15
     assert job["needs"] == "classify"
     assert job["env"]["SCHEMA_PG16_TESTS"] == "1"
+    checkout = next(s for s in job["steps"] if "checkout@" in s.get("uses", ""))
+    # Baseline tests archive exact historical release commits, not just HEAD.
+    assert checkout["with"]["fetch-depth"] == 0
     setup = next(s for s in job["steps"] if "setup-python@" in s.get("uses", ""))
     assert setup["with"]["python-version"] == "3.12"
     commands = "\n".join(s.get("run", "") for s in job["steps"])
