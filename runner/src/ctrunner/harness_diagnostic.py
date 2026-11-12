@@ -83,6 +83,7 @@ class DiagnosticFeed:
         self._live: set[str] = set()
         self._closed: set[str] = set()
         self._offset = 0
+        self.scan_pending = False
 
     def _usage_is_live(self, event: Event) -> bool:
         payload = event.payload if isinstance(event.payload, dict) else {}
@@ -111,6 +112,7 @@ class DiagnosticFeed:
     def rewind(self) -> None:
         """Begin another retained-journal pass without treating silence as a receipt."""
         self._offset = 0
+        self.scan_pending = False
         self._live.clear()
         self._closed.clear()
 
@@ -122,6 +124,9 @@ class DiagnosticFeed:
             return True
 
     def poll(self, max_frames: int = 256) -> list[dict[str, JsonValue]]:
+        # Distinguish a bounded scan page from EOF/incomplete input. The caller can
+        # cooperatively continue scanning without waiting for another journal append.
+        self.scan_pending = False
         if max_frames <= 0:
             return []
         try:
@@ -136,6 +141,10 @@ class DiagnosticFeed:
                         break
                     lines.append(line)
                     size += len(line)
+                self.scan_pending = (
+                    (len(lines) == max_frames or size >= 1_048_576)
+                    and stream.tell() < self._path.stat().st_size
+                )
         except FileNotFoundError:
             return []
         frames: list[dict[str, JsonValue]] = []
@@ -146,12 +155,13 @@ class DiagnosticFeed:
             try:
                 # Public payload still uses the legacy parser; money remains exact here.
                 event = parse_row(json.loads(line))
-                live = self._usage_is_live(event)
+                if not self._usage_is_live(event):
+                    continue
                 exact = json.loads(line, parse_float=Decimal)
             except ValueError:
                 continue
             raw = exact.get("payload")
-            if not live or not isinstance(raw, dict) or raw.get("type") != "result":
+            if not isinstance(raw, dict) or raw.get("type") != "result":
                 continue
             session = raw.get("session_id")
             value = amount(raw.get("total_cost_usd"))

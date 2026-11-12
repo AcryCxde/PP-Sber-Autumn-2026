@@ -3,6 +3,7 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
@@ -59,6 +60,11 @@ class RunAcceptance:
     accepted_event: Event
     reset_event: Event | None
     idempotent_replay: bool
+
+
+class ExecutionPhase(StrEnum):
+    BEFORE_EXECUTOR = "before_executor"
+    EXECUTOR_STARTED = "executor_started"
 
 
 @dataclass(frozen=True)
@@ -617,6 +623,7 @@ async def finalize_run(
     error: str | None = None,
     error_code: str | None = None,
     commit: bool = True,
+    execution_phase: ExecutionPhase = ExecutionPhase.EXECUTOR_STARTED,
 ) -> RunFinalization:
     del error
     if status not in TERMINAL_RUN_STATUSES:
@@ -700,14 +707,19 @@ async def finalize_run(
     elif status == "completed":
         conversation.claude_session_id = None
         conversation.context_state = "unavailable"
-    elif status == "outcome_unknown" or error_code in {
-        "artifact_save_failed",
-        "claude_cli_failed",
-        "claude_request_failed",
-        "claude_session_unavailable",
-        "claude_session_mismatch",
-        "claude_session_state_uncertain",
-    }:
+    # A subscriber failure before executor handoff cannot invalidate a resume
+    # context. Leave the locked current value untouched rather than restoring a
+    # captured session over a concurrent context change. Reset is not reversible.
+    elif (execution_phase != ExecutionPhase.BEFORE_EXECUTOR or run.context_mode != "resume") and (
+        status == "outcome_unknown" or error_code in {
+            "artifact_save_failed",
+            "claude_cli_failed",
+            "claude_request_failed",
+            "claude_session_unavailable",
+            "claude_session_mismatch",
+            "claude_session_state_uncertain",
+        }
+    ):
         conversation.claude_session_id = None
         conversation.context_state = "unavailable"
 

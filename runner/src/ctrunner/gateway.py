@@ -413,11 +413,20 @@ class GatewayClient:
                     await ws.send(json.dumps(frame, ensure_ascii=False))
                     delay = min(30.0, self._poll_s * 2 ** min(count, 10))
                     attempts[key] = (count + 1, now + (min(delay, 0.05) if draining else delay))
-            if draining:
-                await asyncio.sleep(min(self._poll_s, 0.05))
-            else:
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(self._draining.wait(), self._poll_s)
+            await self._wait_for_diagnostic_page(
+                draining=draining, scan_pending=feed.scan_pending and len(pending) < 256
+            )
+
+    async def _wait_for_diagnostic_page(self, *, draining: bool, scan_pending: bool) -> None:
+        if scan_pending:
+            # A full scan page is not EOF. Yield between bounded I/O/CPU pages,
+            # but do not impose the append-poll interval on retained history.
+            await asyncio.sleep(0)
+        elif draining:
+            await asyncio.sleep(min(self._poll_s, 0.05))
+        else:
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._draining.wait(), self._poll_s)
 
     async def _send_heartbeats(self, ws: ClientConnection) -> None:
         while True:

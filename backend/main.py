@@ -39,6 +39,7 @@ from backend.projects import ProjectRunError, link_run, owned_project, prepare_r
 from backend.public_events import message_created_event, project_public_event_data
 from backend.repository import (
     TERMINAL_RUN_STATUSES,
+    ExecutionPhase,
     RunAcceptance,
     RunAcceptanceError,
     accept_run,
@@ -407,6 +408,7 @@ async def execute_accepted_run(
                         session, acceptance.run_id, assistant_content=None, exit_code=None,
                         status="outcome_unknown" if cancelled else "failed",
                         error_code="heartbeat_lost" if cancelled else "claude_request_failed",
+                        execution_phase=ExecutionPhase.BEFORE_EXECUTOR,
                     )
 
         # Keep ownership until the bounded attempt finishes. shield alone would
