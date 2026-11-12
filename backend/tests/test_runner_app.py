@@ -8,7 +8,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from backend.runner_app import RunnerBridge, create_runner_app
+from backend.runner_app import create_runner_app
 from backend.runner_transport import RunnerTransport
 
 

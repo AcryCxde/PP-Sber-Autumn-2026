@@ -23,6 +23,7 @@ from backend.models import AiPolicyAudit
 from pydantic import BaseModel
 from sqlalchemy import Select, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import DBAPIError
 
 from backend.api.history import SessionDependency
 from backend.auth import AdminUser
@@ -492,10 +493,22 @@ async def operational_runs(admin: AdminUser, session: SessionDependency,
 async def operational_detail(run_id: str, request: Request, admin: AdminUser, session: SessionDependency):
     del admin
     transport = getattr(request.app.state, "runner_transport", None)
+    projection_unavailable = False
     if transport is not None:
         from backend.harness_estimate import catch_up
-        await catch_up(request.app.state.database, run_id, transport.diagnostic_snapshots(run_id))
+        try:
+            await catch_up(request.app.state.database, run_id, transport.diagnostic_snapshots(run_id))
+        except DBAPIError:
+            # catch_up owns a separate session; its failed transaction is closed.
+            projection_unavailable = True
+        except ValueError as error:
+            if str(error) not in {"harness_lineage_conflict", "harness_observation_conflict", "invalid_harness_snapshot"}:
+                raise
+            projection_unavailable = True
     body = await admin_queries.run_detail(session, run_id)
     if body is None:
         return _policy_error(AiAccessError("run_not_found", 404, "Запуск не найден."))
+    if projection_unavailable:
+        body["harness_estimate"] = admin_queries.unknown_estimate()
+        body["harness_estimate"]["unavailable_reason"] = "projection_unavailable"
     return JSONResponse(body, headers={"Cache-Control": "no-store"})

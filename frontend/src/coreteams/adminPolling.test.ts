@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createAdminPolling } from './adminPolling';
+import { createAdminPolling, pollStateForLoader } from './adminPolling';
 import { AdminApiError } from './adminApi';
 import { UnauthorizedError } from '../auth';
 
@@ -7,6 +7,20 @@ const sample = { as_of: '2026-11-12T00:00:00Z', value: 1 };
 const settle = () => vi.advanceTimersByTimeAsync(0);
 afterEach(() => vi.useRealTimers());
 describe('admin polling', () => {
+  it('never exposes the previous loader snapshot while a replacement is loading or fails', async () => {
+    vi.useFakeTimers();
+    const first = vi.fn().mockResolvedValue(sample);
+    const second = vi.fn().mockRejectedValue(new Error('network'));
+    const old = createAdminPolling(first);
+    old.start(); await settle();
+    const snapshot = { load: first, state: old.state() };
+    expect(pollStateForLoader(snapshot, second)).toMatchObject({ status: 'loading', data: null, asOf: null, lastSuccess: null });
+    const replacement = createAdminPolling(second);
+    replacement.start(); await settle();
+    expect(pollStateForLoader({ load: second, state: replacement.state() }, second)).toMatchObject({ status: 'error', data: null });
+    expect(pollStateForLoader(snapshot, first).data).toBe(sample);
+    old.dispose(); replacement.dispose();
+  });
   it('loads, polls at 15 seconds and pauses while hidden', async () => {
     vi.useFakeTimers();
     const load = vi.fn().mockResolvedValue(sample);

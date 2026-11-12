@@ -1,6 +1,8 @@
 """Independent private diagnostics; legacy journal translation is unchanged."""
 
 import json
+import sqlite3
+from contextlib import closing
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from uuid import UUID, uuid5
@@ -45,6 +47,32 @@ def amount(raw: object) -> str | None:
         return None
 
 
+class DiagnosticReceipts:
+    """Only definitive private outcomes; no source payload or public cursor state."""
+
+    def __init__(self, journal: Path):
+        self._path = journal.with_name(journal.name + ".diagnostic-receipts.sqlite3")
+        with closing(self._connect()) as db, db:
+            db.execute("CREATE TABLE IF NOT EXISTS receipts ("
+                       "id TEXT PRIMARY KEY, status TEXT NOT NULL "
+                       "CHECK(status IN ('accepted','rejected')))")
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self._path, timeout=1)
+
+    def contains(self, identity: str) -> bool:
+        with closing(self._connect()) as db:
+            row = db.execute("SELECT 1 FROM receipts WHERE id=?", (identity,)).fetchone()
+            return row is not None
+
+    def record(self, identity: str, status: str) -> None:
+        if status not in {"accepted", "rejected"}:
+            raise ValueError("invalid_diagnostic_receipt")
+        with closing(self._connect()) as db, db:
+            db.execute("INSERT INTO receipts VALUES(?,?) ON CONFLICT(id) DO NOTHING",
+                       (identity, status))
+
+
 class DiagnosticFeed:
     """Replay retained rows independently of public ACK; never modifies v0 drafts."""
 
@@ -53,17 +81,26 @@ class DiagnosticFeed:
         self._translator = Translator(project, root)
         self._offset = 0
 
-    def poll(self) -> list[dict[str, JsonValue]]:
+    def poll(self, max_frames: int = 256) -> list[dict[str, JsonValue]]:
+        if max_frames <= 0:
+            return []
         try:
             with self._path.open("rb") as stream:
                 stream.seek(self._offset)
-                chunk = stream.read()
+                # Bounded scan pages; retain an incomplete final row for the next poll.
+                lines: list[bytes] = []
+                size = 0
+                while len(lines) < max_frames and size < 1_048_576:
+                    line = stream.readline()
+                    if not line.endswith(b"\n"):
+                        break
+                    lines.append(line)
+                    size += len(line)
         except FileNotFoundError:
             return []
-        whole = chunk[: chunk.rfind(b"\n") + 1]
         frames: list[dict[str, JsonValue]] = []
-        for line in whole.split(b"\n")[:-1]:
-            self._offset += len(line) + 1
+        for line in lines:
+            self._offset += len(line)
             if not line.strip():
                 continue
             try:

@@ -45,6 +45,7 @@ from backend.repository import (
     append_event,
     client_request_exists,
     finalize_run,
+    fail_unadmitted_run,
     list_run_events,
     reconcile_orphaned_runs,
 )
@@ -380,9 +381,9 @@ async def execute_accepted_run(
     except AiAccessError:
         # Admission failures must not strand accepted background work as pending.
         async with app_state.database.session() as session:
-            final = await finalize_run(session, acceptance.run_id, assistant_content=None,
-                status="failed", exit_code=None, error_code="ai_policy_unavailable")
-        await deliver_event(final.terminal_event)
+            final = await fail_unadmitted_run(session, acceptance.run_id)
+        if final is not None:
+            await deliver_event(final.terminal_event)
         return
     if admission.event is not None:
         await deliver_event(admission.event)

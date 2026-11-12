@@ -24,7 +24,7 @@ from backend.ai_access import AdmissionResult, AdmissionState
 from backend.harness_estimate import catch_up
 from backend.containers import ContainerError, ContainerManager
 from backend.models import Event
-from backend.materials import MATERIALS_DIR, conversation_materials, materials_note
+from backend.materials import conversation_materials, materials_note
 from backend.public_events import message_created_event, question_asked_event
 from backend.repository import (
     RunAcceptance,

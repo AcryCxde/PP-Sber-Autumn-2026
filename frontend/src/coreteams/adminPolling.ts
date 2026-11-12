@@ -6,8 +6,12 @@ export type PollState<T> = {
   lastSuccess: number | null; asOf: string | null; stale: boolean; refreshError: boolean; refreshing: boolean;
 };
 export type AdminLoader<T> = (signal: AbortSignal) => Promise<T>;
+export function initialPollState<T>(): PollState<T> { return { status: 'loading', data: null, lastSuccess: null, asOf: null, stale: false, refreshError: false, refreshing: false }; }
+export function pollStateForLoader<T>(snapshot: { load: AdminLoader<T>; state: PollState<T> }, load: AdminLoader<T>): PollState<T> {
+  return snapshot.load === load ? snapshot.state : initialPollState<T>();
+}
 export function createAdminPolling<T extends { as_of: string }>(initialLoad: AdminLoader<T>, revoked: () => void = () => {}) {
-  let value: PollState<T> = { status: 'loading', data: null, lastSuccess: null, asOf: null, stale: false, refreshError: false, refreshing: false };
+  let value: PollState<T> = initialPollState<T>();
   let load = initialLoad; let generation = 0; let controller: AbortController | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined; let staleTimer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false; let hidden = false; let stopped = false; let failures = 0;

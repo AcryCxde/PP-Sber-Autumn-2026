@@ -1,5 +1,4 @@
 """Independent durable private receipts do not alter public delivery."""
-import json
 from uuid import uuid4
 
 import pytest
@@ -71,7 +70,7 @@ def test_harness_answer_enqueue_acceptance_gap_unknown(tmp_path):
     transport.ingest("p1", 5, event("user.answer.accepted", {"question_id": "q1", "answers": {"Q?": "A"}}))
     second = usage()
     transport.ingest("p1", 6, second)
-    assert transport.diagnostic("p1", frame(gap, 4)) is None
+    assert transport.diagnostic("p1", frame(gap, 4))["status"] == "rejected"
     assert transport.diagnostic("p1", frame(first))
     assert transport.diagnostic("p1", frame(second, 6))
     assert len(transport.diagnostic_snapshots("backend-1")) == 1
@@ -83,7 +82,25 @@ def test_prefeature_source_cannot_gain_guessed_binding(tmp_path):
     transport.message("p1", "run-1", "client", "go")
     source = usage()
     transport.ingest("p1", 2, source)
-    assert transport.diagnostic("p1", frame(source)) is None
+    receipt = transport.diagnostic("p1", frame(source))
+    assert receipt["status"] == "rejected"
+    reopened = RunnerTransport(transport.database)
+    assert reopened.diagnostic("p1", frame(source)) == receipt
+    assert reopened.diagnostic_snapshots("backend-1") == []
+    with pytest.raises(TransportError, match="diagnostic_conflict"):
+        reopened.diagnostic("p1", frame(source, value="0.2"))
+
+
+def test_historical_accepted_source_without_observation_is_rejected(tmp_path):
+    transport = RunnerTransport(tmp_path / "transport.db")
+    transport.message("p1", "run-1", "client", "go")
+    source = usage()
+    transport.ingest("p1", 2, source)
+    # Simulate source accepted by the pre-diagnostic receiver; duplicate ingest cannot bind it.
+    with transport._db() as db:
+        db.execute("DELETE FROM diagnostic_sources")
+    assert not transport.ingest("p1", 2, source)
+    assert transport.diagnostic("p1", frame(source))["status"] == "rejected"
 
 
 def test_private_ack_does_not_hide_remaining_same_row_drafts(tmp_path):
@@ -107,7 +124,7 @@ def test_late_unaccepted_result_never_acquires_a_receipt(tmp_path):
     source = usage()
     with pytest.raises(TransportError, match="terminal_run"):
         transport.ingest("p1", 3, source)
-    assert transport.diagnostic("p1", frame(source, 3)) is None
+    assert transport.diagnostic("p1", frame(source, 3))["status"] == "rejected"
     assert transport.diagnostic_snapshots("backend-1") == []
 
 

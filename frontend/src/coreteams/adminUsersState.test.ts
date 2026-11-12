@@ -19,6 +19,17 @@ describe('policy form state', () => {
     state = policyReducer(state, { type: 'reconfirm', key: 'new' });
     expect(state?.key).toBe('new'); expect(state?.user.ai_access.version).toBe(2); expect(canConfirm(state)).toBe(true);
   });
+  it.each([false, true])('resolves a conflict when another admin already applied desired frozen=%s', (frozen) => {
+    let state = beginPolicy({ ...user, ai_access: { frozen: !frozen, version: 0 } }, 'original');
+    state = policyReducer(state, { type: 'conflict', current: { frozen, version: 1 } })!;
+    expect(state.status).toBe('satisfied');
+    expect(state.attempted).toBe(false);
+    expect(canConfirm(state)).toBe(false);
+    expect(policyReducer(state, { type: 'reconfirm', key: 'unnecessary' })).toBe(state);
+  });
+  it('a policy_state_conflict is a definitive no-op, not an uncertain commit', () => {
+    expect(isUncertainPolicyError(new AdminApiError(409, 'policy_state_conflict'))).toBe(false);
+  });
   it('a generic server error remains uncertain, verified rejection may unlock editing', () => {
     expect(isUncertainPolicyError(new AdminApiError(503, 'ai_policy_unavailable'))).toBe(true);
     expect(isUncertainPolicyError(new AdminApiError(503, 'unknown'))).toBe(true);
