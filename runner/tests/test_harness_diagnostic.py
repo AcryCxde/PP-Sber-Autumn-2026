@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import ctrunner.harness_diagnostic as diagnostic_module
 from ctrunner.gateway import JournalFeed, event_message
 from ctrunner.harness_diagnostic import DiagnosticFeed, DiagnosticReceipts
 from ctrunner.v0 import EventType, Translator, parse_row
@@ -97,6 +98,69 @@ def test_diagnostic_fold_does_not_retain_role_or_file_state(tmp_path):
     assert not hasattr(feed, "_translator")
     assert feed._live == {"r"}
     assert feed._closed == set()
+
+
+def test_feed_only_decimal_parses_live_results(tmp_path, monkeypatch):
+    path = tmp_path / "events.jsonl"
+    journal(path, "0.12345678901234567890123456789")
+    original = diagnostic_module.json.loads
+    exact_calls = []
+
+    def counted_loads(raw, **kwargs):
+        if "parse_float" in kwargs:
+            exact_calls.append(raw)
+        return original(raw, **kwargs)
+
+    monkeypatch.setattr(diagnostic_module.json, "loads", counted_loads)
+    frames = DiagnosticFeed(path, "p1", "/workspace/project").poll()
+    assert len(exact_calls) == 1
+    assert frames[0]["payload"]["value_usd"] == "0.12345678901234567890123456789"
+
+
+def test_feed_reports_full_scan_page_without_frames(tmp_path):
+    path = tmp_path / "events.jsonl"
+    journal(path)
+    feed = DiagnosticFeed(path, "p1", "/workspace/project")
+    assert feed.poll(1) == []
+    assert feed.scan_pending
+    assert len(feed.poll(1)) == 1
+    assert not feed.scan_pending
+    assert feed.poll() == []
+    assert not feed.scan_pending
+
+
+def test_incomplete_tail_does_not_request_immediate_scan(tmp_path):
+    path = tmp_path / "events.jsonl"
+    journal(path)
+    with path.open("ab") as stream:
+        stream.write(b'{"seq":3')
+    feed = DiagnosticFeed(path, "p1", "/workspace/project")
+    assert len(feed.poll()) == 1
+    assert not feed.scan_pending
+    assert not feed.caught_up()
+    assert feed.poll() == []
+    assert not feed.scan_pending
+
+
+def test_terminal_result_is_not_decimal_parsed(tmp_path, monkeypatch):
+    path = tmp_path / "events.jsonl"
+    journal(path)
+    with path.open("a") as stream:
+        stream.write('{"seq":3,"ts":3,"turn_id":"run-1","kind":"turn_completed",'
+                     '"payload":{}}\n')
+        stream.write('{"seq":4,"ts":4,"turn_id":"run-1","kind":"sdk",'
+                     '"payload":{"type":"result","session_id":"s","total_cost_usd":2}}\n')
+    original = diagnostic_module.json.loads
+    exact_calls = []
+
+    def counted_loads(raw, **kwargs):
+        if "parse_float" in kwargs:
+            exact_calls.append(raw)
+        return original(raw, **kwargs)
+
+    monkeypatch.setattr(diagnostic_module.json, "loads", counted_loads)
+    assert len(DiagnosticFeed(path, "p1", "/workspace/project").poll()) == 1
+    assert len(exact_calls) == 1
 
 
 def test_decimal_canonical_and_missing_session(tmp_path):
