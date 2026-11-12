@@ -1,5 +1,7 @@
 # CoreTeams product workspace
 
+**Статус:** React B v9.2 подключён к backend через контракт V2, как описано ниже. [Новый прототип пользовательского пути](prototypes/2026-11-11/README.md) лежит в этой папке отдельно и пока не подключён к контракту B. Основное приложение и прототип не следует принимать за одну готовую версию сервиса.
+
 CoreTeams — Рабочее пространство с AI-командой для сложных задач вне одной экспертизы.
 
 React/Vite/TypeScript workspace based on the owner-provided v9.2 behaviour, wired to the CoreTeams backend through contract V2 (`/api/v2`, implemented in `backend/api/product.py` on top of the existing Claude runs).

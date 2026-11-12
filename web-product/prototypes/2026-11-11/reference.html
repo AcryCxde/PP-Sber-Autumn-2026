@@ -1,0 +1,1368 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f7f7f3">
+  <meta name="description" content="Интерактивный макет первого пользовательского пути CoreTeams">
+  <title>CoreTeams — рабочее пространство</title>
+  <style>
+:root{--paper:#f7f7f3;--surface:#fff;--ink:#152b35;--muted:#66757b;--line:#e0e5e3;--accent:#2459e8;--accent-dark:#1849cc;--accent-soft:#edf2ff;--mint:#e8f5ed;--mint-ink:#29644c;--warm:#faf1e5;--warm-ink:#866135;--shadow:0 14px 44px rgba(28,48,56,.055);font-family:Inter,"Segoe UI",Arial,sans-serif;color:var(--ink);background:var(--paper)}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-width:320px}button,input,textarea,select{font:inherit}button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}a{color:inherit}.hidden{display:none!important}.app{min-height:100vh;display:grid;grid-template-columns:234px minmax(0,1fr)}
+.sidebar{border-right:1px solid var(--line);background:#f3f5f2;padding:28px 18px 22px;display:flex;flex-direction:column;gap:28px;min-height:100vh}.brand{display:flex;align-items:center;gap:11px;font-weight:790;letter-spacing:-.04em;font-size:23px;text-decoration:none;white-space:nowrap}.brand-mark{display:grid;grid-template-columns:repeat(2,10px);gap:3px;transform:rotate(-12deg)}.brand-mark i{width:10px;height:10px;border-radius:3px;background:var(--ink)}.brand-mark i:nth-child(2){background:var(--accent)}.brand-mark i:nth-child(3){background:#8ec5a6}.brand-mark i:nth-child(4){background:var(--ink)}.sidebar-caption{font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:750;color:#84908f;margin:0 0 13px 12px}.nav-list{display:flex;flex-direction:column;gap:5px}.nav-button{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:1px solid transparent;border-radius:12px;background:transparent;padding:12px;color:#56676f;font-size:14px;font-weight:590}.nav-button:hover{background:#e9eeeb;color:var(--ink)}.nav-button.active{background:#fff;color:var(--ink);border-color:#e6ece9;box-shadow:0 3px 12px rgba(18,38,44,.035)}.nav-num{width:22px;height:22px;border:1px solid #cdd8d5;border-radius:7px;display:grid;place-items:center;font-size:11px;font-weight:750;flex:none}.nav-button.active .nav-num{background:var(--accent);color:#fff;border-color:var(--accent)}.sidebar-bottom{margin-top:auto}.draft-note{border-top:1px solid var(--line);padding:17px 11px 0;color:#758581;font-size:12px;line-height:1.5}.draft-note strong{display:block;color:#465d59;font-size:12px;margin-bottom:3px}
+.main-shell{min-width:0}.topbar{min-height:72px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:15px;padding:0 clamp(22px,4vw,62px);background:rgba(255,255,255,.55)}.topbar-left{display:flex;align-items:center;gap:12px;min-width:0}.project-label{font-weight:680;font-size:14px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.topbar-dot{width:6px;height:6px;background:#aab8b0;border-radius:50%;flex:none}.topbar-sub{color:var(--muted);font-size:12px;white-space:nowrap}.topbar-actions{display:flex;align-items:center;gap:10px}.text-button{border:0;background:transparent;color:#45636b;font-weight:650;padding:10px 8px}.text-button:hover{color:var(--accent)}.small-button{background:#fff;border:1px solid #cbd6d2;border-radius:10px;padding:9px 14px;color:var(--ink);font-size:13px;font-weight:730;white-space:nowrap}.small-button:hover{border-color:var(--accent);color:var(--accent)}
+.work-grid{display:grid;grid-template-columns:minmax(0,880px) 222px;gap:clamp(26px,4vw,66px);max-width:1320px;margin:0 auto;padding:clamp(32px,5vw,70px) clamp(22px,4vw,62px) 100px;align-items:start}.main-content{min-width:0}.eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:800;color:#427d66;margin:0 0 15px}.page-title{font-size:clamp(36px,4.3vw,58px);line-height:1.06;letter-spacing:-.055em;font-weight:730;max-width:720px;margin:0 0 19px}.page-title em{font-style:normal;color:var(--accent)}.lead{color:#5b6d72;font-size:17px;line-height:1.55;max-width:690px;margin:0 0 34px}.section-title{font-size:19px;letter-spacing:-.025em;margin:0 0 15px;font-weight:760}.section-kicker{color:#678078;font-size:13px;font-weight:690;margin:0 0 10px}.section-block{margin-top:34px}.role-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.role-card{background:var(--surface);border:1.5px solid var(--line);border-radius:18px;padding:22px;display:flex;flex-direction:column;min-height:213px;box-shadow:0 3px 9px rgba(22,44,48,.025);transition:border-color .2s,transform .2s,box-shadow .2s}.role-card:hover{border-color:#aabcf0;transform:translateY(-2px);box-shadow:var(--shadow)}.role-card.selected{border-color:var(--accent);box-shadow:0 0 0 3px #2459e814}.role-symbol{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;color:var(--accent);background:var(--accent-soft);font-size:18px;font-weight:780;margin-bottom:15px}.role-card:nth-child(2) .role-symbol{background:var(--mint);color:var(--mint-ink)}.role-card h3{font-size:19px;letter-spacing:-.025em;margin:0 0 7px}.role-card p{color:#6a797d;font-size:13px;line-height:1.5;margin:0 0 18px}.role-card .button{margin-top:auto;align-self:flex-start}.button{border:1px solid transparent;border-radius:11px;padding:12px 18px;font-size:14px;font-weight:750;line-height:1.2;display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:44px}.button.primary{background:var(--accent);color:#fff}.button.primary:hover{background:var(--accent-dark)}.button.secondary{border-color:#cbd5d1;background:#fff;color:var(--ink)}.button.secondary:hover{border-color:#aabcf0;color:var(--accent)}.button.quiet{background:#eef2f0;color:#365459}.button.quiet:hover{background:#e5ece9}.button.ghost{background:transparent;border-color:transparent;color:var(--accent);padding-left:4px}.button.ghost:hover{text-decoration:underline}.button.small{padding:8px 13px;min-height:36px;font-size:12px;border-radius:9px}
+.brief-box,.surface{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:26px;box-shadow:0 3px 12px rgba(22,44,48,.025)}.brief-box{margin-top:23px}.field-label{display:block;font-size:14px;font-weight:720;margin-bottom:9px}.input,.textarea,.select{width:100%;border:1px solid #cbd7d4;border-radius:11px;padding:13px 14px;background:#fff;color:var(--ink);outline:none}.textarea{min-height:98px;resize:vertical;line-height:1.55}.input:focus,.textarea:focus,.select:focus{border-color:var(--accent);box-shadow:0 0 0 3px #2459e822}.input::placeholder,.textarea::placeholder{color:#9aa9a9}.helper{color:#81908f;font-size:12px;line-height:1.55;margin:8px 0 0}.examples{display:flex;flex-wrap:wrap;gap:8px;margin:15px 0 0}.example-chip{background:#f3f5f3;border:1px solid #e5e9e6;border-radius:999px;padding:7px 11px;color:#51646b;font-size:12px}.example-chip:hover{border-color:var(--accent);color:var(--accent)}.form-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:22px}.notice-line{color:#82918d;font-size:12px;line-height:1.5}.error{color:#b04145;font-size:13px;margin:10px 0 0;min-height:20px}
+.aside{position:sticky;top:27px;border-left:1px solid #d8e3dc;padding-left:22px;color:#6f807c}.aside-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.aside h3{font-size:13px;color:var(--ink);margin:0 0 18px}.aside-toggle{border:0;background:transparent;color:#698079;padding:3px;border-radius:6px}.aside-toggle:hover{background:#e9f0eb}.aside-item{padding:0 0 19px;margin-bottom:17px;border-bottom:1px solid #e1e8e3}.aside-item:last-child{border:0}.aside-item small{display:block;color:#8b9a95;font-size:11px;margin-bottom:6px}.aside-item strong{display:block;color:#405b57;font-size:13px;font-weight:700;line-height:1.45}.progress-track{height:5px;background:#dfe7e2;border-radius:99px;overflow:hidden;margin-top:10px}.progress-fill{height:100%;background:var(--accent);border-radius:99px}.aside.collapsed{padding:0;border:0;width:38px}.aside.collapsed .aside-head h3,.aside.collapsed .aside-body{display:none}
+.question-top{display:flex;align-items:center;gap:10px;margin-bottom:15px}.facilitator-icon{width:29px;height:29px;border-radius:9px;display:grid;place-items:center;background:#e9f4ee;color:#2f7152;font-weight:800}.question-top strong{font-size:13px}.badge{display:inline-flex;align-items:center;border-radius:999px;background:#f0f3f1;color:#5f706d;padding:5px 9px;font-size:11px;font-weight:690}.badge.blue{background:var(--accent-soft);color:var(--accent-dark)}.badge.green{background:var(--mint);color:var(--mint-ink)}.badge.amber{background:var(--warm);color:var(--warm-ink)}.question-text{font-size:23px;line-height:1.3;letter-spacing:-.025em;margin:0 0 16px}.choice-list{display:grid;gap:9px}.choice{border:1px solid #d5dfda;border-radius:11px;background:#fff;padding:14px 15px;display:flex;align-items:center;gap:12px;cursor:pointer}.choice:hover{border-color:#9fb5ad}.choice.checked{border-color:var(--accent);background:#f6f8ff}.choice input{accent-color:var(--accent);width:17px;height:17px;margin:0}.choice span{font-size:14px}.workspace-summary{background:#eef3ef;border:1px solid #e1e9e2;border-radius:14px;padding:17px 19px;margin-bottom:22px}.workspace-summary small{display:block;color:#74897e;font-size:11px;font-weight:700;margin-bottom:6px}.workspace-summary strong{font-size:14px;line-height:1.45}.stack{display:grid;gap:16px}.file-picker{border:1px dashed #b9c9c1;border-radius:12px;padding:15px 16px;background:#fbfcfa}.file-picker input{display:block;width:100%;margin-top:8px;font-size:12px;color:#6b7c77}.file-picker .helper{margin-top:7px}.muted-panel{background:#f9fbf9;border:1px solid #e2e9e4;border-radius:13px;padding:16px}.muted-panel strong{font-size:13px}.muted-panel p{color:#73837d;font-size:12px;line-height:1.5;margin:6px 0 0}
+.team-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:11px}.team-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:17px;min-height:144px}.team-card .role-symbol{width:28px;height:28px;font-size:13px;margin-bottom:10px}.team-card strong{display:block;font-size:14px;margin-bottom:5px}.team-card p{font-size:12px;color:#768580;line-height:1.45;margin:0}.team-card.added{border-color:#9fcbb0;background:#fcfffc}.team-card.add{border-style:dashed;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:7px}.team-card.add strong{color:var(--accent)}.team-card.add button{border:0;background:transparent;padding:0;text-align:left;color:var(--accent);font-weight:750}.mini-form{margin-top:14px;background:#f8faf8;border:1px solid var(--line);border-radius:13px;padding:16px}.mini-form .input{margin-bottom:10px}.plan-steps{display:grid;gap:8px}.plan-step{display:flex;align-items:flex-start;gap:12px;padding:12px 0;border-bottom:1px solid #e9eeeb}.plan-step:last-child{border:0}.plan-step b{font-size:11px;color:var(--accent);background:var(--accent-soft);border-radius:7px;padding:5px 7px}.plan-step strong{font-size:14px}.plan-step small{display:block;color:#798983;font-size:12px;margin-top:4px}.change-row{display:grid;grid-template-columns:1fr 28px 1fr;gap:8px;align-items:stretch;margin-top:16px}.change-cell{background:#f7f9f7;border:1px solid #e2e9e4;border-radius:10px;padding:13px;font-size:12px;line-height:1.5}.change-cell strong{display:block;font-size:11px;margin-bottom:4px;color:#789087}.change-arrow{display:grid;place-items:center;color:var(--accent);font-weight:800}.format-grid{display:flex;gap:7px;flex-wrap:wrap}.format-option{border:1px solid #d2ddd8;background:#fff;border-radius:9px;padding:9px 13px;font-weight:700;font-size:12px}.format-option.active{border-color:var(--accent);background:var(--accent-soft);color:var(--accent)}
+.result-intro{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}.result-intro h1{font-size:clamp(31px,3vw,44px);line-height:1.13;letter-spacing:-.04em;margin:0 0 10px}.result-intro p{font-size:14px;color:var(--muted);line-height:1.55;margin:0 0 23px}.result-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.result-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px;min-height:145px}.result-card .mini-index{font-size:11px;color:#4a805d;font-weight:800;margin-bottom:12px}.result-card h3{font-size:15px;letter-spacing:-.015em;margin:0 0 8px}.result-card p{font-size:12px;line-height:1.55;color:#6f807a;margin:0}.four-blocks{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:14px}.four-block{background:#f9faf8;border:1px solid #e4eae5;border-radius:12px;padding:14px}.four-block strong{display:block;font-size:12px;margin-bottom:6px}.four-block p{font-size:12px;line-height:1.5;color:#76857f;margin:0}.artifact{display:flex;align-items:center;justify-content:space-between;gap:18px;border:1px solid var(--line);border-radius:15px;background:#fff;padding:18px 20px}.artifact-head{display:flex;align-items:center;gap:13px}.artifact-icon{background:#eaf1ff;color:var(--accent);width:39px;height:42px;display:grid;place-items:center;border-radius:8px;font-size:13px;font-weight:850}.artifact strong{font-size:14px}.artifact small{display:block;color:#7a8984;font-size:11px;margin-top:5px}.artifact-actions{display:flex;gap:8px;flex-wrap:wrap}.version-list{display:grid;gap:9px}.version-row{border:1px solid var(--line);border-radius:11px;background:#fff;padding:13px 15px;display:flex;justify-content:space-between;align-items:center;gap:12px}.version-row strong{font-size:13px}.version-row small{display:block;color:#80908a;font-size:11px;margin-top:5px}.version-row button{white-space:nowrap}.save-callout{background:#eef5fb;border:1px solid #d8e5f5;border-radius:14px;padding:19px 21px;display:flex;justify-content:space-between;align-items:center;gap:15px}.save-callout strong{font-size:14px}.save-callout p{font-size:12px;color:#6b7f8e;margin:5px 0 0;line-height:1.5}
+.dialog-backdrop{position:fixed;inset:0;background:rgba(12,31,40,.42);display:grid;place-items:center;padding:16px;z-index:30}.dialog{background:#fff;border-radius:20px;box-shadow:0 24px 70px rgba(12,31,40,.25);width:min(100%,465px);padding:27px}.dialog-top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.dialog h2{font-size:23px;letter-spacing:-.03em;margin:0 0 9px}.dialog p{font-size:13px;color:#6a7b7f;line-height:1.55;margin:0 0 18px}.dialog-close{border:0;background:#f0f3f2;border-radius:8px;width:29px;height:29px;font-size:18px;color:#657877}.dialog .field-label{font-size:12px;margin-top:15px}.dialog .input{padding:12px}.dialog .button{width:100%;margin-top:20px}.dialog .helper{font-size:11px}.toast{position:fixed;bottom:22px;right:22px;max-width:390px;background:#173c4a;color:#fff;border-radius:11px;padding:13px 16px;font-size:13px;box-shadow:0 10px 30px rgba(12,31,40,.18);opacity:0;pointer-events:none;transform:translateY(8px);transition:.2s;z-index:40}.toast.show{opacity:1;transform:translateY(0)}
+.preview-body{background:#eef0ec;min-height:100vh;padding:36px 16px}.preview-toolbar{max-width:850px;margin:0 auto 15px;display:flex;justify-content:space-between;align-items:center;gap:10px}.preview-toolbar a{font-size:13px;color:var(--accent);font-weight:700}.document{max-width:850px;margin:auto;background:#fff;min-height:1000px;padding:clamp(34px,7vw,82px);box-shadow:var(--shadow)}.document h1{font-size:31px;line-height:1.2;letter-spacing:-.04em}.document h2{font-size:17px;margin-top:30px;border-top:1px solid var(--line);padding-top:15px}.document p,.document li{line-height:1.65;font-size:14px;color:#334e55}.document .doc-meta{font-size:12px;color:#80918c}.document .demo-stamp{color:#976d36;background:#fff5e6;padding:9px 11px;display:inline-block;font-size:12px;border-radius:6px}
+@media(max-width:1100px){.work-grid{grid-template-columns:minmax(0,1fr)}.aside{position:static;display:none}.team-grid{grid-template-columns:repeat(2,1fr)}}@media(max-width:760px){.app{grid-template-columns:1fr}.sidebar{min-height:auto;padding:15px 18px;gap:8px;border-right:0;border-bottom:1px solid var(--line)}.sidebar .brand{font-size:20px}.sidebar-caption,.sidebar-bottom{display:none}.nav-list{flex-direction:row;overflow:auto;gap:4px;margin-top:4px}.nav-button{white-space:nowrap;padding:8px 9px;font-size:12px;width:auto}.nav-num{width:18px;height:18px;font-size:9px}.topbar{padding:12px 20px;min-height:59px}.topbar-sub,.topbar-dot{display:none}.work-grid{padding:30px 18px 80px}.page-title{font-size:38px}.role-grid,.result-grid,.four-blocks{grid-template-columns:1fr}.role-card{min-height:0}.team-grid{grid-template-columns:1fr 1fr}.artifact,.save-callout{align-items:flex-start;flex-direction:column}.artifact-actions{width:100%}.artifact-actions .button{flex:1}.result-intro{display:block}}@media(max-width:420px){.team-grid{grid-template-columns:1fr}.topbar-actions .text-button{display:none}.button{width:100%}.role-card .button{width:auto}.form-actions{align-items:stretch;flex-direction:column}.form-actions .button{width:100%}.version-row{align-items:flex-start;flex-direction:column}.change-row{grid-template-columns:1fr}.change-arrow{transform:rotate(90deg)}}
+.button{text-decoration:none}
+.helper{color:#5e7175;font-size:13px}.notice-line{color:#637779;font-size:13px}.role-card p{color:#5e7378;font-size:14px}.aside-item small{color:#657b76;font-size:12px}.aside-item strong{font-size:14px}.result-card p,.four-block p{color:#5d7275;font-size:13px}.artifact small,.version-row small{color:#637a78;font-size:12px}
+.section-outline-grid{display:grid;gap:9px}.section-outline{display:flex;gap:15px;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:12px;padding:15px 18px}.section-outline-num{color:#31805e;background:#e8f5ed;border-radius:7px;padding:5px 7px;font-size:11px;font-weight:800;flex:none}.section-outline h3{font-size:14px;margin:1px 0 4px}.section-outline p{font-size:13px;color:#607378;margin:0;line-height:1.45}
+.result-title{font-size:clamp(32px,4vw,48px);line-height:1.1;letter-spacing:-.045em;margin:0 0 10px;overflow-wrap:anywhere}.result-subtitle{color:#607378;font-size:16px;line-height:1.5;margin:0}.result-update{background:#edf6f0;border:1px solid #d9e8df;color:#315e48;border-radius:10px;padding:11px 14px;font-size:13px;margin:24px 0 0}.result-artifact{margin-top:29px;padding:24px;box-shadow:var(--shadow)}.result-artifact .artifact-head{min-width:0}.result-artifact .artifact-head>div:last-child{min-width:0}.result-artifact strong{font-size:17px;line-height:1.35;overflow-wrap:anywhere}.artifact-contents{display:block;margin-top:9px;color:#506d6a;font-size:13px;line-height:1.45}.result-caption{color:#61757a;font-size:13px;line-height:1.5;margin:12px 0 6px}.result-followup{margin-top:33px;display:flex;justify-content:space-between;align-items:center;gap:20px}.result-followup .section-title{margin-bottom:5px}.result-followup .helper{margin:0}.result-followup form{width:100%}.result-save{margin-top:22px;border-top:1px solid var(--line);padding-top:19px;display:flex;align-items:center;justify-content:space-between;gap:15px;color:#657777;font-size:13px}@media(max-width:760px){.result-followup,.result-save{align-items:flex-start;flex-direction:column}.result-artifact{padding:19px}}
+.projects-link{display:flex;justify-content:space-between;align-items:center;width:100%;border:1px solid transparent;border-radius:11px;background:transparent;color:#38545a;padding:11px 12px;text-align:left;font-size:14px;font-weight:750}.projects-link span{color:#748582;font-size:12px}.projects-link:hover,.projects-link.active{background:#fff;border-color:#e2e9e4}.projects-grid{display:block;max-width:1100px}.projects-page .lead{margin-bottom:30px}.projects-section-head{display:flex;justify-content:space-between;align-items:center;gap:16px;margin:28px 0 12px}.projects-section-head .section-title{margin:0}.project-list{display:grid;gap:10px}.project-row{display:flex;align-items:center;justify-content:space-between;gap:20px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px 20px}.project-details{min-width:0}.project-details h3{font-size:16px;line-height:1.4;margin:0 0 6px;overflow-wrap:anywhere}.project-details p{font-size:13px;color:#627678;line-height:1.45;margin:0}.project-actions{display:flex;gap:8px;flex:none}.project-row.trashed{background:#f9faf8}.empty-projects{border:1px dashed #c6d3ce;border-radius:13px;padding:25px;color:#627678;font-size:14px}.trash-head{margin-top:42px}.projects-helper{margin:0 0 13px}.button.danger{background:#fff;border-color:#c8a4a5;color:#9b343d}.button.danger:hover{background:#fff4f3;border-color:#ae565d}.button.danger.confirm{width:100%;background:#a33c43;color:#fff;border-color:#a33c43;margin-top:5px}.button.danger.confirm:hover{background:#8d2d35}.dialog .button.danger.confirm{margin-top:5px}.skip-link{position:absolute;left:12px;top:-60px;z-index:50;background:#fff;border:2px solid var(--accent);border-radius:8px;padding:9px 13px;font-weight:700}.skip-link:focus{top:12px}:where(button,a,input,textarea,select):focus-visible{outline:3px solid #2459e8;outline-offset:3px}button{touch-action:manipulation}.dialog{overscroll-behavior:contain}.page-title,.section-title,.result-title{text-wrap:balance}
+@media(max-width:760px){.projects-link{width:auto;align-self:flex-start}.project-row{align-items:flex-start;flex-direction:column}.project-actions{flex-wrap:wrap;width:100%}.project-actions .button{flex:1}.projects-section-head{align-items:flex-start}.projects-section-head .button{width:auto}}@media(max-width:420px){.topbar-actions [data-action="return-project"],.topbar-actions [data-action="show-projects"]{display:inline-flex;font-size:12px}.project-actions .button{width:100%;flex:unset}.projects-section-head .button{min-width:0}.topbar{gap:6px}.topbar-left{min-width:0}.topbar-actions{gap:2px}.topbar-actions .text-button{padding:7px 4px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}.role-card,.toast{transition:none}}
+.output-choice-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.output-choice{display:flex;flex-direction:column;align-items:flex-start;gap:6px;text-align:left;background:#fff;border:1px solid #cedbd5;border-radius:12px;padding:15px 17px;min-height:83px}.output-choice strong{font-size:14px}.output-choice span{font-size:12px;color:#627678;line-height:1.4}.output-choice:hover{border-color:#9bb3ed}.output-choice.selected{border-color:var(--accent);background:#f4f7ff;box-shadow:0 0 0 2px #2459e817}.skill-panel{margin-top:24px;border-color:#cbd9e9;background:#fcfdff}.skill-panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.skill-panel-head .section-title{margin-bottom:3px}.skill-panel-head .helper{margin-top:3px}.skill-panel-head .badge{flex:none}.skill-file-list{display:flex;flex-wrap:wrap;gap:7px;margin:20px 0}.skill-file-list span{border:1px solid #dce5e9;background:#f5f8fa;border-radius:8px;padding:7px 10px;font-size:12px;font-weight:700;color:#46606a}.skill-saved{background:#edf6f0;border:1px solid #d4e7da;border-radius:9px;color:#2e6248;font-size:13px;padding:10px 12px;margin:0 0 14px}.skill-actions,.version-actions{display:flex;flex-wrap:wrap;gap:8px}.skill-panel>.helper:last-child{margin-top:16px}.skill-source{font:13px/1.65 Consolas,Monaco,monospace;white-space:pre-wrap;overflow-wrap:anywhere;color:#263f49;margin:0}.skill-document{min-height:0}.version-actions{justify-content:flex-end}@media(max-width:760px){.output-choice-grid{grid-template-columns:1fr}.skill-panel-head{display:block}.skill-panel-head .badge{margin-top:13px}.skill-actions .button{width:auto}}
+.topbar-actions .text-button{white-space:nowrap}
+
+/* Диалог стоит в верхней части рабочего пространства и результата. */
+.facilitator-chat{margin:22px 0 0;padding:0;overflow:hidden;border-color:#cbded4;box-shadow:0 8px 26px rgba(24,63,58,.055)}
+.chat-header{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:17px 21px;border-bottom:1px solid #e6ede8;background:#f8fbf8}
+.chat-header .question-top{margin:0}.chat-header .question-top strong{display:block;font-size:15px}.chat-header .question-top small{display:block;color:#627a72;font-size:12px;margin-top:3px}
+.chat-thread{max-height:330px;overflow-y:auto;display:flex;flex-direction:column;gap:13px;padding:20px 22px;scrollbar-color:#b6c9bd transparent;scrollbar-width:thin}
+.chat-pair{display:contents}.chat-message{max-width:88%;padding:11px 14px;border-radius:14px;line-height:1.5;overflow-wrap:anywhere}
+.chat-message small{display:block;font-size:11px;font-weight:780;margin-bottom:4px}.chat-message p{font-size:15px;margin:0;white-space:pre-wrap}
+.chat-message.facilitator{align-self:flex-start;background:#edf5ee;color:#214537;border-bottom-left-radius:4px}.chat-message.facilitator small{color:#4b8064}
+.chat-message.user{align-self:flex-end;background:#edf2ff;color:#203e79;border-bottom-right-radius:4px}.chat-message.user small{color:#5b76a8}
+.chat-message.current{border:1px solid #c8decf}
+.chat-composer{padding:16px 22px 18px;border-top:1px solid #e6ede8}.chat-composer .field-label{margin-bottom:7px}.chat-composer .textarea{min-height:84px;font-size:15px}.chat-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:10px}.chat-actions .button{min-height:40px}
+.chat-ready{display:flex;justify-content:space-between;align-items:center;gap:15px;padding:14px 22px;background:#f2f7f2;border-top:1px solid #dce9de}.chat-ready strong{font-size:14px}.chat-ready p{font-size:13px;color:#526d5d;margin:4px 0 0}.chat-ready .button{flex:none}
+.chat-attachment{padding:14px 22px;border-top:1px solid #e6ede8}.chat-attachment .field-label{margin-bottom:5px}.chat-attachment input{font-size:13px;max-width:100%}.chat-attachment .helper{margin-top:6px}
+.chat-disclaimer{font-size:12px;color:#617674;line-height:1.45;margin:0;padding:12px 22px;border-top:1px solid #e6ede8;background:#fbfcfb}
+@media(max-width:760px){.chat-ready{align-items:flex-start;flex-direction:column}.chat-ready .button{width:auto}.chat-message{max-width:96%}}
+@media(max-width:420px){.chat-header,.chat-thread,.chat-composer,.chat-ready,.chat-attachment,.chat-disclaimer{padding-left:15px;padding-right:15px}.chat-header .badge{font-size:10px}.chat-actions .button,.chat-ready .button{width:100%}}
+.doc-dialogue{margin:24px 0;border:1px solid #dbe7df;border-radius:10px;padding:13px 16px;background:#f9fcf9}.doc-dialogue summary{cursor:pointer;font-size:14px;font-weight:750;color:#315d48}.doc-dialogue p{margin:14px 0 0}
+
+/* Рабочее приложение: прокручивается содержимое этапа, а не вся страница. */
+html,body,#app{height:100%;overflow:hidden}.app{height:100dvh;min-height:0}.sidebar{height:100%;min-height:0;overflow-y:auto}.main-shell{min-height:0;display:grid;grid-template-rows:62px minmax(0,1fr)}.topbar{min-height:62px;padding:0 30px}.work-grid{width:100%;height:100%;min-height:0;max-width:none;margin:0;padding:24px 30px;grid-template-columns:minmax(0,1fr) 210px;gap:26px;overflow:hidden}.main-content{height:100%;overflow-y:auto;overscroll-behavior:contain;padding:0 8px 20px 0;scrollbar-color:#c5d2cb transparent;scrollbar-width:thin}.main-content>section{max-width:1080px}.aside{top:0;overflow-y:auto;max-height:100%}
+.page-title{font-size:clamp(28px,2.5vw,38px);line-height:1.12;letter-spacing:-.04em;max-width:none;margin:0 0 9px}.result-title{font-size:clamp(29px,2.5vw,38px)}.eyebrow{margin-bottom:8px}.lead{font-size:15px;line-height:1.45;margin-bottom:18px;max-width:850px}.workspace-summary{margin-bottom:14px;padding:12px 16px}.facilitator-chat{margin-top:15px}
+section[aria-labelledby="workspace-title"]{height:100%;min-height:0;display:flex;flex-direction:column}section[aria-labelledby="workspace-title"] .facilitator-chat{flex:1;min-height:340px;display:flex;flex-direction:column;margin-top:0}section[aria-labelledby="workspace-title"] .chat-thread{flex:1;max-height:none;min-height:90px}.chat-header{padding-top:12px;padding-bottom:12px}.chat-composer{padding-top:11px;padding-bottom:12px}.chat-composer .textarea{min-height:67px}.chat-attachment{padding-top:9px;padding-bottom:9px}.chat-disclaimer{padding-top:7px;padding-bottom:7px}
+.work-page{height:100%;min-height:0;display:flex;flex-direction:column}.work-page .lead{margin-bottom:13px}.work-honesty{background:#fff9ed;border:1px solid #efddba;border-radius:11px;padding:10px 14px;display:flex;gap:12px;font-size:13px;line-height:1.4}.work-honesty strong{color:#77572b;white-space:nowrap}.work-honesty span{color:#745f42}.work-progress{display:flex;align-items:center;gap:13px;margin:15px 0 11px;font-size:13px;font-weight:700;color:#526b61}.work-progress .progress-track{flex:1;margin:0}.agent-feed{display:grid;gap:9px;overflow-y:auto;min-height:0;padding-right:7px}.agent-event{display:grid;grid-template-columns:32px minmax(0,1fr);gap:12px;border:1px solid #dce7df;background:#fff;border-radius:13px;padding:13px 15px}.agent-event.pending{background:#f7f9f7;color:#788983}.agent-event-index{color:#2e6f50;font-size:12px;font-weight:800}.agent-event-head{display:flex;align-items:center;gap:9px}.agent-event-head strong{font-size:14px}.agent-event p{font-size:13px;line-height:1.4;color:#5a6f6b;margin:6px 0 0}.agent-output{margin-top:10px;border-left:3px solid #a6cbb4;padding-left:10px}.agent-output small{display:block;color:#5e8670;font-size:11px;font-weight:750;margin-bottom:3px}.agent-output span{font-size:13px;line-height:1.4;color:#344e4b}.work-footer{display:flex;align-items:center;gap:14px;padding-top:14px}.work-footer span{font-size:12px;color:#637875}
+@media(max-width:1100px){.work-grid{grid-template-columns:minmax(0,1fr)}.aside{display:none}}
+@media(max-width:760px){.app{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.sidebar{height:auto;min-height:0;overflow:hidden;padding:11px 16px}.sidebar .brand{font-size:18px}.sidebar .brand-mark{transform:scale(.75) rotate(-12deg);transform-origin:left center}.sidebar .nav-list{margin-top:2px}.main-shell{grid-template-rows:50px minmax(0,1fr)}.topbar{min-height:50px;padding:0 16px}.work-grid{padding:14px 16px 0}.main-content{padding:0 0 16px}.page-title{font-size:28px}.lead{font-size:14px}.work-honesty{display:block}.work-honesty strong{display:block;margin-bottom:3px}}
+.export-bar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);border-radius:13px;padding:15px 17px;margin-top:10px}.export-bar>div:first-child{display:flex;flex-direction:column;gap:3px;min-width:165px}.export-bar strong{font-size:14px}.export-bar span{font-size:12px;color:#657979}.export-bar .format-grid{flex:1}.export-bar .button{white-space:nowrap}.result-artifact{margin-top:18px}.artifact-icon{width:52px;min-width:52px;font-size:11px}.result-caption{margin:9px 0 12px}
+html:has(body.preview-body),body.preview-body,body.preview-body #app{height:auto;overflow:auto}body.preview-body{min-height:100vh}body.preview-body #app{min-height:100vh}
+@media(max-width:760px){.export-bar{align-items:flex-start;flex-direction:column}.export-bar .button{width:100%}.work-footer{align-items:flex-start;flex-direction:column}.work-footer .button{width:100%}}
+.result-dashboard{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(295px,.85fr);gap:14px;height:min(510px,calc(100dvh - 205px));min-height:420px;margin-top:15px}.result-dialog,.result-files{min-width:0;min-height:0}.result-dialog .facilitator-chat{height:100%;display:flex;flex-direction:column;margin:0}.result-dialog .chat-thread{flex:1;max-height:none;min-height:75px}.result-files{overflow-y:auto;scrollbar-width:thin;scrollbar-color:#c5d2cb transparent;padding-right:3px}.result-files .result-artifact{margin:0;display:flex;align-items:flex-start;flex-direction:column;padding:17px;box-shadow:none}.result-files .artifact-head{align-items:flex-start}.result-files .artifact-actions{margin-left:64px}.result-files .export-bar{display:flex;align-items:stretch;flex-direction:column;gap:11px;margin-top:9px}.result-files .export-bar .format-grid{flex:none}.result-files .export-bar .button{width:100%}.result-files .result-caption{margin-bottom:0}.result-dialog .chat-message{max-width:96%}
+@media(max-width:950px){.result-dashboard{display:block;height:auto;min-height:0}.result-dialog{height:390px}.result-files{overflow:visible;margin-top:12px}.result-files .result-artifact{flex-direction:row;align-items:center}.result-files .export-bar{flex-direction:row;align-items:center}.result-files .export-bar .button{width:auto}}
+@media(max-width:760px){.result-files .result-artifact,.result-files .export-bar{flex-direction:column;align-items:stretch}.result-files .export-bar .button{width:100%}.result-files .artifact-actions{margin-left:0}}
+.chat-head-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:flex-end}.chat-head-actions .button{min-height:31px;padding:6px 9px;font-size:11px}.chat-attachment summary{cursor:pointer;color:#49655d;font-size:12px;font-weight:720}.chat-attachment input{display:block;margin-top:8px}.chat-attachment[open]{background:#fbfcfb}
+section[aria-labelledby="workspace-title"] .workspace-summary{padding:9px 13px;margin-bottom:10px}section[aria-labelledby="workspace-title"] .lead{margin-bottom:11px}
+@media(max-width:420px){.chat-head-actions .badge{display:none}.chat-head-actions .button{width:auto;font-size:10px}}
+.main-content>section{max-width:none}
+section[aria-labelledby="workspace-title"] .facilitator-chat{min-height:0}
+section[aria-labelledby="workspace-title"] .chat-thread{min-height:0}
+section[aria-labelledby="workspace-title"] .chat-composer{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:auto auto;align-items:end;column-gap:10px;padding:10px 15px}
+section[aria-labelledby="workspace-title"] .chat-composer .field-label{grid-column:1/-1;margin:0 0 3px}
+section[aria-labelledby="workspace-title"] .chat-composer .textarea{grid-column:1;height:72px;min-height:72px;resize:none;overflow-y:auto}
+section[aria-labelledby="workspace-title"] .chat-composer .chat-actions{grid-column:2;display:flex;flex-direction:column;gap:6px;margin:0}
+section[aria-labelledby="workspace-title"] .chat-composer .chat-actions .button{min-height:34px;padding:7px 12px;white-space:nowrap}
+@media(max-width:760px){section[aria-labelledby="workspace-title"] .chat-composer{grid-template-columns:1fr}section[aria-labelledby="workspace-title"] .chat-composer .field-label,section[aria-labelledby="workspace-title"] .chat-composer .textarea,section[aria-labelledby="workspace-title"] .chat-composer .chat-actions{grid-column:1}section[aria-labelledby="workspace-title"] .chat-composer .chat-actions{flex-direction:row;margin-top:7px}section[aria-labelledby="workspace-title"] .chat-composer .chat-actions .button{white-space:normal}}
+.badge,.badge.blue,.badge.green,.badge.amber{background:transparent;border-radius:0;padding:0;box-shadow:none;cursor:default}.badge{gap:4px}.badge::before{content:'•';font-size:14px;line-height:10px}.chat-head-actions .button{min-height:38px;padding:9px 13px;font-size:13px}.chat-label-row{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-bottom:7px}.chat-label-row .field-label{margin:0}.chat-label-row small{color:#6c7f7b;font-size:11px;line-height:1.3;text-align:right}section[aria-labelledby="workspace-title"] .chat-composer .chat-label-row{grid-column:1/-1;margin-bottom:3px}
+@media(max-width:600px){.chat-label-row{align-items:flex-start;flex-direction:column;gap:2px}.chat-label-row small{text-align:left}}
+
+/* Регистрация доступна из шапки, а вопросы и ответы образуют плотные пары. */
+.topbar-actions .account-entry{font-size:13px;color:#2459e8}
+.account-dialog{max-height:min(92dvh,760px);overflow-y:auto}
+.account-tabs{display:grid;grid-template-columns:1fr 1fr;gap:5px;background:#f1f4f2;border-radius:11px;padding:4px;margin:12px 0 15px}
+.account-tab{border:0;border-radius:8px;background:transparent;color:#526a6c;padding:10px;font-size:13px;font-weight:720}
+.account-tab.active{background:#fff;color:#183f7b;box-shadow:0 1px 5px rgba(25,55,60,.1)}
+.account-dialog .account-intro{margin-bottom:12px}
+.account-dialog .muted-panel{padding:12px 14px}
+.account-dialog .field-label{margin:12px 0 5px}
+.account-dialog .input{padding:10px 12px}
+.agreement-check{display:flex;align-items:flex-start;gap:10px;margin-top:16px;color:#314b52;font-size:13px;line-height:1.45;cursor:pointer}
+.agreement-check input{width:17px;height:17px;flex:none;margin:1px 0 0;accent-color:var(--accent)}
+.agreement-check a{color:var(--accent);text-decoration:underline;text-underline-offset:2px}
+.account-dialog .helper{margin-top:6px}
+.account-dialog .button{margin-top:14px}
+.chat-thread{gap:9px;padding:14px 18px}
+.chat-pair{display:flex;flex-direction:column;gap:4px;width:min(100%,620px);align-self:center}
+.chat-pair .chat-message.user{align-self:flex-end;margin-left:0;border-bottom-left-radius:14px;border-bottom-right-radius:4px}
+.chat-message{padding:8px 12px}
+.chat-message small{margin-bottom:2px}
+.chat-input-row{display:grid;grid-template-columns:40px minmax(0,1fr) auto;gap:9px;align-items:end}
+.chat-input-row .textarea{min-width:0}
+.chat-input-row .chat-actions{display:flex;flex-direction:column;gap:6px;margin:0}
+.chat-attach-button{position:relative;display:grid;place-items:center;width:40px;height:40px;align-self:end;border:1px solid #cbd7d4;border-radius:10px;background:#fff;color:#52696e}
+.chat-attach-button:hover{border-color:var(--accent);color:var(--accent);background:#f4f7ff}
+.chat-attach-button::after{content:attr(data-tooltip);position:absolute;bottom:calc(100% + 8px);left:0;background:#163f50;color:#fff;border-radius:6px;padding:6px 8px;font-size:12px;font-weight:650;white-space:nowrap;opacity:0;pointer-events:none;transform:translateY(3px);transition:opacity .15s,transform .15s;z-index:3}
+.chat-attach-button:hover::after,.chat-attach-button:focus-visible::after{opacity:1;transform:translateY(0)}
+.visually-hidden{position:absolute!important;width:1px!important;height:1px!important;padding:0!important;margin:-1px!important;overflow:hidden!important;clip:rect(0,0,0,0)!important;white-space:nowrap!important;border:0!important}
+.chat-file-status{font-size:12px;line-height:1.35;color:#526c70;margin:6px 0 0 49px}
+section[aria-labelledby="workspace-title"] .chat-composer{display:block}
+section[aria-labelledby="workspace-title"] .chat-composer .chat-label-row{margin-bottom:5px}
+section[aria-labelledby="workspace-title"] .chat-composer .textarea{height:72px;min-height:72px}
+section[aria-labelledby="workspace-title"] .chat-composer .chat-actions{margin:0}
+section[aria-labelledby="workspace-title"] .chat-composer .chat-input-row .chat-attach-button{grid-column:1}
+section[aria-labelledby="workspace-title"] .chat-composer .chat-input-row .textarea{grid-column:2}
+section[aria-labelledby="workspace-title"] .chat-composer .chat-input-row .chat-actions{grid-column:3}
+@media(max-width:760px){.topbar-actions .account-entry{font-size:12px}.chat-input-row{grid-template-columns:38px minmax(0,1fr);gap:7px}.chat-attach-button{width:38px;height:38px}.chat-input-row .chat-actions{grid-column:1/-1;flex-direction:row;justify-content:flex-end;margin-top:2px}.chat-input-row .chat-actions .button{width:auto}.chat-file-status{margin-left:0}.chat-thread{padding:12px 14px}}
+@media(max-width:760px){section[aria-labelledby="workspace-title"] .chat-composer .chat-input-row .chat-actions{grid-column:1/-1}}
+@media(max-width:420px){.topbar-actions .account-entry{display:inline-flex;font-size:11px;padding:7px 3px}.topbar-actions [data-action="new-project"]{display:none}.chat-input-row .chat-actions .button{font-size:12px;padding:7px 9px}.chat-message p{font-size:14px}}
+
+/* Диалог занимает компактную центральную колонку, как рабочий чат. */
+.work-grid:has(#workspace-title){max-width:1100px;margin-inline:auto;grid-template-columns:minmax(0,1fr) 210px}
+section[aria-labelledby="workspace-title"] .chat-message{max-width:min(80%,580px)}
+section[aria-labelledby="workspace-title"] .chat-message p{font-size:14px}
+@media(max-width:1100px){.work-grid:has(#workspace-title){max-width:850px;grid-template-columns:minmax(0,1fr)}}
+
+/* Реплики у противоположных сторон с небольшим зазором от рамки. */
+.chat-thread{padding-left:18px;padding-right:18px}
+.chat-pair{width:100%;align-self:stretch}
+@media(max-width:760px){.chat-thread{padding-left:14px;padding-right:14px}}
+
+/* Команда, план и выбор результата помещаются в рабочем экране. */
+.team-page .lead{margin-bottom:11px}
+.team-page .workspace-summary{padding:10px 14px;margin-bottom:13px}
+.team-decision-grid,.team-output-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+.team-pane,.team-option-pane{padding:16px 18px;min-width:0}
+.team-pane .section-kicker,.team-option-pane .section-kicker{font-size:11px;margin-bottom:4px}
+.team-pane .section-title,.team-option-pane .section-title{font-size:17px;margin-bottom:11px}
+.team-pane-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:8px}
+.team-pane-head .section-title{margin-bottom:0}
+.team-pane-head .button{flex:none;min-height:34px;padding:7px 11px}
+.team-list{display:grid;gap:7px}
+.team-role-row{display:flex;align-items:center;gap:10px;min-height:56px;padding:8px 10px;border:1px solid #e2e9e5;border-radius:10px;background:#fcfdfc}
+.team-role-row.added{background:#f4faf5;border-color:#b7d9c0}
+.team-role-number{display:grid;place-items:center;width:27px;height:27px;flex:none;border-radius:7px;background:#eef2ff;color:#2459e8;font-size:11px;font-weight:800}
+.team-role-row.added .team-role-number{background:#e6f4e9;color:#2b7252}
+.team-role-row>div{min-width:0;flex:1}
+.team-role-row strong{display:block;font-size:13px;line-height:1.25}
+.team-role-row p{font-size:12px;line-height:1.3;color:#60767a;margin:3px 0 0}
+.team-added-label{color:#287049;font-size:11px;font-weight:720;white-space:nowrap}
+.team-pane .mini-form{padding:12px;margin-top:10px}
+.team-pane .plan-steps{gap:0}
+.team-pane .plan-step{padding:10px 0;gap:10px}
+.team-pane .plan-step:first-child{padding-top:2px}
+.team-pane .plan-step strong{font-size:13px}
+.team-pane .plan-step small{font-size:12px;margin-top:2px;line-height:1.35}
+.team-pane .change-row{margin-top:10px}
+.team-output-grid{margin-top:12px}
+.team-output-grid.single{grid-template-columns:minmax(0,1fr)}
+.team-option-pane .output-choice-grid{gap:8px}
+.team-option-pane .output-choice{min-height:65px;padding:10px 12px}
+.team-option-pane .output-choice strong{font-size:13px}
+.team-option-pane .output-choice span{font-size:11px}
+.team-option-pane .helper{margin-top:9px}
+.team-option-pane .format-option{padding:8px 11px}
+.team-confirm-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;border:1px solid #dce6df;border-radius:12px;background:#f8fbf8;padding:11px 15px;margin-top:12px}
+.team-confirm-bar span{color:#60767a;font-size:12px;line-height:1.4}
+.team-confirm-bar .button{flex:none;min-height:38px;padding:9px 15px}
+@media(max-width:1000px){.team-decision-grid,.team-output-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:760px){.team-pane,.team-option-pane{padding:14px}.team-confirm-bar{align-items:stretch;flex-direction:column}.team-confirm-bar .button{width:100%}.team-pane-head .button{width:auto}}
+
+.team-pane .plan-step>div{min-width:0}
+.plan-step-roles{display:block;margin-top:3px;color:#3b745c;font-size:11px;line-height:1.35;overflow-wrap:anywhere}
+.plan-change-note{margin-top:8px;color:#286c49;font-size:12px;line-height:1.4}
+.plan-editor{display:grid;gap:10px;margin-top:10px}
+.plan-edit-step{min-width:0;margin:0;border:1px solid #dfe8e2;border-radius:10px;padding:10px 11px;background:#fcfdfc}
+.plan-edit-step legend{padding:0 5px;color:#426c59;font-size:11px;font-weight:780}
+.plan-edit-step .field-label{font-size:11px;margin:6px 0 4px}
+.plan-edit-step .input{padding:8px 10px;font-size:13px}
+.plan-role-options{display:flex;flex-wrap:wrap;gap:5px}
+.plan-role-check{display:inline-flex;align-items:center;gap:5px;border:1px solid #d8e2dc;border-radius:8px;background:#fff;padding:5px 7px;color:#3d5b57;font-size:11px;line-height:1.3;cursor:pointer}
+.plan-role-check input{width:14px;height:14px;margin:0;accent-color:var(--accent)}
+.plan-editor-actions{display:flex;flex-wrap:wrap;gap:7px}
+.plan-editor-actions .button{min-height:34px}
+.team-confirm-bar .button.secondary{background:transparent}
+@media(max-width:760px){.team-confirm-bar .button.secondary{order:2}.team-confirm-bar .button.primary{order:1}.team-confirm-bar span{order:3}.plan-editor-actions .button{width:100%}}
+
+.result-skill-artifact{border:1px solid #b9d3c3;border-radius:14px;background:#f5faf6;padding:15px 16px;margin-bottom:9px}
+.result-skill-head{display:flex;align-items:center;gap:11px}
+.result-skill-icon{display:grid;place-items:center;flex:none;width:43px;height:43px;border-radius:9px;background:#dff0e4;color:#276b48;font-size:11px;font-weight:850;letter-spacing:.04em}
+.result-skill-head>div{min-width:0}
+.result-skill-head strong{display:block;font-size:15px;line-height:1.3}
+.result-skill-head small{display:block;margin-top:3px;color:#527265;font-size:11px;line-height:1.35}
+.result-skill-artifact>p:not(.helper){font-size:12px;line-height:1.4;color:#46655a;margin:10px 0}
+.result-skill-artifact .skill-actions{gap:7px;margin-top:9px}
+.result-skill-artifact .skill-actions .button{flex:1;white-space:nowrap}
+.result-skill-artifact .helper{font-size:11px;margin-top:8px}
+@media(max-width:760px){.result-skill-artifact .skill-actions .button{width:100%;flex:auto}}
+@media(max-width:1400px){.result-dialog .chat-input-row{grid-template-columns:38px minmax(0,1fr)}.result-dialog .chat-input-row .chat-actions{grid-column:1/-1;flex-direction:row;justify-content:flex-end;margin-top:2px}.result-dialog .chat-input-row .chat-actions .button{min-height:32px;padding:7px 9px}}
+
+/* Схема согласованного плана: подсветка и передача между этапами. */
+.work-page{height:auto;min-height:100%}
+.work-page .lead{margin-bottom:12px}
+.work-honesty{align-items:center}
+.flow-board{margin-top:12px;border:1px solid #dbe7e1;border-radius:17px;background:#fff;padding:15px;box-shadow:0 8px 24px rgba(23,58,57,.035)}
+.flow-board-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:13px}
+.flow-board-head strong{font-size:15px}
+.flow-board-head span{font-size:12px;color:#53766b;font-weight:750}
+.flow-map{display:flex;align-items:stretch;gap:0}
+.flow-step{flex:1;min-width:0;min-height:190px;display:flex;align-items:flex-start;gap:9px;border:1px solid #dce6e2;border-radius:13px;background:#fafcfb;padding:13px;transition:background .35s,border-color .35s,box-shadow .35s,transform .35s}
+.flow-step.complete{background:#f4faf6;border-color:#bcd9c5}
+.flow-step.current{background:linear-gradient(145deg,#f2f6ff,#f8fcf9);border-color:#8faaf5;box-shadow:0 0 0 3px #2459e812,0 12px 30px #2459e813;transform:translateY(-2px);animation:flowBreath 3.2s ease-in-out infinite}
+.flow-step.pending{opacity:.63}
+.flow-step-number{display:grid;place-items:center;flex:none;width:27px;height:27px;border-radius:8px;background:#e9f0ed;color:#577268;font-size:11px;font-weight:800}
+.flow-step.current .flow-step-number{background:#2459e8;color:#fff}
+.flow-step.complete .flow-step-number{background:#dff2e4;color:#2a704d}
+.flow-step-content{min-width:0}
+.flow-step-state{display:block;margin:1px 0 9px;color:#698078;font-size:11px;font-weight:800;letter-spacing:.02em}
+.flow-step.current .flow-step-state{color:#2459e8}
+.flow-step.complete .flow-step-state{color:#2d7550}
+.flow-step h2{font-size:15px;line-height:1.28;letter-spacing:-.025em;margin:0 0 7px}
+.flow-step p{font-size:12px;line-height:1.4;color:#607579;margin:0 0 13px}
+.flow-agents{display:flex;flex-wrap:wrap;gap:6px}
+.flow-agent{display:inline-flex;align-items:center;gap:5px;border:1px solid #d7e2dc;border-radius:999px;background:#fff;padding:4px 7px;color:#48615d;font-size:11px;line-height:1.2;font-weight:700;overflow-wrap:anywhere}
+.flow-agent i{width:7px;height:7px;flex:none;border-radius:50%;background:#a9bcb3}
+.flow-step.current .flow-agent{border-color:#b7c8fa;color:#1f4b9b;box-shadow:0 0 0 2px #2459e80c}
+.flow-step.current .flow-agent i{background:#2459e8;box-shadow:0 0 0 3px #2459e81a;animation:agentGlow 2.5s ease-in-out infinite}
+.flow-step.complete .flow-agent i{background:#4e9e6c}
+.flow-connector{position:relative;display:block;flex:0 0 35px;align-self:center;height:22px;color:#b4c6be}
+.flow-line{position:absolute;left:0;right:7px;top:10px;height:2px;background:#d5e1da}
+.flow-arrow{position:absolute;right:0;top:1px;font-size:21px;line-height:21px;font-weight:700}
+.flow-connector.passed{color:#2e8c60}
+.flow-connector.passed .flow-line{background:#76bf91}
+.flow-connector.handoff .flow-packet{position:absolute;left:0;top:6px;width:9px;height:9px;border-radius:50%;background:#2459e8;box-shadow:0 0 0 5px #2459e81c;animation:flowTransfer 2.1s ease-in-out infinite}
+.flow-current{display:flex;align-items:flex-start;gap:13px;margin-top:11px;border:1px solid #d9e6de;border-radius:13px;background:#f7faf8;padding:12px 15px}
+.flow-current-symbol{display:grid;place-items:center;flex:none;width:32px;height:32px;border-radius:9px;background:#e5f2e8;color:#2c7950;font-size:16px}
+.flow-current small{display:block;color:#57816a;font-size:10px;font-weight:800;letter-spacing:.06em;margin:1px 0 4px}
+.flow-current strong{font-size:14px}
+.flow-current p{font-size:12px;line-height:1.4;color:#57706b;margin:5px 0 0}
+.work-footer{margin-top:auto;justify-content:space-between;flex-wrap:wrap;gap:10px}
+@keyframes flowBreath{50%{box-shadow:0 0 0 4px #2459e820,0 14px 32px #2459e81b}}
+@keyframes agentGlow{50%{box-shadow:0 0 0 5px #2459e824}}
+@keyframes flowTransfer{0%{transform:translateX(0);opacity:0}18%{opacity:1}82%{opacity:1}100%{transform:translateX(23px);opacity:0}}
+@media(max-width:900px){.flow-map{flex-direction:column}.flow-step{min-height:0}.flow-connector{align-self:center;flex:none;width:24px;height:32px;transform:rotate(90deg)}.flow-board{padding:14px}.flow-step p{margin-bottom:9px}}
+@media(prefers-reduced-motion:reduce){.flow-step.current,.flow-step.current .flow-agent i,.flow-connector.handoff .flow-packet{animation:none}.flow-step{transition:none}}
+
+/* На узком экране внутренние колонки не расширяют рабочее пространство. */
+.main-shell{grid-template-columns:minmax(0,1fr)}
+@media(max-width:420px){.topbar-left{display:none}.topbar-actions{width:100%;justify-content:space-between}.work-grid{min-width:0}.role-card{min-width:0}}
+
+/* Скилл — основной артефакт технического пути, поэтому виден до диалога. */
+.with-skill>.result-skill-artifact{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"head actions" "detail actions" "note actions";align-items:center;column-gap:20px;row-gap:3px;margin:14px 0 0;padding:14px 17px}
+.with-skill>.result-skill-artifact .result-skill-head{grid-area:head}
+.with-skill>.result-skill-artifact>p:not(.helper){grid-area:detail;margin:0 0 0 54px}
+.with-skill>.result-skill-artifact .skill-actions{grid-area:actions;display:flex;flex-direction:column;align-items:stretch;min-width:180px;margin:0}
+.with-skill>.result-skill-artifact .helper{grid-area:note;margin:0 0 0 54px}
+.with-skill .result-dashboard{height:min(440px,calc(100dvh - 330px));min-height:350px}
+@media(max-width:760px){.with-skill>.result-skill-artifact{display:block;padding:14px}.with-skill>.result-skill-artifact>p:not(.helper){margin:9px 0}.with-skill>.result-skill-artifact .skill-actions{margin-top:10px}.with-skill>.result-skill-artifact .helper{margin:8px 0 0}.with-skill .result-dashboard{height:auto;min-height:0}}
+
+</style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">К содержимому</a>
+  <div id="app"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script>
+/* Локальные шаблоны файлов CoreTeams. Они оформляют введённые данные, но не анализируют их. */
+(() => {
+  'use strict';
+  const theme = Object.freeze({ ink: '152B35', blue: '2459E8', green: '29644C', pale: 'EAF2ED', muted: '61757A', white: 'FFFFFF' });
+  const xml = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
+  const encoder = new TextEncoder();
+  function crc32(bytes) {
+    let value = 0xffffffff;
+    for (const byte of bytes) { value ^= byte; for (let i = 0; i < 8; i++) value = (value >>> 1) ^ (value & 1 ? 0xedb88320 : 0); }
+    return (value ^ 0xffffffff) >>> 0;
+  }
+  function zip(files, mime) {
+    const local = [], central = [];
+    let offset = 0, centralSize = 0;
+    for (const [path, content] of Object.entries(files)) {
+      const name = encoder.encode(path), bytes = typeof content === 'string' ? encoder.encode(content) : content;
+      const checksum = crc32(bytes), a = new Uint8Array(30 + name.length), av = new DataView(a.buffer);
+      av.setUint32(0, 0x04034b50, true); av.setUint16(4, 20, true); av.setUint16(6, 0x0800, true);
+      av.setUint32(14, checksum, true); av.setUint32(18, bytes.length, true); av.setUint32(22, bytes.length, true); av.setUint16(26, name.length, true); a.set(name, 30);
+      const b = new Uint8Array(46 + name.length), bv = new DataView(b.buffer);
+      bv.setUint32(0, 0x02014b50, true); bv.setUint16(4, 20, true); bv.setUint16(6, 20, true); bv.setUint16(8, 0x0800, true);
+      bv.setUint32(16, checksum, true); bv.setUint32(20, bytes.length, true); bv.setUint32(24, bytes.length, true); bv.setUint16(28, name.length, true); bv.setUint32(42, offset, true); b.set(name, 46);
+      local.push(a, bytes); central.push(b); offset += a.length + bytes.length; centralSize += b.length;
+    }
+    const end = new Uint8Array(22), ev = new DataView(end.buffer);
+    ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, central.length, true); ev.setUint16(10, central.length, true); ev.setUint32(12, centralSize, true); ev.setUint32(16, offset, true);
+    return new Blob([...local, ...central, end], { type: mime });
+  }
+  const rootRels = officeType => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="${officeType}"/></Relationships>`;
+  const coreProps = model => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>${xml(model.title)}</dc:title><dc:creator>CoreTeams</dc:creator><dc:description>Локальный макет без анализа и серверного сохранения</dc:description></cp:coreProperties>`;
+
+  function docx(model) {
+    const para = (text, style = 'Normal') => `<w:p><w:pPr><w:pStyle w:val="${style}"/></w:pPr><w:r><w:t xml:space="preserve">${xml(text)}</w:t></w:r></w:p>`;
+    const body = [para('CORETEAMS · РЕЗУЛЬТАТ', 'Kicker'), para(model.title, 'Title'), para(`${model.date} · ${model.persona} · версия ${model.version}`, 'Subtitle'), para('Локальный макет. Анализ файлов и работа агентов не выполнялись.', 'Notice'), ...model.sections.flatMap(section => [para(section.title, 'Heading1'), ...section.lines.map(line => para(line))])].join('');
+    const files = {
+      '[Content_Types].xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>`,
+      '_rels/.rels': rootRels('word/document.xml'),
+      'docProps/core.xml': coreProps(model),
+      'word/_rels/document.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+      'word/document.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1100" w:right="1150" w:bottom="1100" w:left="1150" w:header="500" w:footer="500" w:gutter="0"/></w:sectPr></w:body></w:document>`,
+      'word/styles.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Aptos" w:hAnsi="Aptos" w:cs="Arial"/><w:sz w:val="22"/><w:color w:val="${theme.ink}"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:pPr><w:spacing w:after="160" w:line="320" w:lineRule="auto"/></w:pPr></w:style><w:style w:type="paragraph" w:styleId="Kicker"><w:name w:val="Kicker"/><w:basedOn w:val="Normal"/><w:rPr><w:b/><w:color w:val="${theme.green}"/><w:sz w:val="18"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Title"><w:name w:val="Title"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="180" w:after="260"/></w:pPr><w:rPr><w:b/><w:color w:val="${theme.ink}"/><w:sz w:val="42"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Subtitle"><w:name w:val="Subtitle"/><w:basedOn w:val="Normal"/><w:rPr><w:color w:val="${theme.muted}"/><w:sz w:val="20"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Notice"><w:name w:val="Notice"/><w:basedOn w:val="Normal"/><w:rPr><w:color w:val="${theme.muted}"/><w:i/><w:sz w:val="18"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:before="320" w:after="130"/></w:pPr><w:rPr><w:b/><w:color w:val="${theme.blue}"/><w:sz w:val="28"/></w:rPr></w:style></w:styles>`
+    };
+    return zip(files, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  }
+
+  function xlsx(model) {
+    const rows = [
+      [model.title, ''], [`Версия ${model.version} · ${model.date}`, model.persona],
+      ['Локальный макет', 'Анализ файлов и работа агентов не выполнялись.'],
+      ...model.sections.flatMap(section => [[section.title, ''], ...section.lines.flatMap(line => (String(line).match(/[\s\S]{1,30000}/g) || ['']).map(part => ['', part]))])
+    ];
+    const cell = (col, row, value, style) => `<c r="${col}${row}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${xml(value)}</t></is></c>`;
+    const sheetRows = rows.map((values, i) => `<row r="${i + 1}" ht="${i === 0 ? 34 : 29}" customHeight="1">${cell('A', i + 1, values[0], i === 0 ? 1 : values[0] && !values[1] ? 2 : 0)}${cell('B', i + 1, values[1], 0)}</row>`).join('');
+    const files = {
+      '[Content_Types].xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>`,
+      '_rels/.rels': rootRels('xl/workbook.xml'), 'docProps/core.xml': coreProps(model),
+      'xl/workbook.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Результат" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      'xl/_rels/workbook.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`,
+      'xl/worksheets/sheet1.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="19"/><cols><col min="1" max="1" width="31" customWidth="1"/><col min="2" max="2" width="95" customWidth="1"/></cols><sheetData>${sheetRows}</sheetData><pageMargins left="0.4" right="0.4" top="0.6" bottom="0.6" header="0.2" footer="0.2"/></worksheet>`,
+      'xl/styles.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Aptos"/><color rgb="FF${theme.ink}"/></font><font><b/><sz val="16"/><name val="Aptos"/><color rgb="FF${theme.white}"/></font><font><b/><sz val="11"/><name val="Aptos"/><color rgb="FF${theme.green}"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF${theme.blue}"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`
+    };
+    return zip(files, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  }
+
+  const slideShape = (id, name, x, y, w, h, text, size, color, fill) => `<p:sp><p:nvSpPr><p:cNvPr id="${id}" name="${xml(name)}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="${x}" y="${y}"/><a:ext cx="${w}" cy="${h}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>${fill ? `<a:solidFill><a:srgbClr val="${fill}"/></a:solidFill>` : '<a:noFill/>'}<a:ln><a:noFill/></a:ln></p:spPr><p:txBody><a:bodyPr wrap="square" lIns="0" tIns="0" rIns="0" bIns="0"/><a:lstStyle/><a:p><a:pPr algn="l"/><a:r><a:rPr lang="ru-RU" sz="${size * 100}" b="${size >= 28 ? 1 : 0}"><a:solidFill><a:srgbClr val="${color}"/></a:solidFill><a:latin typeface="Aptos"/></a:rPr><a:t>${xml(text)}</a:t></a:r><a:endParaRPr lang="ru-RU"/></a:p></p:txBody></p:sp>`;
+  function pptx(model) {
+    const slides = [{ title: model.title, lines: [`Версия ${model.version} · ${model.date}`, model.persona, 'Локальный макет без анализа и запуска агентов'] }];
+    for (const section of model.sections) {
+      const wrapped = section.lines.flatMap(line => String(line).match(/.{1,85}(?:\s|$)|.{1,85}/gu) || ['']);
+      for (let offset = 0; offset < wrapped.length; offset += 11) {
+        slides.push({ title: offset ? `${section.title} · продолжение` : section.title, lines: wrapped.slice(offset, offset + 11) });
+      }
+    }
+    const files = {
+      '[Content_Types].xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>${slides.map((_, i) => `<Override PartName="/ppt/slides/slide${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`).join('')}<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/></Types>`,
+      '_rels/.rels': rootRels('ppt/presentation.xml'), 'docProps/core.xml': coreProps(model),
+      'ppt/presentation.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst><p:sldIdLst>${slides.map((_, i) => `<p:sldId id="${256 + i}" r:id="rId${i + 2}"/>`).join('')}</p:sldIdLst><p:sldSz cx="12192000" cy="6858000" type="screen16x9"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>`,
+      'ppt/_rels/presentation.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>${slides.map((_, i) => `<Relationship Id="rId${i + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${i + 1}.xml"/>`).join('')}</Relationships>`,
+      'ppt/slideMasters/slideMaster1.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMap accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" bg1="lt1" bg2="lt2" folHlink="folHlink" hlink="hlink" tx1="dk1" tx2="dk2"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst></p:sldMaster>`,
+      'ppt/slideMasters/_rels/slideMaster1.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>`,
+      'ppt/slideLayouts/slideLayout1.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1"><p:cSld name="Пустой"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>`,
+      'ppt/slideLayouts/_rels/slideLayout1.xml.rels': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/></Relationships>`,
+      'ppt/theme/theme1.xml': `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="CoreTeams"><a:themeElements><a:clrScheme name="CoreTeams"><a:dk1><a:srgbClr val="${theme.ink}"/></a:dk1><a:lt1><a:srgbClr val="${theme.white}"/></a:lt1><a:dk2><a:srgbClr val="${theme.ink}"/></a:dk2><a:lt2><a:srgbClr val="F7F7F3"/></a:lt2><a:accent1><a:srgbClr val="${theme.blue}"/></a:accent1><a:accent2><a:srgbClr val="${theme.green}"/></a:accent2><a:accent3><a:srgbClr val="${theme.pale}"/></a:accent3><a:accent4><a:srgbClr val="${theme.muted}"/></a:accent4><a:accent5><a:srgbClr val="D8E5DB"/></a:accent5><a:accent6><a:srgbClr val="A4C6B0"/></a:accent6><a:hlink><a:srgbClr val="${theme.blue}"/></a:hlink><a:folHlink><a:srgbClr val="${theme.green}"/></a:folHlink></a:clrScheme><a:fontScheme name="CoreTeams"><a:majorFont><a:latin typeface="Aptos Display"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="Aptos"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="CoreTeams"><a:fillStyleLst><a:solidFill><a:schemeClr val="accent1"/></a:solidFill><a:solidFill><a:schemeClr val="accent2"/></a:solidFill><a:solidFill><a:schemeClr val="accent3"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="9525"><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></a:ln><a:ln w="25400"><a:solidFill><a:schemeClr val="accent2"/></a:solidFill></a:ln><a:ln w="38100"><a:solidFill><a:schemeClr val="accent3"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="lt1"/></a:solidFill><a:solidFill><a:schemeClr val="lt2"/></a:solidFill><a:solidFill><a:schemeClr val="accent3"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>`
+    };
+    slides.forEach((slide, i) => {
+      const lines = slide.lines;
+      const shapes = [
+        slideShape(2, 'Верхняя полоса', 0, 0, 12192000, 170000, '', 12, theme.white, theme.blue),
+        slideShape(3, 'Метка', 620000, 500000, 10500000, 400000, `CORETEAMS · ${String(i + 1).padStart(2, '0')}`, 13, theme.green),
+        slideShape(4, 'Заголовок', 620000, 1130000, 10700000, 1150000, slide.title.slice(0, 125), i === 0 ? 34 : 30, theme.ink),
+        ...lines.map((line, j) => slideShape(5 + j, `Строка ${j + 1}`, 670000, 2450000 + j * 340000, 10700000, 330000, line, i === 0 ? 19 : 17, theme.ink)),
+        slideShape(100, 'Нижняя подпись', 620000, 6350000, 10800000, 260000, `Версия ${model.version} · локальный макет`, 11, theme.muted)
+      ].join('');
+      files[`ppt/slides/slide${i + 1}.xml`] = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>${shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>`;
+      files[`ppt/slides/_rels/slide${i + 1}.xml.rels`] = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/></Relationships>`;
+    });
+    return zip(files, 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+  }
+
+  async function pdf(model) {
+    const pages = [];
+    let canvas, ctx, y;
+    function page() {
+      canvas = document.createElement('canvas'); canvas.width = 1190; canvas.height = 1684;
+      ctx = canvas.getContext('2d'); ctx.scale(2, 2); ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, 595, 842);
+      ctx.fillStyle = `#${theme.blue}`; ctx.fillRect(0, 0, 595, 7);
+      ctx.font = 'bold 11px Arial'; ctx.fillStyle = `#${theme.green}`; ctx.fillText('CORETEAMS · РЕЗУЛЬТАТ', 45, 52);
+      ctx.font = '10px Arial'; ctx.fillStyle = `#${theme.muted}`; ctx.fillText(`Версия ${model.version} · локальный макет`, 45, 813);
+      y = 78; pages.push(canvas);
+    }
+    function lines(text, font, color, lineHeight, maxWidth = 505) {
+      ctx.font = font; ctx.fillStyle = color;
+      for (const paragraph of String(text).split('\n')) {
+        const words = paragraph.split(/\s+/).filter(Boolean); let line = '';
+        for (const word of words) {
+          const next = line ? `${line} ${word}` : word;
+          if (ctx.measureText(next).width > maxWidth && line) { if (y > 775) page(); ctx.font = font; ctx.fillStyle = color; ctx.fillText(line, 45, y); y += lineHeight; line = word; } else line = next;
+        }
+        if (line) { if (y > 775) page(); ctx.font = font; ctx.fillStyle = color; ctx.fillText(line, 45, y); y += lineHeight; }
+        if (!words.length) y += lineHeight / 2;
+      }
+    }
+    page(); lines(model.title, 'bold 25px Arial', `#${theme.ink}`, 31); y += 8;
+    lines(`${model.date} · ${model.persona}`, '12px Arial', `#${theme.muted}`, 17); y += 10;
+    lines('Локальный макет. Анализ файлов и работа агентов не выполнялись.', 'italic 11px Arial', `#${theme.muted}`, 16); y += 20;
+    for (const section of model.sections) {
+      if (y > 700) page();
+      lines(section.title, 'bold 16px Arial', `#${theme.blue}`, 23); y += 3;
+      for (const line of section.lines) { lines(line, '12px Arial', `#${theme.ink}`, 18); y += 7; }
+      y += 8;
+    }
+    const chunks = [], offsets = [0]; let length = 0;
+    const push = bytes => { chunks.push(bytes); length += bytes.length; };
+    const str = text => encoder.encode(text);
+    push(str('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n'));
+    const object = (n, parts) => { offsets[n] = length; push(str(`${n} 0 obj\n`)); for (const part of parts) push(part); push(str('\nendobj\n')); };
+    object(1, [str('<< /Type /Catalog /Pages 2 0 R >>')]);
+    object(2, [str(`<< /Type /Pages /Kids [${pages.map((_, i) => `${3 + i * 3} 0 R`).join(' ')}] /Count ${pages.length} >>`)]);
+    for (let i = 0; i < pages.length; i++) {
+      const n = 3 + i * 3;
+      const base64 = pages[i].toDataURL('image/jpeg', 0.88).split(',')[1];
+      const binary = atob(base64), image = new Uint8Array(binary.length);
+      for (let j = 0; j < binary.length; j++) image[j] = binary.charCodeAt(j);
+      const content = str('q 595 0 0 842 0 0 cm /Im1 Do Q');
+      object(n, [str(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /XObject << /Im1 ${n + 1} 0 R >> >> /Contents ${n + 2} 0 R >>`)]);
+      object(n + 1, [str(`<< /Type /XObject /Subtype /Image /Width 1190 /Height 1684 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${image.length} >>\nstream\n`), image, str('\nendstream')]);
+      object(n + 2, [str(`<< /Length ${content.length} >>\nstream\n`), content, str('\nendstream')]);
+    }
+    const xref = length;
+    push(str(`xref\n0 ${offsets.length}\n0000000000 65535 f \n`));
+    for (let i = 1; i < offsets.length; i++) push(str(`${String(offsets[i]).padStart(10, '0')} 00000 n \n`));
+    push(str(`trailer\n<< /Size ${offsets.length} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`));
+    return new Blob(chunks, { type: 'application/pdf' });
+  }
+
+  async function create(format, model) {
+    if (format === 'pdf') return pdf(model);
+    if (format === 'docx') return docx(model);
+    if (format === 'pptx') return pptx(model);
+    if (format === 'xlsx') return xlsx(model);
+    if (format === 'md') return new Blob([model.markdown], { type: 'text/markdown;charset=utf-8' });
+    throw new Error(`Неизвестный формат: ${format}`);
+  }
+  globalThis.CoreTeamsExport = { create, theme };
+})();
+
+</script>
+  <script>
+(() => {
+  'use strict';
+
+  const KEY = 'coreteams-minimal-workspace-2026-11-10';
+  const LIBRARY_KEY = 'coreteams-minimal-projects-2026-11-10';
+  const PROJECT_LIMIT = 5;
+  const TRASH_DAYS = 30;
+  const app = document.getElementById('app');
+  const toast = document.getElementById('toast');
+  const stages = ['start', 'workspace', 'team', 'work', 'result'];
+  const stageNames = ['Начало', 'Уточнение', 'Команда и план', 'Работа команды', 'Результат'];
+  const roleInfo = {
+    owner: {
+      name: 'Владелец решения',
+      short: 'Для руководителя или инициатора, который отвечает за выбор и его обоснование.',
+      question: 'Какой продукт вы создаёте или развиваете и какое решение по нему нужно принять?',
+      placeholder: 'Например: запускаем кофейню; нужно решить, арендовать ли помещение сейчас',
+      examples: ['Запустить кофейню', 'Выбрать направление продукта', 'Подготовить новую услугу'],
+      facilitator: 'Что важнее проверить перед решением?',
+      choices: ['Есть ли спрос', 'Можно ли реализовать', 'Какие есть риски', 'Пока не знаю'],
+      questions: [
+        'Что сейчас мешает принять решение по этому продукту?',
+        'Что уже известно или проверено? Какие факты и материалы есть?',
+        'Какие сроки, бюджет и другие условия влияют на выбор?',
+        'По каким признакам вы поймёте, что решение подходит?'
+      ],
+      team: [
+        ['Аналитик', 'Собирает основания и пробелы в данных'],
+        ['Исследователь', 'Формулирует проверки и альтернативы'],
+        ['Фасилитатор', 'Сводит выводы в решение и план']
+      ]
+    },
+    implementer: {
+      name: 'Ответственный за реализацию',
+      short: 'Проверьте техническое решение и при необходимости создайте скилл для повторного применения.',
+      question: 'Какой продукт вы реализуете и какое техническое решение нужно проверить?',
+      placeholder: 'Например: сервис для мероприятий; проверить вариант навигации посетителей',
+      examples: ['Проверить архитектуру сервиса', 'Оценить технические риски', 'Собрать скилл для задачи'],
+      facilitator: 'Что нужно проверить в первую очередь?',
+      choices: ['Техническую возможность', 'Ограничения внедрения', 'Нужные роли и материалы', 'Пока не знаю'],
+      questions: [
+        'Какой технический вопрос нужно проверить первым?',
+        'Что уже пробовали и какие данные или материалы есть?',
+        'Какие сроки, совместимость и другие ограничения важны?',
+        'Какой тест покажет, что решение можно реализовать?'
+      ],
+      team: [
+        ['Технический аналитик', 'Раскладывает решение на проверяемые части'],
+        ['Специалист по рискам', 'Ищет ограничения и зависимости'],
+        ['Фасилитатор', 'Сводит проверку в план и результат']
+      ]
+    }
+  };
+
+  const projectId = () => globalThis.crypto?.randomUUID?.() || `project-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const fresh = () => ({
+    projectId: projectId(), stage: 'start', role: null, brief: '', context: '', answer: '',
+    dialogue: [], dialogueDraft: '', resultDialogue: [], resultDialogueDraft: '',
+    extraRoles: [], format: 'pdf', outputType: 'document', versions: [], skills: [], showVersions: false,
+    showRoleForm: false, showPlanForm: false, planEdits: {}, showChangeForm: false, workStep: 0, dialog: null, accountMode: 'register',
+    asideCollapsed: false, notice: ''
+  });
+  let library = loadLibrary();
+  let state = load();
+  let view = 'workspace';
+  let pendingDeleteId = null;
+  let dialogReturn = null;
+  let selectedFile = null;
+  let toastTimer;
+
+  function loadLibrary() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(LIBRARY_KEY) || '[]');
+      if (!Array.isArray(raw)) return [];
+      const expires = Date.now() - TRASH_DAYS * 24 * 60 * 60 * 1000;
+      const valid = raw.filter(item => item && item.id && item.state &&
+        (item.status === 'active' || (item.status === 'trash' && Date.parse(item.deletedAt) > expires)));
+      if (valid.length !== raw.length) localStorage.setItem(LIBRARY_KEY, JSON.stringify(valid));
+      return valid;
+    } catch { return []; }
+  }
+  function hasProjectContent(project) {
+    return Boolean(project.role || project.brief?.trim() || project.context?.trim() || project.versions?.length);
+  }
+  function activeProjects() { return library.filter(item => item.status === 'active'); }
+  function versionCount(count) {
+    const word = { one: 'версия', few: 'версии', many: 'версий' }[new Intl.PluralRules('ru-RU').select(count)] || 'версий';
+    return `${count} ${word}`;
+  }
+  function projectTitle(project) { return project.brief?.trim() || (project.role ? `Новый проект · ${roleInfo[project.role]?.name || 'без названия'}` : 'Новый проект'); }
+  function projectSnapshot(project) {
+    return { ...project, dialog: null, notice: '', showRoleForm: false, showPlanForm: false, showChangeForm: false };
+  }
+  function saveCurrentInLibrary() {
+    if (!hasProjectContent(state)) return;
+    const existing = library.find(item => item.id === state.projectId);
+    if (existing?.status === 'trash') return;
+    const entry = {
+      id: state.projectId, status: 'active', updatedAt: new Date().toISOString(),
+      state: projectSnapshot(state)
+    };
+    if (existing) Object.assign(existing, entry);
+    else library.unshift(entry);
+    localStorage.setItem(LIBRARY_KEY, JSON.stringify(library));
+  }
+
+  function load() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(KEY) || 'null');
+      if (!raw || typeof raw !== 'object') return fresh();
+      const extraRoles = Array.isArray(raw.extraRoles) ? raw.extraRoles : [];
+      const skills = Array.isArray(raw.skills) ? raw.skills : [];
+      const dialogue = Array.isArray(raw.dialogue) ? raw.dialogue : [
+        ...(raw.answer ? [{ question: roleInfo[raw.role]?.facilitator || 'Что нужно проверить?', answer: raw.answer }] : []),
+        ...(raw.context ? [{ question: 'Какие условия уже известны?', answer: raw.context }] : [])
+      ];
+      const resultDialogue = Array.isArray(raw.resultDialogue) ? raw.resultDialogue : [];
+      const versions = Array.isArray(raw.versions) ? raw.versions.map(item => ({
+        ...item,
+        snapshot: item.snapshot || {
+          role: raw.role, brief: raw.brief || '', context: raw.context || '',
+          answer: raw.answer || '', extraRoles: [...extraRoles], format: raw.format || 'pdf'
+        }
+      })) : [];
+      const planEdits = raw.planEdits && typeof raw.planEdits === 'object' && !Array.isArray(raw.planEdits) ? raw.planEdits : {};
+      const project = { ...fresh(), ...raw, projectId: raw.projectId || projectId(), extraRoles, versions, skills, dialogue, resultDialogue, planEdits };
+      if (library.some(item => item.id === project.projectId && item.status === 'trash')) {
+        return activeProjects()[0]?.state || fresh();
+      }
+      return project;
+    } catch { return fresh(); }
+  }
+  function persist() {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(state));
+      saveCurrentInLibrary();
+    } catch { announce('Не удалось сохранить черновик в этом браузере. Проверьте доступное место.'); }
+  }
+  function set(patch) { state = { ...state, ...patch }; persist(); render(); }
+  function esc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[char]);
+  }
+  function role() { return roleInfo[state.role] || null; }
+  function briefShort() {
+    const text = state.brief.trim();
+    return text.length > 48 ? `${text.slice(0, 47)}…` : text;
+  }
+  function announce(message) {
+    toast.textContent = message;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 4300);
+  }
+  function currentStageIndex() { return Math.max(0, stages.indexOf(state.stage)); }
+  function canOpen(index) {
+    if (index === 0) return true;
+    if (!state.role || !state.brief.trim()) return false;
+    if (index === 1) return true;
+    if (state.dialogue.length < 4 && !state.versions.length) return false;
+    if (index === 2) return true;
+    if (index === 3) return state.versions.length > 0;
+    const stepCount = state.versions.at(-1)?.snapshot?.plan?.length || currentPlanSteps().length;
+    return state.versions.length > 0 && (state.workStep === 0 || state.workStep >= stepCount || state.stage === 'result');
+  }
+
+  function sidebar() {
+    return `<aside class="sidebar" aria-label="Навигация по проекту">
+      <a class="brand" href="?" data-action="go-start" aria-label="CoreTeams — начало">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>coreteams</span>
+      </a>
+      <button class="projects-link ${view === 'projects' ? 'active' : ''}" data-action="show-projects" ${view === 'projects' ? 'aria-current="page"' : ''}>Мои проекты <span>${activeProjects().length} / ${PROJECT_LIMIT}</span></button>
+      <div><p class="sidebar-caption">Рабочее пространство</p><nav class="nav-list" aria-label="Этапы">
+        ${stages.map((item, index) => `<button class="nav-button ${view === 'workspace' && state.stage === item ? 'active' : ''}" data-stage="${item}" ${canOpen(index) ? '' : 'disabled'} ${view === 'workspace' && state.stage === item ? 'aria-current="step"' : ''}><span class="nav-num">${index + 1}</span>${stageNames[index]}</button>`).join('')}
+      </nav></div>
+      <div class="sidebar-bottom"><div class="draft-note"><strong>Локальные проекты</strong>Остаются только в этом браузере. На сервере не сохранены.</div></div>
+    </aside>`;
+  }
+
+  function topbar() {
+    const actions = view === 'projects'
+      ? `<button class="text-button" data-action="return-project">${hasProjectContent(state) ? 'Вернуться к проекту' : 'К новому проекту'}</button>`
+      : hasProjectContent(state)
+        ? '<button class="text-button" data-action="new-project">Новый проект</button><button class="small-button" data-action="open-save">Сохранить проект</button>'
+        : activeProjects().length ? '<button class="text-button" data-action="show-projects">Вернуться к проекту</button>' : '';
+    return `<header class="topbar">
+      <div class="topbar-left"><span class="project-label">${view === 'projects' ? 'Мои проекты' : state.brief ? esc(briefShort()) : 'Новый проект'}</span><span class="topbar-dot"></span><span class="topbar-sub">В этом браузере</span></div>
+      <div class="topbar-actions">${actions}<button class="text-button account-entry" data-action="open-register">Регистрация / вход</button></div>
+    </header>`;
+  }
+
+  function projectsPage() {
+    const active = activeProjects().sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    const trash = library.filter(item => item.status === 'trash').sort((a, b) => Date.parse(b.deletedAt) - Date.parse(a.deletedAt));
+    const date = value => new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(value));
+    return `<section aria-labelledby="projects-title" class="projects-page">
+      <p class="eyebrow">ПРОЕКТЫ НА ЭТОМ УСТРОЙСТВЕ</p><h1 class="page-title" id="projects-title">Мои проекты</h1>
+      <p class="lead">Откройте проект, чтобы продолжить с того же этапа. Черновики и версии остаются только в этом браузере.</p>
+      <div class="projects-section-head"><h2 class="section-title">Активные · ${active.length} из ${PROJECT_LIMIT}</h2><button class="button primary small" data-action="new-project" ${active.length >= PROJECT_LIMIT ? 'disabled' : ''}>Новый проект</button></div>
+      ${active.length >= PROJECT_LIMIT ? '<p class="helper projects-helper">Достигнут лимит 5 активных проектов. Переместите один в корзину, чтобы создать новый.</p>' : ''}
+      ${active.length ? `<div class="project-list">${active.map(item => `<article class="project-row"><div class="project-details"><h3>${esc(projectTitle(item.state))}</h3><p>${esc(roleInfo[item.state.role]?.name || 'Роль ещё не выбрана')} · ${versionCount(item.state.versions?.length || 0)}${item.state.skills?.length ? ' · скилл в проекте' : ''} · изменён ${date(item.updatedAt)}${item.id === state.projectId ? ' · сейчас открыт' : ''}</p></div><div class="project-actions"><button class="button secondary small" data-action="open-project" data-project-id="${esc(item.id)}">Открыть проект</button><button class="button danger small" data-action="delete-project" data-project-id="${esc(item.id)}">Удалить</button></div></article>`).join('')}</div>` : '<div class="empty-projects">Пока нет проектов. Начните с описания продукта и решения.</div>'}
+      <div class="projects-section-head trash-head"><h2 class="section-title">Корзина · ${trash.length}</h2></div>
+      <p class="helper projects-helper">Удалённые проекты остаются здесь до 30 дней и не занимают место среди активных.</p>
+      ${trash.length ? `<div class="project-list">${trash.map(item => `<article class="project-row trashed"><div class="project-details"><h3>${esc(projectTitle(item.state))}</h3><p>Удалён ${date(item.deletedAt)} · ${versionCount(item.state.versions?.length || 0)}</p></div><div class="project-actions"><button class="button secondary small" data-action="restore-project" data-project-id="${esc(item.id)}" ${active.length >= PROJECT_LIMIT ? 'disabled title="Сначала удалите один из активных проектов"' : ''}>Восстановить</button></div></article>`).join('')}</div>` : '<p class="helper">Корзина пуста.</p>'}
+    </section>`;
+  }
+
+  function stageAside() {
+    const index = currentStageIndex();
+    let next = ['Опишите задачу по продукту', 'Ответьте на вопросы фасилитатора', 'Подтвердите команду и план', 'Посмотрите ход работы', 'Обсудите результат и следующий шаг'][index];
+    if (index === 1 && state.dialogue.length >= 4) next = 'Посмотреть команду и план';
+    if (index === 3) next = state.workStep >= (state.versions.at(-1)?.snapshot?.plan?.length || 3) ? 'Открыть результат' : 'Показать передачу дальше';
+    if (index === 4 && state.resultDialogue.length >= 3) next = 'Создать новую версию';
+    return `<aside class="aside ${state.asideCollapsed ? 'collapsed' : ''}" aria-label="Состояние работы">
+      <div class="aside-head"><h3>Сейчас</h3><button class="aside-toggle" data-action="toggle-aside" aria-label="${state.asideCollapsed ? 'Развернуть' : 'Свернуть'} правую панель">${state.asideCollapsed ? '⟩' : '⟨'}</button></div>
+      <div class="aside-body"><div class="aside-item"><small>Этап</small><strong>${stageNames[index]}</strong></div><div class="aside-item"><small>Следующий шаг</small><strong>${next}</strong></div><div class="aside-item"><small>Лимит демо</small><strong>Число кредитов уточняется</strong></div></div>
+    </aside>`;
+  }
+
+  function startPage() {
+    const info = role();
+    return `<section aria-labelledby="start-title">
+      <p class="eyebrow">CORETEAMS · НОВЫЙ ПРОЕКТ</p>
+      <h1 class="page-title" id="start-title">Опишите сложную задачу по продукту — <em>получите решение.</em></h1>
+      <p class="lead">CoreTeams задаст уточняющие вопросы, предложит состав команды и подготовит файл с выводами, допущениями и следующим шагом.</p>
+      <div class="section-block"><p class="section-kicker">01 / ВАША РОЛЬ В ЭТОМ ПРОЕКТЕ</p><h2 class="section-title">Как вы участвуете в решении?</h2>
+        <div class="role-grid">
+          ${Object.entries(roleInfo).map(([key, item], index) => `<article class="role-card ${state.role === key ? 'selected' : ''}"><span class="role-symbol" aria-hidden="true">${index === 0 ? '◇' : '⌘'}</span><h3>${esc(item.name)}</h3><p>${esc(item.short)}</p><button class="button primary small" data-action="select-role" data-role="${key}">${state.role === key ? 'Выбрано ✓' : 'Выбрать →'}</button></article>`).join('')}
+        </div>
+      </div>
+      <div class="brief-box" id="brief-section"><p class="section-kicker">02 / СУТЬ ЗАДАЧИ</p><h2 class="section-title">${info ? 'Назовите продукт и решение' : 'Сначала выберите роль'}</h2>
+        ${info ? `<label class="field-label" for="brief">${esc(info.question)}</label><textarea class="textarea" id="brief" maxlength="1000" placeholder="${esc(info.placeholder)}">${esc(state.brief)}</textarea><p class="helper">Достаточно сути. Срок, бюджет, материалы и файлы добавите на следующем экране.</p><div class="examples" aria-label="Примеры"><span class="helper">Примеры:</span>${info.examples.map((example, index) => `<button class="example-chip" data-action="example" data-index="${index}">${esc(example)}</button>`).join('')}</div>` : `<p class="helper">Роль нужна только для этого проекта. Для следующего проекта её можно выбрать заново.</p>`}
+        <p class="error" id="start-error" role="alert"></p><div class="form-actions"><button class="button primary" data-action="start-work" ${info ? '' : 'disabled'}>Разобрать задачу <span aria-hidden="true">↗</span></button><span class="notice-line">Вход не нужен для знакомства с рабочим пространством.</span></div>
+      </div>
+    </section>`;
+  }
+
+  function questionFor(kind, count) {
+    const questions = kind === 'result'
+      ? ['Что в результате хотите уточнить или улучшить?', 'Какой новый факт, отзыв или ограничение стоит учесть?', 'Какой вывод или следующий шаг вы ожидаете от новой версии?']
+      : role()?.questions || [];
+    if (kind === 'initial' && count === 2) {
+      const known = [state.brief, ...state.dialogue.map(item => item.answer)].join(' ').toLowerCase();
+      const hasTime = /срок|недел|месяц|дней|дня|год|квартал/.test(known);
+      const hasMoney = /бюджет|рубл|руб\b|₽|аренд|стоимост|миллион|тысяч/.test(known);
+      if (hasTime && hasMoney) return 'Какие ещё ограничения или зависимости влияют на выбор?';
+      if (hasTime) return 'Какой бюджет и какие другие ограничения влияют на выбор?';
+      if (hasMoney) return 'Какие сроки и другие условия влияют на выбор?';
+    }
+    if (count < questions.length) return questions[count];
+    const followups = kind === 'result'
+      ? ['Что ещё важно учесть в следующей версии?', 'Что из нового нужно проверить перед следующим шагом?', 'Какие замечания к результату остались?']
+      : ['Есть ли альтернативный вариант, с которым нужно сравнить решение?', 'Кого затронет решение и кто сможет подтвердить результат?', 'Какие материалы или факты могут появиться позже?'];
+    return followups[(count - questions.length) % followups.length];
+  }
+
+  function facilitatorChat(kind) {
+    const initial = kind === 'initial';
+    const entries = initial ? state.dialogue : state.resultDialogue;
+    const ready = entries.length >= (initial ? 4 : 3);
+    const draft = initial ? state.dialogueDraft : state.resultDialogueDraft;
+    const question = questionFor(kind, entries.length);
+    const formId = initial ? 'initial-chat-form' : 'result-chat-form';
+    const inputId = initial ? 'initial-chat-input' : 'result-chat-input';
+    return `<div class="facilitator-chat surface" id="facilitator-chat" aria-label="Диалог с фасилитатором">
+      <div class="chat-header"><div class="question-top"><span class="facilitator-icon" aria-hidden="true">✳</span><div><strong>Фасилитатор</strong><small>${ready ? (initial ? 'Основные вопросы пройдены. Можно добавить детали.' : 'Вводные для новой версии собраны. Можно добавить детали.') : 'Демо: вопросы по сценарию, без анализа ответов'}</small></div></div>${ready ? `<div class="chat-head-actions"><button class="button primary" data-action="${initial ? 'to-team' : 'create-next-version'}">${initial ? 'Посмотреть команду и план →' : 'Создать новую версию →'}</button></div>` : ''}</div>
+      <div class="chat-thread" role="log" aria-live="polite" aria-label="История диалога">
+        ${entries.map(item => `<div class="chat-pair"><div class="chat-message facilitator"><small>Фасилитатор</small><p>${esc(item.question)}</p></div><div class="chat-message user"><small>Вы</small><p>${esc(item.answer)}</p></div></div>`).join('')}
+        <div class="chat-pair current-pair"><div class="chat-message facilitator current"><small>Фасилитатор · вопрос ${entries.length + 1}</small><p>${esc(question)}</p></div></div>
+      </div>
+      <form id="${formId}" class="chat-composer"><div class="chat-label-row"><label class="field-label" for="${inputId}">Ваш ответ</label><small>Enter — отправить · Shift+Enter — новая строка</small></div><div class="chat-input-row"><button class="chat-attach-button" type="button" data-action="select-file" aria-label="Добавить файл" title="Добавить файл" data-tooltip="Добавить файл"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m20.5 11.5-8.8 8.8a5 5 0 0 1-7.1-7.1l9.2-9.2a3.5 3.5 0 0 1 5 5l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg></button><textarea id="${inputId}" class="textarea" maxlength="2000" rows="3" placeholder="Ответьте своими словами; можно добавить факты, сомнения и ограничения">${esc(draft)}</textarea><div class="chat-actions"><button class="button primary" type="submit">Отправить ответ ↗</button><button class="button quiet" type="button" data-action="chat-unknown" data-kind="${kind}">Пока не знаю</button></div></div><input class="visually-hidden" type="file" id="source-file" tabindex="-1" aria-label="Выберите файл для макета"><p class="chat-file-status" id="file-status" ${selectedFile ? '' : 'hidden'}>${selectedFile ? `Выбран: ${esc(selectedFile)}. Файл не загружен и не анализировался.` : ''}</p></form>
+    </div>`;
+  }
+
+  function workspacePage() {
+    const info = role();
+    return `<section aria-labelledby="workspace-title">
+      <p class="eyebrow">УТОЧНЕНИЕ · ШАГ 1</p><h1 class="page-title" id="workspace-title">Расскажите о задаче <em>своими словами.</em></h1>
+      <p class="lead">Фасилитатор задаёт вопросы по одному прямо здесь. Добавляйте детали, пока вводных не хватит для плана.</p>
+      <div class="workspace-summary"><small>ВАША ЗАДАЧА · ${esc(info.name)}</small><strong>${esc(state.brief)}</strong></div>
+      ${facilitatorChat('initial')}
+    </section>`;
+  }
+
+  function defaultPlanSteps(roleKey = state.role, extraRoles = state.extraRoles) {
+    const info = roleInfo[roleKey];
+    if (!info) return [];
+    const [first, second, facilitator] = info.team.map(item => item[0]);
+    return [
+      {
+        title: 'Уточнить основания',
+        detail: roleKey === 'implementer' ? 'Зафиксировать технический вопрос, данные и ограничения' : 'Собрать факты, критерий решения и ограничения',
+        roles: [facilitator]
+      },
+      {
+        title: 'Проверить варианты и риски',
+        detail: roleKey === 'implementer' ? 'Сопоставить технические варианты, зависимости и риски' : 'Сравнить варианты и обозначить пробелы в данных',
+        roles: [first, second, ...extraRoles.map(item => item.name)]
+      },
+      {
+        title: 'Собрать результат',
+        detail: 'Зафиксировать выводы, неизвестное и следующий шаг',
+        roles: [facilitator]
+      }
+    ];
+  }
+
+  function currentPlanSteps() {
+    const available = new Set([...roleInfo[state.role].team.map(item => item[0]), ...state.extraRoles.map(item => item.name)]);
+    return defaultPlanSteps().map((step, index) => {
+      const edit = state.planEdits?.[index] || {};
+      const roles = Array.isArray(edit.roles) ? edit.roles.filter(name => available.has(name)) : step.roles;
+      return { title: edit.title || step.title, detail: edit.detail || step.detail, roles: roles.length ? roles : step.roles };
+    });
+  }
+
+  function planEditor() {
+    const names = [...roleInfo[state.role].team.map(item => item[0]), ...state.extraRoles.map(item => item.name)];
+    return `<form id="plan-form" class="plan-editor">${currentPlanSteps().map((step, index) => `<fieldset class="plan-edit-step"><legend>Шаг ${index + 1}</legend><label class="field-label" for="plan-title-${index}">Название</label><input class="input" id="plan-title-${index}" name="plan-title-${index}" maxlength="80" value="${esc(step.title)}" required><label class="field-label" for="plan-detail-${index}">Что сделать</label><input class="input" id="plan-detail-${index}" name="plan-detail-${index}" maxlength="180" value="${esc(step.detail)}" required><span class="field-label">Кто участвует</span><div class="plan-role-options">${names.map(name => `<label class="plan-role-check"><input type="checkbox" name="plan-role-${index}" value="${esc(name)}" ${step.roles.includes(name) ? 'checked' : ''}><span>${esc(name)}</span></label>`).join('')}</div></fieldset>`).join('')}<div class="plan-editor-actions"><button class="button primary small" type="submit">Завершить редактирование</button><button class="button secondary small" type="button" data-action="cancel-plan-edit">Вернуться без изменений</button></div></form>`;
+  }
+
+  function teamPage() {
+    const info = role();
+    const allRoles = [...info.team.map(([name, task]) => ({ name, task, added: false })), ...state.extraRoles.map(item => ({ ...item, added: true }))];
+    return `<section class="team-page" aria-labelledby="team-title">
+      <p class="eyebrow">КОМАНДА И ПЛАН · ШАГ 2</p><h1 class="page-title" id="team-title">Соберите проверку <em>вместе.</em></h1><p class="lead">Проверьте роли и план, затем выберите результат.</p>
+      <div class="workspace-summary"><small>ЗАДАЧА · ${esc(info.name)}</small><strong>${esc(state.brief)}</strong></div>
+      <div class="team-decision-grid">
+        <div class="team-pane surface"><div class="team-pane-head"><div><p class="section-kicker">01 / КОМАНДА</p><h2 class="section-title">Кто участвует</h2></div><button class="button secondary small" data-action="show-role-form" aria-expanded="${state.showRoleForm}">+ Добавить роль</button></div>
+          <div class="team-list">${allRoles.map((item, index) => `<article class="team-role-row ${item.added ? 'added' : ''}"><span class="team-role-number" aria-hidden="true">${item.added ? '+' : String(index + 1).padStart(2, '0')}</span><div><strong>${esc(item.name)}</strong><p>${esc(item.task)}</p></div>${item.added ? '<span class="team-added-label">Добавлена</span>' : ''}</article>`).join('')}</div>
+          ${state.showRoleForm ? `<form class="mini-form" id="role-form"><label class="field-label" for="role-name">Название роли</label><input class="input" id="role-name" name="roleName" maxlength="60" placeholder="Например, дизайнер" required><label class="field-label" for="role-task">Что она должна проверить или подготовить?</label><input class="input" id="role-task" name="roleTask" maxlength="160" placeholder="Например, проверить понятность первого экрана" required><button class="button primary small" type="submit">Добавить в состав</button><p class="helper">Роль добавится в состав макета. Агент не запускается.</p></form>` : ''}
+        </div>
+        <div class="team-pane surface"><div class="team-pane-head"><div><p class="section-kicker">02 / ПЛАН</p><h2 class="section-title">Как проверим</h2></div><button class="button secondary small" data-action="${state.showPlanForm ? 'cancel-plan-edit' : 'edit-plan'}" aria-expanded="${state.showPlanForm}">${state.showPlanForm ? 'Закрыть' : 'Поправить план'}</button></div>
+          ${state.showPlanForm ? planEditor() : `<div class="plan-steps">${currentPlanSteps().map((step, index) => `<div class="plan-step"><b>${String(index + 1).padStart(2, '0')}</b><div><strong>${esc(step.title)}</strong><small>${esc(step.detail)}</small><span class="plan-step-roles">${esc(step.roles.join(' · '))}</span></div></div>`).join('')}</div>`}
+          ${state.extraRoles.length && !state.showPlanForm ? `<div class="plan-change-note">Новая роль «${esc(state.extraRoles.at(-1).name)}» учтена в плане.</div>` : ''}
+        </div>
+      </div>
+      <div class="team-output-grid ${state.role === 'implementer' ? '' : 'single'}">
+        ${state.role === 'implementer' ? `<div class="team-option-pane surface"><p class="section-kicker">03 / ТИП РЕЗУЛЬТАТА</p><h2 class="section-title">Что подготовить</h2><div class="output-choice-grid" role="group" aria-label="Тип результата"><button class="output-choice ${state.outputType === 'document' ? 'selected' : ''}" data-action="output-type" data-output-type="document" aria-pressed="${state.outputType === 'document'}"><strong>Документ</strong><span>Выводы и план проверки</span></button><button class="output-choice ${state.outputType === 'skill' ? 'selected' : ''}" data-action="output-type" data-output-type="skill" aria-pressed="${state.outputType === 'skill'}"><strong>Создать скилл</strong><span>Файл SKILL.md и архив с примерами</span></button></div><p class="helper">Скилл в макете сохраняется как черновик; пробный запуск недоступен.</p></div>` : ''}
+        <div class="team-option-pane surface"><p class="section-kicker">${state.role === 'implementer' ? '04' : '03'} / ФОРМАТ ФАЙЛА</p><h2 class="section-title">${state.outputType === 'skill' ? 'Формат отчёта' : 'Формат результата'}</h2><div class="format-grid" role="group" aria-label="Формат результата">${['pdf', 'docx', 'pptx', 'xlsx', 'md'].map(format => `<button class="format-option ${state.format === format ? 'active' : ''}" data-action="format" data-format="${format}" aria-pressed="${state.format === format}">${format.toUpperCase()}</button>`).join('')}</div><p class="helper">Файл создаётся локально в браузере по шаблону.</p></div>
+      </div>
+      <div class="team-confirm-bar"><button class="button secondary" data-action="back-to-questions">← Вернуться к вопросам</button><span>Это предложение макета. Агенты не запускались.</span><button class="button primary" data-action="confirm-plan" ${state.showPlanForm ? 'disabled title="Сначала завершите редактирование плана"' : ''}>Согласовать план и продолжить →</button></div>
+    </section>`;
+  }
+
+  function workPage() {
+    const agreedPlan = state.versions.at(-1)?.snapshot.plan || currentPlanSteps();
+    const visible = Math.max(1, Math.min(state.workStep || 1, agreedPlan.length));
+    const current = agreedPlan[visible - 1];
+    const flow = agreedPlan.map((step, index) => {
+      const status = index < visible - 1 ? 'complete' : index === visible - 1 ? 'current' : 'pending';
+      const names = step.roles?.length ? step.roles : ['Роль не назначена'];
+      return `<div class="flow-step ${status}" ${status === 'current' ? 'aria-current="step"' : ''}><span class="flow-step-number">${String(index + 1).padStart(2, '0')}</span><div class="flow-step-content"><span class="flow-step-state">${status === 'complete' ? 'Передано дальше' : status === 'current' ? 'Показан сейчас' : 'Следующий этап'}</span><h2>${esc(step.title)}</h2><div class="flow-agents" aria-label="Участники этапа">${names.map(name => `<span class="flow-agent"><i aria-hidden="true"></i>${esc(name)}</span>`).join('')}</div></div></div>${index < agreedPlan.length - 1 ? `<span class="flow-connector ${index < visible - 1 ? 'passed' : ''} ${index === visible - 2 ? 'handoff' : ''}" aria-hidden="true"><span class="flow-line"></span><span class="flow-packet"></span><span class="flow-arrow">→</span></span>` : ''}`;
+    }).join('');
+    return `<section class="work-page" aria-labelledby="work-title">
+      <p class="eyebrow">РАБОТА КОМАНДЫ · ШАГ 3</p><h1 class="page-title" id="work-title">Как команда <em>собирает результат.</em></h1>
+      <p class="lead">Схема показывает, как общий контекст и выводы переходят между этапами согласованного плана.</p>
+      <div class="work-honesty" role="note"><strong>Схема работы · демо</strong><span>Подсветка показывает этапы плана. Агенты не запускались; факты и выводы не проверялись.</span></div>
+      <div class="flow-board" aria-label="Схема передачи информации между ролями"><div class="flow-board-head"><strong>Как движется результат</strong><span>Этап ${visible} из ${agreedPlan.length}</span></div><div class="flow-map">${flow}</div></div>
+      <div class="flow-current" role="status"><span class="flow-current-symbol" aria-hidden="true">✳</span><div><small>СЕЙЧАС В СХЕМЕ · ${esc(current.roles?.length ? current.roles.join(' · ') : 'роль не назначена')}</small><strong>${esc(current.title)}</strong><p>${esc(current.detail)}. ${visible === agreedPlan.length ? 'Выход по плану — итоговый файл.' : 'Выход по плану — вводные для следующего этапа.'}</p></div></div>
+      <div class="work-footer"><button class="button secondary" data-action="back-to-team">← Вернуться к команде и плану</button>${visible < agreedPlan.length ? `<button class="button primary" data-action="next-work-step">Показать передачу дальше →</button>` : `<button class="button primary" data-action="to-result">Завершить и открыть результат →</button>`}</div>
+    </section>`;
+  }
+
+  function resultSections(version) {
+    const data = version.snapshot;
+    const focus = data.answer === 'Пока не знаю' || !data.answer
+      ? 'главное направление проверки пока не выбрано'
+      : data.answer.trim().slice(0, 180);
+    const firstAction = data.answer === 'Пока не знаю' || !data.answer
+      ? 'Выбрать один главный критерий решения и назвать, какой факт его подтвердит.'
+      : data.role === 'implementer'
+        ? 'Подготовить минимальный технический сценарий, входные данные и критерий успеха.'
+        : 'Уточнить критерий решения и собрать первый проверяемый факт с указанием источника.';
+    return [
+      {
+        title: 'Карта гипотез',
+        teaser: 'Что предполагаем и чего пока не знаем',
+        lines: [
+          `Продуктовое решение: ${data.brief}`,
+          `Фокус: ${focus}.`,
+          ...(version.n > 1 ? [`Новое условие: ${version.changed}.`] : []),
+          'Статус: гипотеза не проверена; подтверждений в этом макете нет.'
+        ]
+      },
+      {
+        title: 'План проверки',
+        teaser: 'В каком порядке собирать основания',
+        lines: [
+          ...(Array.isArray(data.plan) && data.plan.length
+            ? data.plan.map((step, index) => `${index + 1}. ${step.title}: ${step.detail}. Участвуют: ${(step.roles || []).join(', ') || 'не назначены'}.`)
+            : ['1. Уточнить известные данные и ограничения.', `2. Проверить выбранный фокус: ${focus}.`, '3. Сравнить варианты и зафиксировать основания решения.']),
+          ...(version.n > 1 ? [`Перед запуском обновить проверку с учётом условия: ${version.changed}.`] : [])
+        ]
+      },
+      {
+        title: 'Первый шаг',
+        teaser: 'Краткий бриф первой проверки',
+        lines: [
+          `Цель: получить первый проверяемый ответ по теме «${focus}».`,
+          `Действие: ${firstAction}`,
+          ...(version.n > 1 ? [`Условие первой проверки: ${version.changed}.`] : []),
+          'Выход: наблюдение или измерение, источник и решение о следующей проверке.'
+        ]
+      }
+    ];
+  }
+
+  function skillPanel(version) {
+    const saved = state.skills.find(item => item.version === version.n);
+    const previous = version.n !== state.versions[state.versions.length - 1]?.n;
+    return `<div class="result-skill-artifact" id="skill-panel" aria-label="Скилл для задачи">
+      <div class="result-skill-head"><span class="result-skill-icon" aria-hidden="true">ZIP</span><div><strong>Скилл для задачи · версия ${version.n}</strong><small>${saved ? `Черновик сохранён в этом браузере · ${esc(saved.date)}${previous ? ' · предыдущая версия' : ''}` : 'Черновик ещё не собран'}</small></div></div>
+      <p>Внутри: SKILL.md, шаблоны проверки и отчёт по задаче.</p>
+      <div class="skill-actions">${saved ? `<a class="button secondary small" href="?skill=${version.n}&project=${encodeURIComponent(state.projectId)}" target="_blank" rel="noopener">Посмотреть SKILL.md</a><button class="button primary small" data-action="download-skill" data-version="${version.n}">Скачать архив скилла</button>` : `<button class="button primary small" data-action="save-skill">Собрать черновик скилла</button>`}</div>
+      <p class="helper">Архив собран локально по шаблону. Скилл ещё не проверен пробным запуском.</p>
+    </div>`;
+  }
+
+  function resultPage() {
+    const current = state.versions[state.versions.length - 1];
+    const isSkill = state.role === 'implementer' && state.outputType === 'skill';
+    const savedSkill = [...state.skills].reverse().map(item => state.versions.find(version => version.n === item.version)).find(Boolean);
+    const visibleSkill = isSkill ? current : savedSkill;
+    return `<section class="${visibleSkill ? 'with-skill' : ''}" aria-labelledby="result-title">
+      <p class="eyebrow">РЕЗУЛЬТАТ · ШАГ 4</p><h1 class="result-title" id="result-title">${isSkill ? 'Скилл для задачи' : 'Результат по задаче'}</h1><p class="result-subtitle">${isSkill ? 'Откройте черновик SKILL.md или скачайте архив для проверки в совместимой среде.' : 'Откройте документ в отдельном окне или скачайте его.'}</p>
+      ${state.notice && !(isSkill && state.skills.some(item => item.version === current.n)) ? `<p class="result-update" role="status">${esc(state.notice)}</p>` : ''}
+      ${visibleSkill ? skillPanel(visibleSkill) : ''}
+      <div class="result-dashboard"><div class="result-dialog">${facilitatorChat('result')}</div><div class="result-files">
+        <div class="artifact result-artifact"><div class="artifact-head"><div class="artifact-icon">${state.format.toUpperCase()}</div><div><strong>${isSkill ? 'Короткий отчёт' : 'Результат по задаче'} · версия ${current.n}</strong><small>${esc(current.date)} · текущая · черновик в этом браузере</small><span class="artifact-contents">Внутри: карта гипотез · план проверки · первый шаг</span></div></div><div class="artifact-actions"><a class="button secondary small" href="?preview=${current.n}&project=${encodeURIComponent(state.projectId)}" target="_blank" rel="noopener">Посмотреть версию</a></div></div>
+        <div class="export-bar"><div><strong>Файл результата</strong><span>Выберите формат и скачайте свою версию</span></div><div class="format-grid" role="group" aria-label="Формат скачиваемого файла">${['pdf', 'docx', 'pptx', 'xlsx', 'md'].map(format => `<button class="format-option ${state.format === format ? 'active' : ''}" data-action="format" data-format="${format}" aria-pressed="${state.format === format}">${format.toUpperCase()}</button>`).join('')}</div><button class="button primary" data-action="download-version" data-version="${current.n}">Скачать ${state.format.toUpperCase()}</button></div>
+        <p class="result-caption">Файл создаётся в браузере по шаблону CoreTeams. Это макет без анализа файлов, запуска агентов и серверного сохранения.</p>
+      </div></div>
+      <button class="button ghost small" data-action="toggle-versions">${state.showVersions ? 'Скрыть сохранённые версии' : 'Открыть все сохранённые версии'} →</button>
+        ${state.showVersions ? `<div class="version-list">${[...state.versions].reverse().map((version, index) => `<div class="version-row"><div><strong>Версия ${version.n} <span class="badge ${index === 0 ? 'green' : ''}">${index === 0 ? 'текущая' : 'предыдущая'}</span></strong><small>${esc(version.date)} · ${esc(version.changed)}${state.skills.some(item => item.version === version.n) ? ' · скилл сохранён' : ''}</small></div><div class="version-actions"><a class="button secondary small" href="?preview=${version.n}&project=${encodeURIComponent(state.projectId)}" target="_blank" rel="noopener">Посмотреть версию</a><button class="button secondary small" data-action="download-version" data-version="${version.n}">Скачать ${state.format.toUpperCase()}</button>${state.skills.some(item => item.version === version.n) ? `<button class="button secondary small" data-action="download-skill" data-version="${version.n}">Скачать ZIP-макет</button>` : ''}</div></div>`).join('')}</div>` : ''}
+      <div class="result-followup surface"><div><p class="section-kicker">СЛЕДУЮЩИЙ ШАГ</p><h2 class="section-title">${isSkill ? 'Проверьте скилл на тестовой задаче' : 'Проверьте первый шаг из документа'}</h2><p class="helper">${isSkill ? 'Скачайте архив скилла и выполните пробный запуск в совместимой среде; результат расскажите фасилитатору выше.' : 'Расскажите фасилитатору выше, что удалось узнать: он поможет подготовить следующую версию.'}</p></div></div>
+    </section>`;
+  }
+
+  function saveDialog() {
+    const register = state.accountMode !== 'login';
+    return `<div class="dialog-backdrop" data-action="close-dialog" role="presentation"><section class="dialog account-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div class="dialog-top"><div><p class="eyebrow" style="margin-bottom:7px">АККАУНТ CORETEAMS</p><h2 id="dialog-title">${register ? 'Создать аккаунт' : 'Войти в аккаунт'}</h2></div><button class="dialog-close" data-action="close-dialog" aria-label="Закрыть">×</button></div><div class="account-tabs" role="group" aria-label="Режим аккаунта"><button type="button" class="account-tab ${register ? 'active' : ''}" data-action="account-mode" data-mode="register" aria-pressed="${register}">Регистрация</button><button type="button" class="account-tab ${register ? '' : 'active'}" data-action="account-mode" data-mode="login" aria-pressed="${!register}">Вход</button></div><p class="account-intro">${register ? 'Начните без входа. Для сохранения проекта в аккаунте потребуется регистрация по личной ссылке-приглашению.' : 'В пилоте вход предусмотрен по почте и паролю после регистрации.'}</p><div class="muted-panel"><strong>Это прототип.</strong><p>Аккаунт здесь не создаётся, данные формы не отправляются. Проект пока хранится только в этом браузере.</p></div><form id="account-form" autocomplete="off"><label class="field-label" for="account-email">Электронная почта</label><input class="input" id="account-email" type="email" placeholder="name@example.com" autocomplete="off" required><label class="field-label" for="account-pass">Пароль</label><input class="input" id="account-pass" type="password" placeholder="Не вводите настоящий пароль" autocomplete="off" minlength="8" required>${register ? `<label class="field-label" for="account-pass-repeat">Повторите пароль</label><input class="input" id="account-pass-repeat" type="password" placeholder="Повторите пароль" autocomplete="off" minlength="8" required><label class="agreement-check"><input id="agreement-accept" type="checkbox" required><span>Я принимаю <a href="data:text/html;charset=utf-8,%3C%21doctype%20html%3E%0A%3Chtml%20lang%3D%22ru%22%3E%0A%3Chead%3E%0A%20%20%3Cmeta%20charset%3D%22utf-8%22%3E%0A%20%20%3Cmeta%20name%3D%22viewport%22%20content%3D%22width%3Ddevice-width%2C%20initial-scale%3D1%22%3E%0A%20%20%3Ctitle%3E%D0%9F%D0%BE%D0%BB%D1%8C%D0%B7%D0%BE%D0%B2%D0%B0%D1%82%D0%B5%D0%BB%D1%8C%D1%81%D0%BA%D0%BE%D0%B5%20%D1%81%D0%BE%D0%B3%D0%BB%D0%B0%D1%88%D0%B5%D0%BD%D0%B8%D0%B5%20%C2%B7%20CoreTeams%3C%2Ftitle%3E%0A%20%20%3Cstyle%3E%0A%20%20%20%20%3Aroot%7Bfont-family%3AInter%2C%22Segoe%20UI%22%2CArial%2Csans-serif%3Bcolor%3A%23152b35%3Bbackground%3A%23f7f7f3%7D%2A%7Bbox-sizing%3Aborder-box%7Dbody%7Bmargin%3A0%3Bpadding%3A28px%2020px%2072px%7Dmain%7Bmax-width%3A760px%3Bmargin%3Aauto%3Bbackground%3A%23fff%3Bborder%3A1px%20solid%20%23e0e5e3%3Bborder-radius%3A16px%3Bpadding%3Aclamp%2824px%2C5vw%2C52px%29%3Bbox-shadow%3A0%2012px%2040px%20rgba%2828%2C48%2C56%2C.05%29%7Da%7Bcolor%3A%232459e8%7Dh1%7Bfont-size%3Aclamp%2828px%2C4vw%2C38px%29%3Bletter-spacing%3A-.04em%3Bmargin%3A12px%200%7Dh2%7Bfont-size%3A19px%3Bmargin%3A30px%200%209px%7Dp%2Cli%7Bfont-size%3A15px%3Bline-height%3A1.6%7Dul%7Bpadding-left%3A22px%7D.eyebrow%7Bfont-size%3A11px%3Bletter-spacing%3A.14em%3Bfont-weight%3A800%3Bcolor%3A%23427d66%7D.draft%7Bbackground%3A%23fff7ea%3Bborder%3A1px%20solid%20%23e9d5ad%3Bborder-radius%3A10px%3Bpadding%3A13px%2015px%3Bcolor%3A%23745323%7D.meta%7Bcolor%3A%23637779%7D.back%7Bdisplay%3Ainline-block%3Bmargin-top%3A24px%3Bfont-weight%3A700%7D%0A%20%20%3C%2Fstyle%3E%0A%3C%2Fhead%3E%0A%3Cbody%3E%0A%20%20%3Cmain%3E%0A%20%20%20%20%3Cdiv%20class%3D%22eyebrow%22%3ECORETEAMS%20%C2%B7%20%D0%94%D0%9E%D0%9A%D0%A3%D0%9C%D0%95%D0%9D%D0%A2%20%D0%94%D0%9B%D0%AF%20%D0%A1%D0%9E%D0%93%D0%9B%D0%90%D0%A1%D0%9E%D0%92%D0%90%D0%9D%D0%98%D0%AF%3C%2Fdiv%3E%0A%20%20%20%20%3Ch1%3E%D0%9F%D0%BE%D0%BB%D1%8C%D0%B7%D0%BE%D0%B2%D0%B0%D1%82%D0%B5%D0%BB%D1%8C%D1%81%D0%BA%D0%BE%D0%B5%20%D1%81%D0%BE%D0%B3%D0%BB%D0%B0%D1%88%D0%B5%D0%BD%D0%B8%D0%B5%3C%2Fh1%3E%0A%20%20%20%20%3Cp%20class%3D%22draft%22%3E%3Cstrong%3E%D0%9F%D1%80%D0%BE%D0%B5%D0%BA%D1%82%20%D0%B4%D0%BB%D1%8F%20%D0%BF%D1%80%D0%BE%D1%82%D0%BE%D1%82%D0%B8%D0%BF%D0%B0.%3C%2Fstrong%3E%20%D0%A3%D1%81%D0%BB%D0%BE%D0%B2%D0%B8%D1%8F%2C%20%D1%81%D0%B2%D0%B5%D0%B4%D0%B5%D0%BD%D0%B8%D1%8F%20%D0%BE%D0%B1%20%D0%BE%D0%BF%D0%B5%D1%80%D0%B0%D1%82%D0%BE%D1%80%D0%B5%20%D0%B8%20%D0%BF%D0%BE%D1%80%D1%8F%D0%B4%D0%BE%D0%BA%20%D0%BE%D0%B1%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B8%20%D0%B4%D0%B0%D0%BD%D0%BD%D1%8B%D1%85%20%D0%B4%D0%BE%D0%BB%D0%B6%D0%BD%D1%8B%20%D0%B1%D1%8B%D1%82%D1%8C%20%D1%81%D0%BE%D0%B3%D0%BB%D0%B0%D1%81%D0%BE%D0%B2%D0%B0%D0%BD%D1%8B%20%D0%B4%D0%BE%20%D0%B7%D0%B0%D0%BF%D1%83%D1%81%D0%BA%D0%B0%20%D1%80%D0%B5%D0%B3%D0%B8%D1%81%D1%82%D1%80%D0%B0%D1%86%D0%B8%D0%B8.%20%D0%92%20%D1%8D%D1%82%D0%BE%D0%BC%20%D0%BC%D0%B0%D0%BA%D0%B5%D1%82%D0%B5%20%D0%BF%D1%80%D0%B8%D0%BD%D1%8F%D1%82%D0%B8%D0%B5%20%D1%81%D0%BE%D0%B3%D0%BB%D0%B0%D1%88%D0%B5%D0%BD%D0%B8%D1%8F%20%D0%BD%D0%B8%D0%BA%D1%83%D0%B4%D0%B0%20%D0%BD%D0%B5%20%D0%BE%D1%82%D0%BF%D1%80%D0%B0%D0%B2%D0%BB%D1%8F%D0%B5%D1%82%D1%81%D1%8F%20%D0%B8%20%D0%BD%D0%B5%20%D0%B7%D0%B0%D0%BF%D0%B8%D1%81%D1%8B%D0%B2%D0%B0%D0%B5%D1%82%D1%81%D1%8F.%3C%2Fp%3E%0A%20%20%20%20%3Ch2%3E1.%20%D0%9D%D0%B0%D0%B7%D0%BD%D0%B0%D1%87%D0%B5%D0%BD%D0%B8%D0%B5%20%D1%81%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D0%B0%3C%2Fh2%3E%0A%20%20%20%20%3Cp%3ECoreTeams%20%D0%BF%D0%BE%D0%BC%D0%BE%D0%B3%D0%B0%D0%B5%D1%82%20%D0%BE%D0%BF%D0%B8%D1%81%D0%B0%D1%82%D1%8C%20%D0%B7%D0%B0%D0%B4%D0%B0%D1%87%D1%83%2C%20%D1%83%D1%82%D0%BE%D1%87%D0%BD%D0%B8%D1%82%D1%8C%20%D0%B2%D0%B2%D0%BE%D0%B4%D0%BD%D1%8B%D0%B5%2C%20%D1%81%D0%BE%D1%81%D1%82%D0%B0%D0%B2%D0%B8%D1%82%D1%8C%20%D0%BF%D0%BB%D0%B0%D0%BD%20%D0%B8%20%D0%BF%D0%BE%D0%B4%D0%B3%D0%BE%D1%82%D0%BE%D0%B2%D0%B8%D1%82%D1%8C%20%D1%80%D0%B5%D0%B7%D1%83%D0%BB%D1%8C%D1%82%D0%B0%D1%82.%20%D0%94%D0%BE%D1%81%D1%82%D1%83%D0%BF%D0%BD%D0%BE%D1%81%D1%82%D1%8C%20%D0%BE%D1%82%D0%B4%D0%B5%D0%BB%D1%8C%D0%BD%D1%8B%D1%85%20%D1%84%D1%83%D0%BD%D0%BA%D1%86%D0%B8%D0%B9%20%D0%B7%D0%B0%D0%B2%D0%B8%D1%81%D0%B8%D1%82%20%D0%BE%D1%82%20%D1%80%D0%B5%D0%B6%D0%B8%D0%BC%D0%B0%20%D1%81%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D0%B0%20%D0%B8%20%D0%BF%D0%BE%D0%B4%D1%82%D0%B2%D0%B5%D1%80%D0%B6%D0%B4%D0%B0%D0%B5%D1%82%D1%81%D1%8F%20%D0%B2%20%D0%B8%D0%BD%D1%82%D0%B5%D1%80%D1%84%D0%B5%D0%B9%D1%81%D0%B5.%3C%2Fp%3E%0A%20%20%20%20%3Ch2%3E2.%20%D0%90%D0%BA%D0%BA%D0%B0%D1%83%D0%BD%D1%82%20%D0%B8%20%D0%B4%D0%BE%D1%81%D1%82%D1%83%D0%BF%3C%2Fh2%3E%0A%20%20%20%20%3Cp%3E%D0%94%D0%BB%D1%8F%20%D0%B7%D0%BD%D0%B0%D0%BA%D0%BE%D0%BC%D1%81%D1%82%D0%B2%D0%B0%20%D1%81%20%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B8%D0%BC%20%D0%BF%D1%80%D0%BE%D1%81%D1%82%D1%80%D0%B0%D0%BD%D1%81%D1%82%D0%B2%D0%BE%D0%BC%20%D0%B2%D1%85%D0%BE%D0%B4%20%D0%BD%D0%B5%20%D1%82%D1%80%D0%B5%D0%B1%D1%83%D0%B5%D1%82%D1%81%D1%8F.%20%D0%92%20%D0%BF%D0%B8%D0%BB%D0%BE%D1%82%D0%B5%20%D1%81%D0%BE%D0%B7%D0%B4%D0%B0%D0%BD%D0%B8%D0%B5%20%D0%B0%D0%BA%D0%BA%D0%B0%D1%83%D0%BD%D1%82%D0%B0%20%D0%BF%D1%80%D0%B5%D0%B4%D0%BF%D0%BE%D0%BB%D0%B0%D0%B3%D0%B0%D0%B5%D1%82%D1%81%D1%8F%20%D0%BF%D0%BE%20%D0%BB%D0%B8%D1%87%D0%BD%D0%BE%D0%B9%20%D1%81%D1%81%D1%8B%D0%BB%D0%BA%D0%B5-%D0%BF%D1%80%D0%B8%D0%B3%D0%BB%D0%B0%D1%88%D0%B5%D0%BD%D0%B8%D1%8E.%20%D0%94%D0%BB%D1%8F%20%D1%81%D0%BE%D1%85%D1%80%D0%B0%D0%BD%D0%B5%D0%BD%D0%B8%D1%8F%20%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82%D0%B0%20%D0%B2%20%D0%B0%D0%BA%D0%BA%D0%B0%D1%83%D0%BD%D1%82%D0%B5%20%D0%BF%D0%BE%D1%82%D1%80%D0%B5%D0%B1%D1%83%D0%B5%D1%82%D1%81%D1%8F%20%D1%80%D0%B5%D0%B3%D0%B8%D1%81%D1%82%D1%80%D0%B0%D1%86%D0%B8%D1%8F%20%D0%B8%D0%BB%D0%B8%20%D0%B2%D1%85%D0%BE%D0%B4.%3C%2Fp%3E%0A%20%20%20%20%3Ch2%3E3.%20%D0%9F%D1%80%D0%BE%D0%B5%D0%BA%D1%82%D1%8B%20%D0%B8%20%D0%BC%D0%B0%D1%82%D0%B5%D1%80%D0%B8%D0%B0%D0%BB%D1%8B%3C%2Fh2%3E%0A%20%20%20%20%3Cp%3E%D0%9F%D0%BE%D0%BB%D1%8C%D0%B7%D0%BE%D0%B2%D0%B0%D1%82%D0%B5%D0%BB%D1%8C%20%D0%BE%D1%82%D0%B2%D0%B5%D1%87%D0%B0%D0%B5%D1%82%20%D0%B7%D0%B0%20%D0%BC%D0%B0%D1%82%D0%B5%D1%80%D0%B8%D0%B0%D0%BB%D1%8B%2C%20%D0%BA%D0%BE%D1%82%D0%BE%D1%80%D1%8B%D0%B5%20%D0%B4%D0%BE%D0%B1%D0%B0%D0%B2%D0%BB%D1%8F%D0%B5%D1%82%20%D0%B2%20%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82%2C%20%D0%B8%20%D0%B4%D0%BE%D0%BB%D0%B6%D0%B5%D0%BD%20%D0%B8%D0%BC%D0%B5%D1%82%D1%8C%20%D0%BF%D1%80%D0%B0%D0%B2%D0%BE%20%D0%B8%D1%85%20%D0%B8%D1%81%D0%BF%D0%BE%D0%BB%D1%8C%D0%B7%D0%BE%D0%B2%D0%B0%D1%82%D1%8C.%20%D0%9F%D0%B5%D1%80%D0%B5%D0%B4%20%D0%BE%D1%82%D0%BF%D1%80%D0%B0%D0%B2%D0%BA%D0%BE%D0%B9%20%D0%BC%D0%B0%D1%82%D0%B5%D1%80%D0%B8%D0%B0%D0%BB%D0%BE%D0%B2%20%D1%81%D0%B5%D1%80%D0%B2%D0%B8%D1%81%20%D0%B4%D0%BE%D0%BB%D0%B6%D0%B5%D0%BD%20%D1%8F%D1%81%D0%BD%D0%BE%20%D0%BF%D0%BE%D0%BA%D0%B0%D0%B7%D1%8B%D0%B2%D0%B0%D1%82%D1%8C%2C%20%D0%B1%D1%83%D0%B4%D1%83%D1%82%20%D0%BB%D0%B8%20%D0%BE%D0%BD%D0%B8%20%D0%B7%D0%B0%D0%B3%D1%80%D1%83%D0%B6%D0%B5%D0%BD%D1%8B%2C%20%D0%BE%D0%B1%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%B0%D0%BD%D1%8B%20%D0%B8%20%D0%B3%D0%B4%D0%B5%20%D0%B1%D1%83%D0%B4%D1%83%D1%82%20%D1%85%D1%80%D0%B0%D0%BD%D0%B8%D1%82%D1%8C%D1%81%D1%8F.%3C%2Fp%3E%0A%20%20%20%20%3Ch2%3E4.%20%D0%A0%D0%B5%D0%B7%D1%83%D0%BB%D1%8C%D1%82%D0%B0%D1%82%D1%8B%20%D0%B8%20%D0%BE%D0%B3%D1%80%D0%B0%D0%BD%D0%B8%D1%87%D0%B5%D0%BD%D0%B8%D1%8F%3C%2Fh2%3E%0A%20%20%20%20%3Cp%3E%D0%A0%D0%B5%D0%B7%D1%83%D0%BB%D1%8C%D1%82%D0%B0%D1%82%D1%8B%20%D0%BF%D1%80%D0%B5%D0%B4%D0%BD%D0%B0%D0%B7%D0%BD%D0%B0%D1%87%D0%B5%D0%BD%D1%8B%20%D0%B4%D0%BB%D1%8F%20%D0%BF%D1%80%D0%BE%D0%B2%D0%B5%D1%80%D0%BA%D0%B8%20%D0%BF%D0%BE%D0%BB%D1%8C%D0%B7%D0%BE%D0%B2%D0%B0%D1%82%D0%B5%D0%BB%D0%B5%D0%BC.%20%D0%9F%D1%80%D0%B5%D0%B4%D0%BF%D0%BE%D0%BB%D0%BE%D0%B6%D0%B5%D0%BD%D0%B8%D1%8F%2C%20%D1%84%D0%B0%D0%BA%D1%82%D1%8B%20%D0%B8%20%D0%B8%D1%81%D1%82%D0%BE%D1%87%D0%BD%D0%B8%D0%BA%D0%B8%20%D0%B4%D0%BE%D0%BB%D0%B6%D0%BD%D1%8B%20%D0%B1%D1%8B%D1%82%D1%8C%20%D1%80%D0%B0%D0%B7%D0%BB%D0%B8%D1%87%D0%B8%D0%BC%D1%8B.%20%D0%94%D0%B5%D0%BC%D0%BE-%D0%BB%D0%B8%D0%BC%D0%B8%D1%82%20%D0%BE%D0%BF%D1%80%D0%B5%D0%B4%D0%B5%D0%BB%D1%8F%D0%B5%D1%82%20%D0%B2%D0%BE%D0%B7%D0%BC%D0%BE%D0%B6%D0%BD%D0%BE%D1%81%D1%82%D1%8C%20%D0%BF%D1%80%D0%BE%D0%B4%D0%BE%D0%BB%D0%B6%D0%B0%D1%82%D1%8C%20%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D1%83%3B%20%D0%B5%D0%B3%D0%BE%20%D1%80%D0%B0%D0%B7%D0%BC%D0%B5%D1%80%20%D0%B8%20%D1%83%D1%81%D0%BB%D0%BE%D0%B2%D0%B8%D1%8F%20%D0%BF%D0%BE%D0%BA%D0%B0%D0%B7%D1%8B%D0%B2%D0%B0%D1%8E%D1%82%D1%81%D1%8F%20%D0%B2%20%D0%B8%D0%BD%D1%82%D0%B5%D1%80%D1%84%D0%B5%D0%B9%D1%81%D0%B5.%20%D0%94%D0%B5%D0%BD%D0%B5%D0%B6%D0%BD%D0%B0%D1%8F%20%D1%81%D1%82%D0%BE%D0%B8%D0%BC%D0%BE%D1%81%D1%82%D1%8C%20%D0%B7%D0%B4%D0%B5%D1%81%D1%8C%20%D0%BD%D0%B5%20%D1%83%D1%81%D1%82%D0%B0%D0%BD%D0%BE%D0%B2%D0%BB%D0%B5%D0%BD%D0%B0.%3C%2Fp%3E%0A%20%20%20%20%3Ch2%3E5.%20%D0%A1%D0%BE%D1%85%D1%80%D0%B0%D0%BD%D0%B5%D0%BD%D0%B8%D0%B5%20%D0%B8%20%D1%83%D0%B4%D0%B0%D0%BB%D0%B5%D0%BD%D0%B8%D0%B5%3C%2Fh2%3E%0A%20%20%20%20%3Cp%3E%D0%94%D0%BE%20%D0%BF%D0%BE%D0%B4%D0%BA%D0%BB%D1%8E%D1%87%D0%B5%D0%BD%D0%B8%D1%8F%20%D1%81%D0%B5%D1%80%D0%B2%D0%B5%D1%80%D0%B0%20%D1%87%D0%B5%D1%80%D0%BD%D0%BE%D0%B2%D0%B8%D0%BA%D0%B8%20%D1%8D%D1%82%D0%BE%D0%B3%D0%BE%20%D0%BF%D1%80%D0%BE%D1%82%D0%BE%D1%82%D0%B8%D0%BF%D0%B0%20%D0%BE%D1%81%D1%82%D0%B0%D1%8E%D1%82%D1%81%D1%8F%20%D0%B2%20%D0%B1%D1%80%D0%B0%D1%83%D0%B7%D0%B5%D1%80%D0%B5%20%D0%BD%D0%B0%20%D1%82%D0%B5%D0%BA%D1%83%D1%89%D0%B5%D0%BC%20%D1%83%D1%81%D1%82%D1%80%D0%BE%D0%B9%D1%81%D1%82%D0%B2%D0%B5.%20%D0%A1%D0%B5%D1%80%D0%B2%D0%B5%D1%80%D0%BD%D0%BE%D0%B5%20%D1%81%D0%BE%D1%85%D1%80%D0%B0%D0%BD%D0%B5%D0%BD%D0%B8%D0%B5%20%D0%B4%D0%BE%D0%BB%D0%B6%D0%BD%D0%BE%20%D0%BF%D0%BE%D0%B4%D1%82%D0%B2%D0%B5%D1%80%D0%B6%D0%B4%D0%B0%D1%82%D1%8C%D1%81%D1%8F%20%D0%BE%D1%82%D0%B4%D0%B5%D0%BB%D1%8C%D0%BD%D0%BE.%20%D0%9F%D0%BE%D0%BB%D1%8C%D0%B7%D0%BE%D0%B2%D0%B0%D1%82%D0%B5%D0%BB%D1%8C%20%D1%81%D0%BC%D0%BE%D0%B6%D0%B5%D1%82%20%D1%83%D0%B4%D0%B0%D0%BB%D0%B8%D1%82%D1%8C%20%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82%20%D1%87%D0%B5%D1%80%D0%B5%D0%B7%20%D1%80%D0%B0%D0%B7%D0%B4%D0%B5%D0%BB%20%C2%AB%D0%9C%D0%BE%D0%B8%20%D0%BF%D1%80%D0%BE%D0%B5%D0%BA%D1%82%D1%8B%C2%BB%3B%20%D0%BF%D1%80%D0%B0%D0%B2%D0%B8%D0%BB%D0%B0%20%D1%81%D0%B5%D1%80%D0%B2%D0%B5%D1%80%D0%BD%D0%BE%D0%B3%D0%BE%20%D1%83%D0%B4%D0%B0%D0%BB%D0%B5%D0%BD%D0%B8%D1%8F%20%D0%B1%D1%83%D0%B4%D1%83%D1%82%20%D0%BE%D0%BF%D0%B8%D1%81%D0%B0%D0%BD%D1%8B%20%D0%B4%D0%BE%20%D0%B7%D0%B0%D0%BF%D1%83%D1%81%D0%BA%D0%B0.%3C%2Fp%3E%0A%20%20%20%20%3Ch2%3E6.%20%D0%A1%D0%B2%D0%B5%D0%B4%D0%B5%D0%BD%D0%B8%D1%8F%20%D0%B4%D0%BB%D1%8F%20%D1%83%D1%82%D0%B2%D0%B5%D1%80%D0%B6%D0%B4%D0%B5%D0%BD%D0%B8%D1%8F%3C%2Fh2%3E%0A%20%20%20%20%3Cul%3E%0A%20%20%20%20%20%20%3Cli%3E%D0%9E%D0%BF%D0%B5%D1%80%D0%B0%D1%82%D0%BE%D1%80%20%D1%81%D0%B5%D1%80%D0%B2%D0%B8%D1%81%D0%B0%20%D0%B8%20%D0%B5%D0%B3%D0%BE%20%D0%BA%D0%BE%D0%BD%D1%82%D0%B0%D0%BA%D1%82%D1%8B%3A%20%D1%83%D1%82%D0%BE%D1%87%D0%BD%D1%8F%D1%8E%D1%82%D1%81%D1%8F.%3C%2Fli%3E%0A%20%20%20%20%20%20%3Cli%3E%D0%A0%D0%B5%D0%B4%D0%B0%D0%BA%D1%86%D0%B8%D1%8F%20%D0%B8%20%D0%B4%D0%B0%D1%82%D0%B0%20%D0%B2%D1%81%D1%82%D1%83%D0%BF%D0%BB%D0%B5%D0%BD%D0%B8%D1%8F%20%D1%81%D0%BE%D0%B3%D0%BB%D0%B0%D1%88%D0%B5%D0%BD%D0%B8%D1%8F%20%D0%B2%20%D1%81%D0%B8%D0%BB%D1%83%3A%20%D1%83%D1%82%D0%BE%D1%87%D0%BD%D1%8F%D1%8E%D1%82%D1%81%D1%8F.%3C%2Fli%3E%0A%20%20%20%20%20%20%3Cli%3E%D0%9F%D0%BE%D1%80%D1%8F%D0%B4%D0%BE%D0%BA%20%D0%BE%D0%B1%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D0%BA%D0%B8%20%D0%BF%D0%B5%D1%80%D1%81%D0%BE%D0%BD%D0%B0%D0%BB%D1%8C%D0%BD%D1%8B%D1%85%20%D0%B4%D0%B0%D0%BD%D0%BD%D1%8B%D1%85%20%D0%B8%20%D1%81%D1%81%D1%8B%D0%BB%D0%BA%D0%B0%20%D0%BD%D0%B0%20%D0%BF%D0%BE%D0%BB%D0%B8%D1%82%D0%B8%D0%BA%D1%83%3A%20%D1%83%D1%82%D0%BE%D1%87%D0%BD%D1%8F%D1%8E%D1%82%D1%81%D1%8F.%3C%2Fli%3E%0A%20%20%20%20%20%20%3Cli%3E%D0%9F%D0%BE%D1%80%D1%8F%D0%B4%D0%BE%D0%BA%20%D0%B8%D0%B7%D0%BC%D0%B5%D0%BD%D0%B5%D0%BD%D0%B8%D1%8F%20%D1%83%D1%81%D0%BB%D0%BE%D0%B2%D0%B8%D0%B9%20%D0%B8%20%D1%80%D0%B0%D0%B7%D1%80%D0%B5%D1%88%D0%B5%D0%BD%D0%B8%D1%8F%20%D0%BE%D0%B1%D1%80%D0%B0%D1%89%D0%B5%D0%BD%D0%B8%D0%B9%3A%20%D1%83%D1%82%D0%BE%D1%87%D0%BD%D1%8F%D1%8E%D1%82%D1%81%D1%8F.%3C%2Fli%3E%0A%20%20%20%20%3C%2Ful%3E%0A%20%20%20%20%3Cp%20class%3D%22meta%22%3E%D0%94%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%20%D0%BF%D0%BE%D0%BA%D0%B0%D0%B7%D1%8B%D0%B2%D0%B0%D0%B5%D1%82%20%D0%BC%D0%B5%D1%81%D1%82%D0%BE%20%D0%B8%20%D1%81%D1%82%D1%80%D1%83%D0%BA%D1%82%D1%83%D1%80%D1%83%20%D1%81%D0%BE%D0%B3%D0%BB%D0%B0%D1%88%D0%B5%D0%BD%D0%B8%D1%8F%20%D0%B2%20%D0%BF%D1%80%D0%BE%D1%82%D0%BE%D1%82%D0%B8%D0%BF%D0%B5.%20%D0%9E%D0%BD%20%D0%BD%D0%B5%20%D1%8F%D0%B2%D0%BB%D1%8F%D0%B5%D1%82%D1%81%D1%8F%20%D1%83%D1%82%D0%B2%D0%B5%D1%80%D0%B6%D0%B4%D1%91%D0%BD%D0%BD%D0%BE%D0%B9%20%D1%80%D0%B5%D0%B4%D0%B0%D0%BA%D1%86%D0%B8%D0%B5%D0%B9.%3C%2Fp%3E%0A%20%20%20%20%3Ca%20class%3D%22back%22%20href%3D%22.%2Findex.html%22%3E%E2%86%90%20%D0%92%D0%B5%D1%80%D0%BD%D1%83%D1%82%D1%8C%D1%81%D1%8F%20%D0%B2%20CoreTeams%3C%2Fa%3E%0A%20%20%3C%2Fmain%3E%0A%3C%2Fbody%3E%0A%3C%2Fhtml%3E%0A" target="_blank" rel="noopener">пользовательское соглашение</a></span></label><p class="helper">Откроется проект соглашения в отдельной вкладке. Перед запуском его должен утвердить владелец продукта.</p>` : ''}<button class="button primary" type="submit">${register ? 'Создать аккаунт' : 'Войти'}</button></form><button class="button ghost" data-action="close-dialog">Вернуться к проекту</button></section></div>`;
+  }
+  function deleteDialog() {
+    const project = library.find(item => item.id === pendingDeleteId);
+    return `<div class="dialog-backdrop" data-action="close-dialog" role="presentation"><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title"><div class="dialog-top"><div><p class="eyebrow" style="margin-bottom:7px">УДАЛЕНИЕ ПРОЕКТА</p><h2 id="delete-title">Переместить в корзину?</h2></div><button class="dialog-close" data-action="close-dialog" aria-label="Закрыть">×</button></div><p><strong>${esc(projectTitle(project?.state || {}))}</strong> останется в корзине 30 дней вместе с версиями. Проект можно восстановить, пока он там.</p><button class="button danger confirm" data-action="confirm-delete">Удалить проект</button><button class="button ghost" data-action="close-dialog">Оставить проект</button></section></div>`;
+  }
+
+  function render() {
+    if (new URLSearchParams(location.search).get('skill')) {
+      renderSkillPreview();
+      return;
+    }
+    if (new URLSearchParams(location.search).get('preview')) {
+      renderPreview();
+      return;
+    }
+    document.body.className = '';
+    const page = view === 'projects' ? projectsPage() : state.stage === 'start' ? startPage() : state.stage === 'workspace' ? workspacePage() : state.stage === 'team' ? teamPage() : state.stage === 'work' ? workPage() : resultPage();
+    app.innerHTML = `<div class="app">${sidebar()}<div class="main-shell">${topbar()}<div class="work-grid ${view === 'projects' ? 'projects-grid' : ''}"><main class="main-content" id="main-content">${page}</main>${view === 'workspace' ? stageAside() : ''}</div></div></div>${state.dialog === 'save' ? saveDialog() : state.dialog === 'delete' ? deleteDialog() : ''}`;
+    const thread = app.querySelector('.chat-thread');
+    if (thread) thread.scrollTop = thread.scrollHeight;
+    if (state.dialog) app.querySelector('.dialog-close')?.focus();
+  }
+
+  function versionByNumber(number, id = state.projectId) {
+    const project = id === state.projectId ? state : library.find(item => item.id === id)?.state;
+    return project?.versions?.find(item => item.n === Number(number));
+  }
+  function createVersion(n, changed) {
+    return {
+      n, changed, date: new Date().toLocaleDateString('ru-RU'),
+      snapshot: {
+        role: state.role, brief: state.brief,
+        context: n > 1 ? [state.versions.at(-1)?.snapshot.context || state.context, ...state.resultDialogue.map(item => `${item.question} ${item.answer}`)].filter(Boolean).join('\n') : state.context,
+        answer: state.answer, dialogue: state.dialogue.map(item => ({ ...item })),
+        resultDialogue: state.resultDialogue.map(item => ({ ...item })),
+        extraRoles: state.extraRoles.map(item => ({ ...item })),
+        plan: currentPlanSteps().map(step => ({ ...step, roles: [...step.roles] })),
+        format: state.format, outputType: state.outputType
+      }
+    };
+  }
+  function markdown(version) {
+    const data = version?.snapshot;
+    const info = roleInfo[data?.role];
+    if (!version || !info) return '';
+    const added = data.extraRoles.length ? data.extraRoles.map(item => `- ${item.name}: ${item.task}`).join('\n') : '- Дополнительных ролей нет';
+    const sections = resultSections(version).map(section => `## ${section.title}\n\n${section.lines.join('\n\n')}`).join('\n\n');
+    const initialDialogue = Array.isArray(data.dialogue) && data.dialogue.length
+      ? data.dialogue.map(item => `- **${item.question}** ${item.answer}`).join('\n')
+      : `- ${data.answer || 'Нет ответа'}`;
+    const nextDialogue = Array.isArray(data.resultDialogue) && data.resultDialogue.length
+      ? `\n\n## Обсуждение новой версии\n\n${data.resultDialogue.map(item => `- **${item.question}** ${item.answer}`).join('\n')}`
+      : '';
+    return `# Результат по задаче · версия ${version.n}\n\n> Локальный макет интерфейса. Анализ и серверное сохранение не выполнялись.\n\nДата: ${version.date}\nРоль: ${info.name}\nИзменение: ${version.changed}\n\n## Задача\n\n${data.brief}\n\n## Контекст и условия\n\n${data.context || 'Не указаны'}\n\n## Вводные из диалога\n\n${initialDialogue}${nextDialogue}\n\n## Состав команды в макете\n\n${info.team.map(([name, task]) => `- ${name}: ${task}`).join('\n')}\n${added}\n\n${sections}\n\n## Основания и подтверждения\n\nДоступны только данные, введённые пользователем в макет. Независимая проверка не проводилась.\n\n## Допущения и неизвестное\n\nВыбранное направление требует фактической проверки.\n\n## Ограничения и зависимости\n\n${data.context || 'Не указаны'}\n\n## Критерии проверки\n\nПодтвердить исходные данные, сравнить варианты и зафиксировать основания решения.\n`;
+  }
+  function createSkillRecord(version) {
+    const data = version.snapshot;
+    const slug = `coreteams-technical-check-${state.projectId.slice(0, 8)}`;
+    const topic = (data.brief || 'технического решения').split(/[:\n]/)[0].trim().slice(0, 100);
+    const description = `Применять при проверке технического решения для «${topic}» до реализации; результат — основания, ограничения и минимальный тест.`;
+    const skillMd = `---\nname: ${slug}\ndescription: ${JSON.stringify(description)}\n---\n\n# Проверка технического решения\n\n## Триггер\n\nПрименяйте, когда нужно проверить осуществимость похожего технического решения до начала реализации и есть описание задачи.\n\n## Вход\n\n- Описание продукта и проверяемого решения.\n- Известные сроки, бюджет, материалы и ограничения.\n- Источники подтверждений, если они есть.\n\n## Шаги\n\n1. Сформулируйте одно проверяемое техническое утверждение.\n2. Отделите подтверждённые факты от допущений; назовите источник каждого факта.\n3. Перечислите ограничения и зависимости.\n4. Опишите минимальный тест, входные данные и измеримый критерий успеха.\n5. Сравните наблюдение с критерием; если тест не проводился, укажите «Не проверено».\n6. Заполните шаблон результата и предложите следующий шаг.\n\n## Шаблоны и примеры\n\n- references/result-template.md — форма результата с четырьмя обязательными блоками.\n- references/example-input.md — пример входа из проекта; это данные, не подтверждённые факты.\n- references/acceptance-checklist.md — проверка полноты и статуса.\n\n## Запреты\n\n- Не выдавайте предположение за подтверждённый факт.\n- Не утверждайте, что файлы проанализированы или тест выполнен, без результата и источника.\n- Не меняйте репозиторий и не запускайте внешние действия без разрешения владельца задачи.\n\n## Проверка\n\nПройдите references/acceptance-checklist.md. Проведите пробный запуск на отдельном тестовом примере; до него не называйте скилл проверенным.\n\n## Владелец и ревизия\n\nВладелец пока не назначен. Назначьте его перед использованием. Первая ревизия — после пробного запуска.\n`;
+    const resultTemplate = `# Проверка технического решения\n\n## Основания и подтверждения\n\n- Факт: [что известно]\n- Источник: [ссылка или «нет источника»]\n\n## Допущения и неизвестное\n\n- Допущение: [что требуется проверить]\n\n## Ограничения и зависимости\n\n- Ограничение: [срок, бюджет, доступность, совместимость]\n\n## Критерии проверки и статус\n\n- Минимальный тест: [действие]\n- Входные данные: [что понадобится]\n- Критерий успеха: [измеримый результат]\n- Наблюдение: [результат или «тест не проводился»]\n- Статус: [подтверждено / не подтверждено / не проверено]\n- Следующий шаг: [кто и что делает]\n`;
+    const exampleInput = `# Пример входа из проекта\n\nЗадача: ${data.brief}\n\nИзвестные условия: ${data.context || 'не указаны'}\n\nПриоритет проверки: ${data.answer || 'не выбран'}\n\nЭто исходные данные локального макета. Файлы не анализировались; технический тест не выполнялся.\n`;
+    const checklist = `# Проверка результата\n\n- [ ] Описание скилла указывает, когда применять его и что получится.\n- [ ] Шаги операции идут в порядке выполнения и не требуют скрытых данных.\n- [ ] У каждого заявленного факта есть источник; неизвестное не скрыто.\n- [ ] Результат заполнен по четырём блокам шаблона.\n- [ ] Минимальный тест и критерий успеха заданы до вывода о готовности.\n- [ ] Пробный запуск проведён на отдельном примере, его результат записан.\n- [ ] Назначены владелец скилла и дата следующей ревизии.\n\nПока пробного запуска нет, статус остаётся «Черновик».\n`;
+    const readme = `# ${slug}\n\nЧерновик скилла CoreTeams для совместимой агентной среды с поддержкой SKILL.md.\n\n1. Прочитайте SKILL.md: назначение, триггер, шаги, запреты и проверку.\n2. Откройте references только тогда, когда соответствующий шаг их требует.\n3. Подставьте свою задачу вместо примера и выполните пробный запуск.\n4. Заполните чек-лист и назначьте владельца скилла.\n\nСтруктура архива проверена локально. Пробный запуск и серверное сохранение не выполнялись; статус рабочего скилла не подтверждён.\n`;
+    const files = {
+      [`${slug}/SKILL.md`]: skillMd,
+      [`${slug}/README.md`]: readme,
+      [`${slug}/REPORT.md`]: markdown(version),
+      [`${slug}/references/result-template.md`]: resultTemplate,
+      [`${slug}/references/example-input.md`]: exampleInput,
+      [`${slug}/references/acceptance-checklist.md`]: checklist
+    };
+    return {
+      version: version.n, slug, savedAt: new Date().toISOString(),
+      date: new Intl.DateTimeFormat('ru-RU').format(new Date()),
+      schemaVersion: 2, status: 'draft', structure: 'checked', trial: 'not_run', files
+    };
+  }
+  function validSkillRecord(record) {
+    const base = `${record.slug}/`;
+    const skill = record.files[`${base}SKILL.md`] || '';
+    const required = ['SKILL.md', 'README.md', 'REPORT.md', 'references/result-template.md', 'references/example-input.md', 'references/acceptance-checklist.md'];
+    return required.every(path => typeof record.files[base + path] === 'string' && record.files[base + path].trim())
+      && skill.startsWith(`---\nname: ${record.slug}\ndescription: `)
+      && ['## Триггер', '## Шаги', '## Шаблоны и примеры', '## Запреты', '## Проверка', '## Владелец и ревизия'].every(section => skill.includes(section));
+  }
+  function skillByNumber(number, id = state.projectId) {
+    const project = id === state.projectId ? state : library.find(item => item.id === id)?.state;
+    return project?.skills?.find(item => item.version === Number(number));
+  }
+  function crc32(bytes) {
+    let value = 0xffffffff;
+    for (const byte of bytes) {
+      value ^= byte;
+      for (let bit = 0; bit < 8; bit++) value = (value >>> 1) ^ (value & 1 ? 0xedb88320 : 0);
+    }
+    return (value ^ 0xffffffff) >>> 0;
+  }
+  function zipBlob(files) {
+    const encoder = new TextEncoder();
+    const localParts = [];
+    const centralParts = [];
+    let offset = 0;
+    let centralSize = 0;
+    for (const [path, content] of Object.entries(files)) {
+      const name = encoder.encode(path);
+      const bytes = encoder.encode(content);
+      const checksum = crc32(bytes);
+      const local = new Uint8Array(30 + name.length);
+      const lh = new DataView(local.buffer);
+      lh.setUint32(0, 0x04034b50, true);
+      lh.setUint16(4, 20, true);
+      lh.setUint16(8, 0, true);
+      lh.setUint16(12, 0x21, true);
+      lh.setUint32(14, checksum, true);
+      lh.setUint32(18, bytes.length, true);
+      lh.setUint32(22, bytes.length, true);
+      lh.setUint16(26, name.length, true);
+      local.set(name, 30);
+      localParts.push(local, bytes);
+      const central = new Uint8Array(46 + name.length);
+      const ch = new DataView(central.buffer);
+      ch.setUint32(0, 0x02014b50, true);
+      ch.setUint16(4, 20, true);
+      ch.setUint16(6, 20, true);
+      ch.setUint16(14, 0x21, true);
+      ch.setUint32(16, checksum, true);
+      ch.setUint32(20, bytes.length, true);
+      ch.setUint32(24, bytes.length, true);
+      ch.setUint16(28, name.length, true);
+      ch.setUint32(42, offset, true);
+      central.set(name, 46);
+      centralParts.push(central);
+      offset += local.length + bytes.length;
+      centralSize += central.length;
+    }
+    const end = new Uint8Array(22);
+    const eh = new DataView(end.buffer);
+    eh.setUint32(0, 0x06054b50, true);
+    eh.setUint16(8, centralParts.length, true);
+    eh.setUint16(10, centralParts.length, true);
+    eh.setUint32(12, centralSize, true);
+    eh.setUint32(16, offset, true);
+    return new Blob([...localParts, ...centralParts, end], { type: 'application/zip' });
+  }
+  function downloadSkill(number) {
+    const saved = skillByNumber(number);
+    if (!saved) return announce('Сначала сохраните скилл в этом проекте.');
+    const blob = zipBlob(saved.files);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${saved.slug}-версия-${saved.version}-макет.zip`;
+    document.body.appendChild(link);
+    link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    announce('Скачан ZIP-макет. Пробный запуск скилла не проводился.');
+  }
+  function renderSkillPreview() {
+    const params = new URLSearchParams(location.search);
+    const number = params.get('skill');
+    const id = params.get('project') || state.projectId;
+    const saved = skillByNumber(number, id);
+    document.body.className = 'preview-body';
+    app.innerHTML = saved
+      ? `<div class="preview-toolbar"><a href="?open=${encodeURIComponent(id)}">← Вернуться к проекту</a><span class="badge amber">Черновик скилла · версия ${saved.version}</span></div><article class="document skill-document" id="main-content"><p class="demo-stamp">Локальный макет · пробный запуск не проводился</p><h1>SKILL.md</h1><pre class="skill-source">${esc(saved.files[`${saved.slug}/SKILL.md`])}</pre></article>`
+      : '<div class="preview-toolbar"><a href="?">← Вернуться к проектам</a></div><article class="document" id="main-content"><h1>Скилл не найден</h1><p>Он доступен только в браузере, где сохранён локальный макет.</p></article>';
+  }
+  function renderPreview() {
+    const number = new URLSearchParams(location.search).get('preview');
+    const id = new URLSearchParams(location.search).get('project') || state.projectId;
+    const version = versionByNumber(number, id);
+    document.body.className = 'preview-body';
+    if (!version) {
+      app.innerHTML = `<div class="preview-toolbar"><a href="?">← Вернуться к проектам</a></div><article class="document" id="main-content"><h1>Версия не найдена</h1><p>Она доступна только в том браузере, где создан локальный макет.</p></article>`;
+      return;
+    }
+    const data = version.snapshot;
+    const sections = resultSections(version).map(section => `<section><h2>${esc(section.title)}</h2>${section.lines.map(line => `<p>${esc(line)}</p>`).join('')}</section>`).join('');
+    const dialogue = [
+      ...(Array.isArray(data.dialogue) ? data.dialogue : []),
+      ...(Array.isArray(data.resultDialogue) ? data.resultDialogue : [])
+    ];
+    const dialogueBlock = dialogue.length ? `<details class="doc-dialogue"><summary>Вводные из диалога · ${dialogue.length}</summary>${dialogue.map(item => `<p><strong>${esc(item.question)}</strong><br>${esc(item.answer)}</p>`).join('')}</details>` : '';
+    app.innerHTML = `<div class="preview-toolbar"><a href="?open=${encodeURIComponent(id)}">← Вернуться к проекту</a><span class="badge amber">Локальный макет · версия ${version.n}</span></div><article class="document" id="main-content"><p class="demo-stamp">Макет интерфейса · без анализа и серверного сохранения</p><h1>Результат по задаче · версия ${version.n}</h1><p class="doc-meta">${esc(version.date)} · ${esc(version.changed)} · ${esc(roleInfo[data.role]?.name || '')}</p><h2>Задача</h2><p>${esc(data.brief)}</p><h2>Что уже решено</h2><p>Сформулирована задача, выбран состав и согласован план проверки.</p><h2>Что изменилось</h2><p>${esc(version.changed)}</p><h2>Что нужно от вас</h2><p>Проверить основания и выбрать следующий шаг.</p>${dialogueBlock}${sections}<h2>Основания и подтверждения</h2><p>Только введённые вами данные. Независимая проверка не проводилась.</p><h2>Допущения и неизвестное</h2><p>Выбранное направление требует проверки.</p><h2>Ограничения и зависимости</h2><p>${esc(data.context || 'Пока не указаны.')}</p><h2>Критерии проверки</h2><p>Подтвердить данные, сравнить варианты и зафиксировать основания решения.</p></article>`;
+  }
+  async function downloadVersion(number) {
+    const version = versionByNumber(number);
+    if (!version) return announce('Версия не найдена в этом браузере.');
+    if (!globalThis.CoreTeamsExport) return announce('Шаблоны файлов не загрузились. Обновите страницу.');
+    const data = version.snapshot;
+    const dialogue = [
+      ...(Array.isArray(data.dialogue) ? data.dialogue : []),
+      ...(Array.isArray(data.resultDialogue) ? data.resultDialogue : [])
+    ];
+    const model = {
+      title: `Результат по задаче · версия ${version.n}`, version: version.n, date: version.date,
+      persona: roleInfo[data.role]?.name || 'Участник проекта', markdown: markdown(version),
+      sections: [
+        { title: 'Задача', lines: [data.brief] },
+        { title: 'Что уже решено', lines: ['Сформулирована задача, выбран состав и согласован план проверки.'] },
+        { title: 'Что изменилось', lines: [version.changed] },
+        { title: 'Что нужно от вас', lines: ['Проверьте основания и выберите следующий шаг.'] },
+        ...resultSections(version).map(item => ({ title: item.title, lines: item.lines })),
+        { title: 'Вводные из диалога', lines: dialogue.length ? dialogue.map(item => `${item.question} — ${item.answer}`) : [data.answer || 'Не указаны'] },
+        { title: 'Основания и подтверждения', lines: ['Только введённые пользователем данные. Независимая проверка не проводилась.'] },
+        { title: 'Допущения и неизвестное', lines: ['Выбранное направление требует проверки.'] },
+        { title: 'Ограничения и зависимости', lines: [data.context || 'Не указаны.'] },
+        { title: 'Критерии проверки', lines: ['Подтвердить данные, сравнить варианты и зафиксировать основания решения.'] }
+      ]
+    };
+    let blob;
+    try { blob = await globalThis.CoreTeamsExport.create(state.format, model); }
+    catch (error) { console.error(error); return announce('Не удалось собрать выбранный файл. Попробуйте другой формат.'); }
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `CoreTeams-результат-версия-${version.n}.${state.format}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    announce(`Скачан локальный ${state.format.toUpperCase()}-файл. Серверный файл не создавался.`);
+  }
+
+  function addChatAnswer(kind, value) {
+    const answer = String(value || '').trim();
+    if (!answer) return announce('Напишите ответ или выберите «Пока не знаю».');
+    if (answer === 'Пока не знаю' && kind === 'initial' && state.dialogue.length >= 4) return announce('Дополнительных сведений пока нет. Можно перейти к команде и плану.');
+    if (answer === 'Пока не знаю' && kind === 'result' && state.resultDialogue.length >= 3) return announce('Дополнительных сведений пока нет. Можно создать новую версию.');
+    if (kind === 'initial') {
+      const question = questionFor('initial', state.dialogue.length);
+      const dialogue = [...state.dialogue, { question, answer }];
+      set({ dialogue, dialogueDraft: '', answer: dialogue[0]?.answer || '', context: dialogue.slice(1).map(item => `${item.question} ${item.answer}`).join('\n') });
+      document.getElementById('initial-chat-input')?.focus({ preventScroll: true });
+    } else if (kind === 'result') {
+      const question = questionFor('result', state.resultDialogue.length);
+      set({ resultDialogue: [...state.resultDialogue, { question, answer }], resultDialogueDraft: '' });
+      document.getElementById('result-chat-input')?.focus({ preventScroll: true });
+    }
+    const thread = app.querySelector('.chat-thread');
+    thread?.scrollTo({ top: thread.scrollHeight });
+  }
+
+  document.addEventListener('click', event => {
+    const button = event.target.closest('[data-action], [data-stage]');
+    if (!button) return;
+    if (button.classList.contains('dialog-backdrop') && event.target !== button) return;
+    if (button.tagName === 'A') event.preventDefault();
+    const action = button.dataset.action;
+    if (button.dataset.stage) {
+      const index = stages.indexOf(button.dataset.stage);
+      if (canOpen(index)) { view = 'workspace'; set({ stage: button.dataset.stage, dialog: null }); }
+      return;
+    }
+    if (action === 'go-start') { view = 'workspace'; return set({ stage: 'start', dialog: null }); }
+    if (action === 'show-projects') { view = 'projects'; set({ dialog: null }); window.scrollTo(0, 0); return; }
+    if (action === 'return-project') { view = 'workspace'; set({ dialog: null }); window.scrollTo(0, 0); return; }
+    if (action === 'open-project') {
+      const project = library.find(item => item.id === button.dataset.projectId && item.status === 'active');
+      if (!project) return announce('Проект не найден. Обновите список проектов.');
+      state = { ...fresh(), ...project.state, dialog: null };
+      selectedFile = null;
+      view = 'workspace';
+      persist(); render(); window.scrollTo(0, 0);
+      return;
+    }
+    if (action === 'delete-project') {
+      pendingDeleteId = button.dataset.projectId;
+      dialogReturn = { action: 'delete-project', id: pendingDeleteId };
+      return set({ dialog: 'delete' });
+    }
+    if (action === 'confirm-delete') {
+      const project = library.find(item => item.id === pendingDeleteId && item.status === 'active');
+      if (!project) return announce('Проект уже удалён или недоступен.');
+      project.status = 'trash';
+      project.deletedAt = new Date().toISOString();
+      if (state.projectId === project.id) {
+        state = { ...fresh(), ...(activeProjects().sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0]?.state || {}) };
+        selectedFile = null;
+      }
+      pendingDeleteId = null;
+      dialogReturn = null;
+      state.dialog = null;
+      persist(); render();
+      app.querySelector('[data-action="show-projects"]')?.focus();
+      announce('Проект перемещён в корзину на 30 дней. Его можно восстановить.');
+      return;
+    }
+    if (action === 'restore-project') {
+      if (activeProjects().length >= PROJECT_LIMIT) return announce('Достигнут лимит 5 активных проектов. Сначала удалите один из них.');
+      const project = library.find(item => item.id === button.dataset.projectId && item.status === 'trash');
+      if (!project) return announce('Проект не найден в корзине.');
+      project.status = 'active'; delete project.deletedAt;
+      project.updatedAt = new Date().toISOString();
+      try { localStorage.setItem(LIBRARY_KEY, JSON.stringify(library)); } catch { return announce('Не удалось восстановить проект в этом браузере.'); }
+      render(); announce('Проект восстановлен вместе с версиями.');
+      return;
+    }
+    if (action === 'select-role') {
+      const changed = state.role !== button.dataset.role;
+      set({ role: button.dataset.role, answer: changed ? '' : state.answer, context: changed ? '' : state.context, dialogue: changed ? [] : state.dialogue, dialogueDraft: '', resultDialogue: changed ? [] : state.resultDialogue, resultDialogueDraft: '', extraRoles: changed ? [] : state.extraRoles, planEdits: changed ? {} : state.planEdits, showPlanForm: false, versions: changed ? [] : state.versions, skills: changed ? [] : state.skills, outputType: changed ? 'document' : state.outputType });
+      document.getElementById('brief-section')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      document.getElementById('brief')?.focus({ preventScroll: true });
+      return;
+    }
+    if (action === 'example') {
+      const example = role()?.examples[Number(button.dataset.index)];
+      if (example) { state.brief = example; persist(); render(); document.getElementById('brief')?.focus(); }
+      return;
+    }
+    if (action === 'start-work') {
+      const value = document.getElementById('brief')?.value.trim() || '';
+      if (!state.role) return announce('Сначала выберите роль в проекте.');
+      if (value.length < 12) {
+        const error = document.getElementById('start-error');
+        if (error) error.textContent = 'Назовите продукт и решение чуть подробнее.';
+        return;
+      }
+      set({ brief: value, stage: 'workspace' });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    if (action === 'to-team') {
+      if (state.dialogue.length < 4) return announce('Ответьте на четыре основных вопроса фасилитатора.');
+      set({ stage: 'team' });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    if (action === 'chat-unknown') return addChatAnswer(button.dataset.kind, 'Пока не знаю');
+    if (action === 'create-next-version') {
+      if (state.resultDialogue.length < 3) return announce('Сначала ответьте на три вопроса о следующей версии.');
+      const n = state.versions.length + 1;
+      const changed = state.resultDialogue[0].answer.trim().slice(0, 120) || 'Уточнён результат';
+      const version = createVersion(n, changed);
+      const record = state.role === 'implementer' && state.outputType === 'skill' ? createSkillRecord(version) : null;
+      const skills = record && validSkillRecord(record) ? [...state.skills, record] : state.skills;
+      set({ versions: [...state.versions, version], skills, resultDialogue: [], resultDialogueDraft: '', notice: `Версия ${n} добавлена в этот браузер. Версия ${n - 1} остаётся доступной.` });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    if (action === 'show-role-form') return set({ showRoleForm: !state.showRoleForm });
+    if (action === 'edit-plan') return set({ showPlanForm: true });
+    if (action === 'cancel-plan-edit') return set({ showPlanForm: false });
+    if (action === 'back-to-questions') { set({ stage: 'workspace', showPlanForm: false, showRoleForm: false }); return; }
+    if (action === 'output-type' && state.role === 'implementer' && ['document', 'skill'].includes(button.dataset.outputType)) return set({ outputType: button.dataset.outputType });
+    if (action === 'format') return set({ format: button.dataset.format });
+    if (action === 'confirm-plan') {
+      if (state.showPlanForm) return announce('Сначала завершите редактирование плана.');
+      const previous = state.versions.at(-1);
+      const oldPlan = previous?.snapshot.plan || (previous ? defaultPlanSteps(previous.snapshot.role, previous.snapshot.extraRoles || []) : []);
+      const planChanged = previous && JSON.stringify(oldPlan) !== JSON.stringify(currentPlanSteps());
+      const outputChanged = previous && ((previous.snapshot.outputType || 'document') !== state.outputType || (previous.snapshot.format || 'pdf') !== state.format);
+      const versions = !previous ? [createVersion(1, 'Первая версия плана')]
+        : planChanged || outputChanged ? [...state.versions, createVersion(state.versions.length + 1, planChanged ? 'Изменён состав команды или план проверки' : 'Изменён тип или формат результата')]
+          : state.versions;
+      set({ versions, stage: 'work', workStep: !previous || planChanged || outputChanged ? 1 : state.workStep || 1 });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    if (action === 'next-work-step') return set({ workStep: Math.min((state.workStep || 1) + 1, state.versions.at(-1)?.snapshot?.plan?.length || currentPlanSteps().length) });
+    if (action === 'back-to-team') return set({ stage: 'team' });
+    if (action === 'to-result') {
+      const current = state.versions.at(-1);
+      const needsSkill = state.role === 'implementer' && state.outputType === 'skill' && current && !state.skills.some(item => item.version === current.n);
+      const record = needsSkill ? createSkillRecord(current) : null;
+      const skills = record && validSkillRecord(record) ? [...state.skills, record] : state.skills;
+      set({ stage: 'result', skills }); window.scrollTo({ top: 0, behavior: 'smooth' }); return;
+    }
+    if (action === 'toggle-versions') return set({ showVersions: !state.showVersions });
+    if (action === 'download-version') return downloadVersion(button.dataset.version);
+    if (action === 'save-skill') {
+      const current = state.versions.at(-1);
+      if (state.role !== 'implementer' || state.outputType !== 'skill' || !current) return announce('Сначала выберите создание скилла и согласуйте план.');
+      const record = createSkillRecord(current);
+      if (!validSkillRecord(record)) return announce('Не удалось собрать архив скилла.');
+      set({ skills: [...state.skills.filter(item => item.version !== current.n), record], notice: '' });
+      announce('Скилл сохранён в проекте локально. Пробный запуск не проводился.');
+      return;
+    }
+    if (action === 'download-skill') return downloadSkill(button.dataset.version);
+    if (action === 'select-file') { document.getElementById('source-file')?.click(); return; }
+    if (action === 'open-save' || action === 'open-register') { dialogReturn = { action }; return set({ dialog: 'save', accountMode: 'register' }); }
+    if (action === 'account-mode') return set({ accountMode: button.dataset.mode === 'login' ? 'login' : 'register' });
+    if (action === 'close-dialog') {
+      const target = dialogReturn;
+      pendingDeleteId = null; dialogReturn = null; set({ dialog: null });
+      const selector = target?.id ? `[data-action="${target.action}"][data-project-id="${CSS.escape(target.id)}"]` : `[data-action="${target?.action}"]`;
+      app.querySelector(selector)?.focus();
+      return;
+    }
+    if (action === 'toggle-aside') return set({ asideCollapsed: !state.asideCollapsed });
+    if (action === 'new-project') {
+      if (activeProjects().length >= PROJECT_LIMIT) { view = 'projects'; render(); return announce('Можно иметь не более 5 активных проектов. Удалите один из них, чтобы начать новый.'); }
+      state = fresh(); selectedFile = null; view = 'workspace'; persist(); render(); window.scrollTo(0, 0);
+      return;
+    }
+  });
+
+  document.addEventListener('input', event => {
+    if (event.target.id === 'brief') { state.brief = event.target.value; persist(); }
+    if (event.target.id === 'initial-chat-input') { state.dialogueDraft = event.target.value; persist(); }
+    if (event.target.id === 'result-chat-input') { state.resultDialogueDraft = event.target.value; persist(); }
+    if (event.target.id === 'account-pass' || event.target.id === 'account-pass-repeat') document.getElementById('account-pass-repeat')?.setCustomValidity('');
+  });
+  document.addEventListener('change', event => {
+    if (event.target.id === 'source-file') {
+      selectedFile = event.target.files?.[0]?.name || null;
+      const label = document.getElementById('file-status');
+      if (label) {
+        label.hidden = !selectedFile;
+        label.textContent = selectedFile ? `Выбран: ${selectedFile}. Файл не загружен и не анализировался.` : '';
+      }
+    }
+  });
+  document.addEventListener('submit', event => {
+    if (event.target.id === 'initial-chat-form' || event.target.id === 'result-chat-form') {
+      event.preventDefault();
+      const kind = event.target.id === 'initial-chat-form' ? 'initial' : 'result';
+      const value = event.target.querySelector('textarea')?.value;
+      addChatAnswer(kind, value);
+      return;
+    }
+    if (event.target.id === 'role-form') {
+      event.preventDefault();
+      const name = event.target.elements.namedItem('roleName')?.value.trim() || '';
+      const task = event.target.elements.namedItem('roleTask')?.value.trim() || '';
+      if (!name || !task) return;
+      const names = [...roleInfo[state.role].team.map(item => item[0]), ...state.extraRoles.map(item => item.name)];
+      if (names.some(item => item.toLocaleLowerCase('ru-RU') === name.toLocaleLowerCase('ru-RU'))) return announce('Такая роль уже есть в команде. Уточните название.');
+      const planEdits = { ...state.planEdits };
+      if (planEdits[1]?.roles) planEdits[1] = { ...planEdits[1], roles: [...planEdits[1].roles, name] };
+      set({ extraRoles: [...state.extraRoles, { name, task }], planEdits, showRoleForm: false });
+      announce(`Роль «${name}» добавлена в состав макета. Агент не запускался.`);
+    }
+    if (event.target.id === 'plan-form') {
+      event.preventDefault();
+      const edits = {};
+      for (let index = 0; index < 3; index++) {
+        const title = event.target.elements.namedItem(`plan-title-${index}`)?.value.trim() || '';
+        const detail = event.target.elements.namedItem(`plan-detail-${index}`)?.value.trim() || '';
+        const roles = [...event.target.querySelectorAll(`[name="plan-role-${index}"]:checked`)].map(input => input.value);
+        if (!title || !detail || !roles.length) return announce(`Укажите название, действие и хотя бы одну роль для шага ${index + 1}.`);
+        edits[index] = { title, detail, roles };
+      }
+      set({ planEdits: edits, showPlanForm: false });
+      announce('План обновлён в этом браузере. Роли учтены в шагах.');
+      return;
+    }
+    if (event.target.id === 'account-form') {
+      event.preventDefault();
+      if (state.accountMode !== 'login' && event.target.querySelector('#account-pass')?.value !== event.target.querySelector('#account-pass-repeat')?.value) {
+        event.target.querySelector('#account-pass-repeat')?.setCustomValidity('Пароли не совпадают');
+        event.target.querySelector('#account-pass-repeat')?.reportValidity();
+        return;
+      }
+      event.target.reset();
+      announce('Это макет: аккаунт и серверное сохранение не выполняются.');
+    }
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.target.matches?.('#initial-chat-input, #result-chat-input')) {
+      event.preventDefault();
+      event.target.form?.requestSubmit();
+      return;
+    }
+    if (!state.dialog) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      app.querySelector('.dialog-close')?.click();
+    }
+    if (event.key === 'Tab') {
+      const controls = [...app.querySelectorAll('.dialog button, .dialog input, .dialog a')];
+      if (!controls.length) return;
+      if (event.shiftKey && document.activeElement === controls[0]) { event.preventDefault(); controls.at(-1).focus(); }
+      if (!event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); controls[0].focus(); }
+    }
+  });
+
+  const openId = new URLSearchParams(location.search).get('open');
+  if (openId) {
+    const project = library.find(item => item.id === openId && item.status === 'active');
+    if (project) state = { ...fresh(), ...project.state, dialog: null };
+    history.replaceState(null, '', location.pathname);
+  }
+  persist();
+  render();
+})();
+
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+/* React-specific layout hooks; the visual language is shared with the HTML prototype. */
+.questions-screen{height:100%;min-height:0;display:flex;flex-direction:column}
+.questions-screen .facilitator-chat{flex:1;min-height:0;display:flex;flex-direction:column;margin-top:0}
+.questions-screen .chat-thread{flex:1;max-height:none;min-height:0}
+.questions-screen .workspace-summary{padding:9px 13px;margin-bottom:10px}
+.questions-screen .lead{margin-bottom:11px}
+.flow-unit{display:contents}
+.react-preview{min-height:100vh;background:#eef0ec;padding:36px 16px}
+.react-preview .document{min-height:0}
+.react-preview .document section{max-width:none}
+.react-preview .document section h2{margin-top:27px}
+.react-preview .document p{white-space:pre-wrap}
+.project-list:empty{display:none}
+@media(max-width:900px){.flow-unit{display:contents}}
+@media(max-width:760px){.questions-screen .facilitator-chat{min-height:320px}.react-preview{padding:18px 10px}}
+@media(max-width:760px){.nav-list{scrollbar-width:none;scroll-snap-type:x proximity}.nav-list::-webkit-scrollbar{display:none}.nav-button{scroll-snap-align:start}}
+@media(max-width:760px){
+  .questions-screen{height:auto;min-height:100%}
+  .questions-screen .facilitator-chat{flex:none;min-height:0}
+  .questions-screen .chat-thread{flex:none;max-height:38dvh;min-height:0}
+  .result-dialog{height:auto}
+  .result-dialog .facilitator-chat{height:auto}
+  .result-dialog .chat-thread{flex:none;max-height:34dvh;min-height:0}
+}
