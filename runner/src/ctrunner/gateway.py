@@ -381,22 +381,27 @@ class GatewayClient:
             draining = self._draining.is_set()
             if draining and not drain_started:
                 attempts.clear()  # Shutdown must not inherit the normal thirty-second backoff.
+                # Give old frames one last ACK opportunity, then scan the unread tail.
+                # Eviction is not a receipt: retained rows remain retryable on reconnect.
+                last_chance = time.monotonic() + 0.05
+                leases = {key: min(expiry, last_chance) for key, expiry in leases.items()}
                 drain_started = True
             if (draining and self._drain_deadline is not None
                     and time.monotonic() >= self._drain_deadline):
                 return
             await _record_diagnostic_acks(accepted, receipts, pending, attempts, leases)
             now = time.monotonic()
-            if not draining:
+            if not draining or not await asyncio.to_thread(feed.caught_up):
                 revisit = _rotate_diagnostics(accepted, pending, attempts, leases, now) or revisit
-                if revisit and not pending and await asyncio.to_thread(feed.caught_up):
-                    feed.rewind()
-                    revisit = False
+            if (not draining and revisit and not pending
+                    and await asyncio.to_thread(feed.caught_up)):
+                feed.rewind()
+                revisit = False
             for frame in await asyncio.to_thread(feed.poll, 256 - len(pending)):
                 key = str(frame["diagnostic_id"])
                 if not await asyncio.to_thread(receipts.contains, key):
                     pending[key] = frame
-                    leases[key] = now + lease_s
+                    leases[key] = now + (0.05 if draining else lease_s)
             if (draining and self._public_flushed.is_set() and not pending
                     and await asyncio.to_thread(feed.caught_up)):
                 return

@@ -6,6 +6,7 @@
 функций дат SQLite и Postgres.
 """
 
+import asyncio
 import sqlite3
 
 from collections import Counter
@@ -515,7 +516,8 @@ async def operational_detail(run_id: str, request: Request, admin: AdminUser, se
     if transport is not None:
         from backend.harness_estimate import catch_up
         try:
-            await catch_up(request.app.state.database, run_id, transport.diagnostic_snapshots(run_id))
+            snapshots = await asyncio.to_thread(transport.diagnostic_snapshots, run_id)
+            await catch_up(request.app.state.database, run_id, snapshots)
         except (DBAPIError, sqlite3.Error):
             # Transport uses sqlite3 directly; catch_up owns a separate session.
             projection_unavailable = True
