@@ -75,13 +75,18 @@ jobs:
           RELEASE_JSON: ${{ needs.verify.outputs.request }}
           DEPLOY_HOST: ${{ secrets.CICD_DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.CICD_DEPLOY_USER }}
+          DEPLOY_PORT: ${{ vars.CICD_DEPLOY_PORT }}
           DEPLOY_KEY: ${{ secrets.CICD_DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.CICD_DEPLOY_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           export LC_ALL=C
-          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
-          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          # Bound input before arithmetic; no default port or implicit SSH config.
+          [[ -n "${DEPLOY_PORT:-}" && ${#DEPLOY_PORT} -le 5 ]] || exit 1
+          [[ "$DEPLOY_PORT" =~ ^[1-9][0-9]*$ ]] || exit 1
+          (( DEPLOY_PORT <= 65535 )) || exit 1
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || exit 1
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || exit 1
           [[ -n "$DEPLOY_KEY" && -n "$DEPLOY_KNOWN_HOSTS" ]]
           [[ -n "$RELEASE_JSON" && ${#RELEASE_JSON} -le 16383 ]]
           directory=$(mktemp -d)
@@ -90,7 +95,7 @@ jobs:
           printf '%s\n' "$DEPLOY_KEY" > "$directory/key"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$directory/known_hosts"
           unset DEPLOY_KEY DEPLOY_KNOWN_HOSTS
-          printf '%s\n' "$RELEASE_JSON" | ssh -F /dev/null -T \
+          printf '%s\n' "$RELEASE_JSON" | ssh -F /dev/null -T -p "$DEPLOY_PORT" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$directory/known_hosts" -o GlobalKnownHostsFile=/dev/null \
             -o ConnectTimeout=15 -o ConnectionAttempts=1 \

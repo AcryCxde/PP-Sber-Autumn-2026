@@ -72,6 +72,14 @@ Local ingress HTTPS 200 и TLS valid; external URL timeout с сервера н�
 - [ ] Secrets только environment `production`: `CICD_DEPLOY_HOST`, `CICD_DEPLOY_USER`,
   `CICD_DEPLOY_SSH_KEY`, `CICD_DEPLOY_KNOWN_HOSTS`. Host key сверить независимым каналом;
   не `ssh-keyscan` в workflow. Не читать/печатать существующие значения.
+- [ ] Обязательная **environment variable** `production`: `CICD_DEPLOY_PORT`.
+  Только canonical ASCII decimal `1..65535`: без leading zeros, знака, whitespace или выражений.
+  Missing/invalid → отказ до SSH и создания credential files; default `22` отсутствует.
+  Например, `2297` — только пример конфигурации, не подтверждение live SSH route.
+  Для этого примера `CICD_DEPLOY_KNOWN_HOSTS` должен pin-ить `[host]:2297`
+  (вместо `host` — согласованный `CICD_DEPLOY_HOST`) с независимо проверенным host key.
+  Настройка variable требует отдельного **A2**, настройка/изменение SSH route — **A3**;
+  здесь ничего не настраивать и не активировать, deploy flag оставить off до P.
 - [ ] `CICD_PUBLISH_ENABLED` и `CICD_DEPLOY_ENABLED` — **раздельные repository variables**.
   До A обе отсутствуют/не `true`; publish разрешить отдельно после A, deploy оставить off до P.
   Deploy verify job вне environment, поэтому environment-only flag ему недоступен.

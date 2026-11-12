@@ -1,4 +1,7 @@
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -210,6 +213,192 @@ def test_deploy_is_manual_disabled_trusted_and_credential_isolated():
             assert "${{" not in step.get("run", "")
             if "uses" in step:
                 assert re.fullmatch(r"[\w/-]+@[0-9a-f]{40}", step["uses"])
+
+
+@pytest.fixture
+def deploy_shell(tmp_path):
+    step = yaml.load(
+        (ROOT / ".github/workflows/deploy.yml").read_text(), Loader=StrictLoader
+    )["jobs"]["deploy"]["steps"][0]
+    script = tmp_path / "deploy.sh"
+    script.write_text(step["run"])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    record = tmp_path / "ssh.json"
+    allocated = tmp_path / "allocated"
+    # PATH has no real ssh or user tools; subprocess receives no inherited secrets.
+    fake_ssh = bin_dir / "ssh"
+    fake_ssh.write_text(
+        f"#!{sys.executable} -I\n"
+        "import json, os, pathlib, stat, sys\n"
+        "args = sys.argv[1:]\n"
+        "key = pathlib.Path(args[args.index('-i') + 1])\n"
+        "hosts = key.parent / 'known_hosts'\n"
+        "assert key.read_text() == 'dummy-key\\n'\n"
+        "assert hosts.read_text() == 'dummy-host-key\\n'\n"
+        "assert stat.S_IMODE(key.stat().st_mode) == 0o600\n"
+        "assert stat.S_IMODE(hosts.stat().st_mode) == 0o600\n"
+        "assert 'DEPLOY_KEY' not in os.environ\n"
+        "assert 'DEPLOY_KNOWN_HOSTS' not in os.environ\n"
+        "pathlib.Path(os.environ['RECORD']).write_text(\n"
+        "    json.dumps({'argv': args, 'stdin': sys.stdin.read()}))\n"
+    )
+    fake_ssh.chmod(0o700)
+    fake_mktemp = bin_dir / "mktemp"
+    fake_mktemp.write_text(
+        f"#!{sys.executable} -I\n"
+        "import os, pathlib, tempfile\n"
+        "pathlib.Path(os.environ['ALLOCATED']).touch()\n"
+        "print(tempfile.mkdtemp(dir=os.environ['WORK']))\n"
+    )
+    fake_mktemp.chmod(0o700)
+    (bin_dir / "rm").symlink_to("/bin/rm")
+    payload = '{"schema":1,"sha":"' + "a" * 40 + '"}'
+
+    def run(port, **overrides):
+        env = {
+            "PATH": str(bin_dir),
+            "WORK": str(tmp_path),
+            "RECORD": str(record),
+            "ALLOCATED": str(allocated),
+            "DEPLOY_HOST": "deploy.example.invalid",
+            "DEPLOY_USER": "deploy_user",
+            "DEPLOY_KEY": "dummy-key",
+            "DEPLOY_KNOWN_HOSTS": "dummy-host-key",
+            "RELEASE_JSON": payload,
+        }
+        if port is not None:
+            env["DEPLOY_PORT"] = port
+        env.update(overrides)
+        result = subprocess.run(
+            ["/bin/bash", "--noprofile", "--norc", "-e", str(script)],
+            check=False,
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result
+
+    return run, record, allocated, payload, step
+
+
+@pytest.mark.parametrize("port", ["1", "22", "2297", "65535"])
+def test_deploy_port_valid(deploy_shell, port):
+    run, record, allocated, payload, step = deploy_shell
+    result = run(port)
+    assert result.returncode == 0, result.stderr
+    assert allocated.exists()
+    captured = json.loads(record.read_text())
+    key = next(record.parent.glob("tmp*/key"), None)
+    assert key is None  # EXIT trap removed credential files.
+    args = captured["argv"]
+    directory = str(Path(args[args.index("-i") + 1]).parent)
+    assert not Path(directory).exists()
+    assert args == [
+        "-F",
+        "/dev/null",
+        "-T",
+        "-p",
+        port,
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={directory}/known_hosts",
+        "-o",
+        "GlobalKnownHostsFile=/dev/null",
+        "-o",
+        "ConnectTimeout=15",
+        "-o",
+        "ConnectionAttempts=1",
+        "-o",
+        "ServerAliveInterval=15",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-i",
+        f"{directory}/key",
+        "deploy_user@deploy.example.invalid",
+        "/usr/local/sbin/coreteams-deploy",
+    ]
+    assert captured["stdin"] == payload + "\n"
+    assert step["env"]["DEPLOY_PORT"] == "${{ vars.CICD_DEPLOY_PORT }}"
+
+
+@pytest.mark.parametrize(
+    "port",
+    [
+        None,
+        "",
+        "0",
+        "65536",
+        "-1",
+        "01",
+        "00022",
+        " 22",
+        "22 ",
+        "2 2",
+        "22\n",
+        "22\t",
+        "+22",
+        "２２",
+        "٢٢",
+        "22; exit 0",
+        "$(touch injected)",
+        "22`touch injected`",
+        "22/1",
+        "1+1",
+        "9" * 10000,
+        "18446744073709551617",
+    ],
+    ids=[
+        "missing",
+        "empty",
+        "zero",
+        "overflow",
+        "negative",
+        "leading-zero",
+        "padded",
+        "space-before",
+        "space-after",
+        "space-inside",
+        "newline",
+        "tab",
+        "plus",
+        "fullwidth",
+        "arabic",
+        "semicolon",
+        "substitution",
+        "backticks",
+        "division",
+        "arithmetic",
+        "very-long",
+        "integer-wrap",
+    ],
+)
+def test_deploy_port_invalid_before_credentials(deploy_shell, port):
+    run, record, allocated, _, _ = deploy_shell
+    result = run(port)
+    assert result.returncode != 0
+    assert not record.exists()
+    assert not allocated.exists()
+    assert not (record.parent / "injected").exists()
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"DEPLOY_HOST": "-oProxyCommand=bad"}, {"DEPLOY_USER": "root;bad"}],
+)
+def test_deploy_preserves_host_user_validation(deploy_shell, overrides):
+    run, record, allocated, _, _ = deploy_shell
+    result = run("2297", **overrides)
+    assert result.returncode != 0
+    assert not record.exists()
+    assert not allocated.exists()
 
 
 def test_compose_render_preserved():
