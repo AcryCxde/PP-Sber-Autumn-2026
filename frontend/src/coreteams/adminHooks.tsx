@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { AdminApiError } from './adminApi';
+import { AdminApiError, isRejectedAdminOperation } from './adminApi';
 import { UnauthorizedError } from '../auth';
 import { createAdminPolling, initialPollState, pollStateForLoader, type AdminLoader, type PollState } from './adminPolling';
 
@@ -23,7 +23,7 @@ export function useAdminFailure() {
   const revoke = useContext(AdminAccessContext);
   return (error: unknown): boolean => {
     if (error instanceof UnauthorizedError) { revoke('unauthorized'); return true; }
-    if (error instanceof AdminApiError && error.status === 403) { revoke('forbidden'); return true; }
+    if (error instanceof AdminApiError && error.status === 403 && !isRejectedAdminOperation(error)) { revoke('forbidden'); return true; }
     return false;
   };
 }

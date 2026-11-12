@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import type { PollState } from './adminPolling';
-import { formatTime, parseExplicitPeriod } from './adminView';
+import { fixedPeriod, formatTime, parseExplicitPeriod } from './adminView';
 import type { Period } from './adminApi';
 import { useState } from 'react';
 
@@ -25,7 +25,7 @@ export function PeriodControl({ label, value, onChange }: { label: string; value
   const [days, setDays] = useState('7'); const [custom, setCustom] = useState(false);
   const [start, setStart] = useState(value.start); const [end, setEnd] = useState(value.end); const [error, setError] = useState('');
   function apply() {
-    try { const next = custom ? parseExplicitPeriod(start, end) : { start: new Date(Date.now() - Number(days) * 86400000).toISOString(), end: new Date().toISOString() }; onChange(next); setError(''); }
+    try { const next = custom ? parseExplicitPeriod(start, end) : fixedPeriod(Number(days)); onChange(next); setError(''); }
     catch (failure) { setError(failure instanceof Error ? failure.message : 'Некорректный период.'); }
   }
   return <fieldset className="admin-period"><legend>{label}</legend><label>Период<select value={custom ? 'custom' : days} onChange={(event) => { setCustom(event.target.value === 'custom'); if (event.target.value !== 'custom') setDays(event.target.value); }}><option value="1">24 часа</option><option value="7">7 суток</option><option value="30">30 суток</option><option value="custom">Свой интервал</option></select></label>{custom && <><label>Начало с часовым смещением<input value={start} onChange={(event) => setStart(event.target.value)} placeholder="2026-11-12T12:00:00+03:00" /></label><label>Конец с часовым смещением<input value={end} onChange={(event) => setEnd(event.target.value)} /></label></>}<button className="btn secondary" type="button" onClick={apply}>Обновить период</button><small>UTC: [{value.start}, {value.end}) · конец исключён. Время записей — {Intl.DateTimeFormat().resolvedOptions().timeZone}.</small>{error && <p role="alert">{error}</p>}</fieldset>;

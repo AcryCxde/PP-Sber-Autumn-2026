@@ -33,7 +33,9 @@ export class AdminApiError extends Error {
   code: string;
   current?: CurrentPolicy;
   constructor(status: number, code: string, current?: CurrentPolicy) {
-    super(status === 409 ? 'Доступ изменён другим администратором. Проверьте состояние и подтвердите заново.' :
+    super(status === 403 && code === 'invalid_admin_origin' ? 'Изменение отклонено: источник запроса не соответствует настройке сервера. Обратитесь к администратору развёртывания.' :
+      status === 403 && code === 'self_freeze_forbidden' ? 'Нельзя заморозить собственный AI-доступ.' :
+      status === 409 ? 'Доступ изменён другим администратором. Проверьте состояние и подтвердите заново.' :
       status === 503 ? 'Управление AI-доступом пока недоступно.' :
       status === 422 ? 'Проверьте введённые данные.' :
       status === 403 ? 'Недостаточно прав для этого действия.' : 'Не удалось выполнить запрос администратора.');
@@ -42,6 +44,9 @@ export class AdminApiError extends Error {
     this.code = code;
     this.current = current;
   }
+}
+export function isRejectedAdminOperation(error: unknown): boolean {
+  return error instanceof AdminApiError && error.status === 403 && ['invalid_admin_origin', 'self_freeze_forbidden'].includes(error.code);
 }
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Некорректный ответ администратора.');
