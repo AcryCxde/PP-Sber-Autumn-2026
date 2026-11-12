@@ -46,6 +46,16 @@ describe('policy form state', () => {
     expect(canConfirm(beginPolicy({ ...user, ai_access: { frozen: true, version: 1 } }, 'key'))).toBe(true);
     expect(policyReducer(beginPolicy(user, 'key'), { type: 'clear' })).toBeNull();
   });
+  it('a deadline failure allows retry but cannot change the submitted payload or key', () => {
+    const draft = policyReducer(beginPolicy(user, 'stable-key'), { type: 'reason', value: 'Original' });
+    const submitted = policyReducer(draft, { type: 'submit' });
+    const error = new Error('AI-access mutation deadline exceeded');
+    const uncertain = policyReducer(submitted, { type: 'error', message: 'Retry', uncertain: isUncertainPolicyError(error) });
+    expect(uncertain).toMatchObject({ status: 'editing', attempted: true, reason: 'Original', key: 'stable-key' });
+    expect(canConfirm(uncertain)).toBe(true);
+    expect(policyReducer(uncertain, { type: 'reason', value: 'Changed' })).toBe(uncertain);
+    expect(policyReducer(uncertain, { type: 'reconfirm', key: 'new-key' })).toBe(uncertain);
+  });
   it('locks an uncertain submitted payload and key until retry resolves', () => {
     let state = policyReducer(beginPolicy(user, 'key'), { type: 'reason', value: 'x'.repeat(1001) });
     expect(canConfirm(state)).toBe(false);

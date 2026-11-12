@@ -28,6 +28,8 @@ export function notifyUnauthorized(): void {
 /** fetch для API, требующего входа: 401 сообщает о потере сессии и прерывает вызывающий код. */
 export async function apiFetch(input: string, init?: RequestInit): Promise<Response> {
   const response = await fetch(input, init);
+  // A cancelled request must not revoke a newer session when its late response arrives.
+  init?.signal?.throwIfAborted();
   if (response.status === 401) {
     notifyUnauthorized();
     throw new UnauthorizedError();

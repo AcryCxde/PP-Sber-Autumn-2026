@@ -7,8 +7,9 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from uuid import UUID, uuid5
 
-from ctrunner.protocol import JsonValue
-from ctrunner.v0 import EventType, Translator, parse_row
+from ctrunner.eventlog import Event
+from ctrunner.protocol import EventKind, JsonValue
+from ctrunner.v0 import FailReason, parse_row, usage_draft
 
 SCHEMA = "harness.diagnostic.v1"
 DIAGNOSTIC_NAMESPACE = UUID("9439952e-1b67-49a9-9703-93791c6e46cd")
@@ -78,8 +79,41 @@ class DiagnosticFeed:
 
     def __init__(self, path: Path, project: str, root: str):
         self._path, self._project = path, project
-        self._translator = Translator(project, root)
+        # Only IDs/liveness are needed; never retain roles, prompts, paths or tool content.
+        self._live: set[str] = set()
+        self._closed: set[str] = set()
         self._offset = 0
+
+    def _usage_is_live(self, event: Event) -> bool:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        run = event.turn_id
+        if event.kind is EventKind.TURN_STARTED and run is not None:
+            if run not in self._closed:
+                self._live.add(run)
+        elif event.kind is EventKind.TURN_COMPLETED and run in self._live:
+            self._live.remove(run)
+            self._closed.add(run)
+        elif event.kind is EventKind.TURN_FAILED:
+            try:
+                reason = FailReason(payload.get("reason", ""))
+            except ValueError:
+                return False
+            if reason is FailReason.STATE_CORRUPT:
+                self._closed.update(self._live)
+                self._live.clear()
+            elif (run in self._live and payload.get("fatal") is not True
+                  and reason is not FailReason.SDK_CRASHED):
+                self._live.remove(run)
+                self._closed.add(run)
+        return (event.kind is EventKind.SDK and run in self._live
+                and payload.get("type") == "result")
+
+    def caught_up(self) -> bool:
+        """All retained bytes consumed; an incomplete final row waits for the deadline."""
+        try:
+            return self._offset >= self._path.stat().st_size
+        except FileNotFoundError:
+            return True
 
     def poll(self, max_frames: int = 256) -> list[dict[str, JsonValue]]:
         if max_frames <= 0:
@@ -104,45 +138,43 @@ class DiagnosticFeed:
             if not line.strip():
                 continue
             try:
-                # Separate parses deliberately preserve legacy float translation.
+                # Public payload still uses the legacy parser; money remains exact here.
                 event = parse_row(json.loads(line))
-                drafts = self._translator.feed(event)
+                live = self._usage_is_live(event)
                 exact = json.loads(line, parse_float=Decimal)
             except ValueError:
                 continue
             raw = exact.get("payload")
-            if not isinstance(raw, dict) or raw.get("type") != "result":
+            if not live or not isinstance(raw, dict) or raw.get("type") != "result":
                 continue
             session = raw.get("session_id")
             value = amount(raw.get("total_cost_usd"))
             if not isinstance(session, str) or not session or len(session) > 512 or value is None:
                 continue
-            for draft in drafts:
-                if draft.type != EventType.USAGE_REPORTED:
-                    continue
-                ref = str(
-                    uuid5(
-                        SESSION_NAMESPACE,
-                        json.dumps(
-                            [self._project, session], ensure_ascii=False, separators=(",", ":")
-                        ),
-                    )
+            draft = usage_draft(self._project, event)
+            ref = str(
+                uuid5(
+                    SESSION_NAMESPACE,
+                    json.dumps(
+                        [self._project, session], ensure_ascii=False, separators=(",", ":")
+                    ),
                 )
-                frames.append(
-                    {
-                        "v": 1,
-                        "type": "harness.diagnostic",
-                        "schema": SCHEMA,
-                        "diagnostic_id": identity(self._project, draft.run_id, draft.event_id),
-                        "project_id": self._project,
-                        "transport_run_id": draft.run_id,
-                        "source_event_id": draft.event_id,
-                        "source_journal_seq": event.seq,
-                        "payload": {
-                            "session_ref": ref,
-                            "observed_at": draft.occurred_at.isoformat().replace("+00:00", "Z"),
-                            "value_usd": value,
-                        },
-                    }
-                )
+            )
+            frames.append(
+                {
+                    "v": 1,
+                    "type": "harness.diagnostic",
+                    "schema": SCHEMA,
+                    "diagnostic_id": identity(self._project, draft.run_id, draft.event_id),
+                    "project_id": self._project,
+                    "transport_run_id": draft.run_id,
+                    "source_event_id": draft.event_id,
+                    "source_journal_seq": event.seq,
+                    "payload": {
+                        "session_ref": ref,
+                        "observed_at": draft.occurred_at.isoformat().replace("+00:00", "Z"),
+                        "value_usd": value,
+                    },
+                }
+            )
         return frames

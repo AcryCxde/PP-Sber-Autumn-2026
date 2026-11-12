@@ -7,7 +7,7 @@ import pytest
 
 from ctrunner.gateway import JournalFeed, event_message
 from ctrunner.harness_diagnostic import DiagnosticFeed, DiagnosticReceipts
-from ctrunner.v0 import Translator
+from ctrunner.v0 import EventType, Translator, parse_row
 
 
 def journal(path: Path, value: str = "0.062745", session: str = "private-session"):
@@ -65,6 +65,28 @@ def test_feed_pages_and_definitive_receipts_survive_reopen(tmp_path):
         reopened.record("unknown", "transient")
 
 
+def test_diagnostic_fold_does_not_retain_role_or_file_state(tmp_path):
+    path = tmp_path / "events.jsonl"
+    rows = [
+        {"seq": 1, "ts": 1, "turn_id": "r", "kind": "turn_started", "payload": {}},
+        {"seq": 2, "ts": 2, "turn_id": "r", "kind": "sdk", "payload": {
+            "type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Agent", "id": "agent", "input": {}},
+                {"type": "tool_use", "name": "Write", "id": "write", "input": {
+                    "file_path": "/workspace/project/private.txt"}},
+            ]}}},
+    ]
+    for seq in range(3, 1003):
+        rows.append({**rows[1], "seq": seq})
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    feed = DiagnosticFeed(path, "p", "/workspace/project")
+    while not feed.caught_up():
+        assert feed.poll() == []
+    assert not hasattr(feed, "_translator")
+    assert feed._live == {"r"}
+    assert feed._closed == set()
+
+
 def test_decimal_canonical_and_missing_session(tmp_path):
     path = tmp_path / "events.jsonl"
     journal(path, "1.2300e-2")
@@ -74,3 +96,39 @@ def test_decimal_canonical_and_missing_session(tmp_path):
     )
     journal(path, session="")
     assert DiagnosticFeed(path, "p1", "/workspace/project").poll() == []
+
+
+@pytest.mark.parametrize("failure", ["result_error", "checkpoint_failed", "resume_limit",
+                                     "sdk_crashed", "state_corrupt", "disk_full"])
+def test_minimal_fold_matches_public_usage_identity(tmp_path, failure):
+    path = tmp_path / "events.jsonl"
+    rows = []
+
+    def add(kind, payload, run="r"):
+        rows.append({"seq": len(rows) + 1, "ts": len(rows) + 1,
+                     "turn_id": run, "kind": kind, "payload": payload})
+
+    def result(**extra):
+        add("sdk", {"type": "result", "session_id": "s", "total_cost_usd": 1, **extra})
+
+    result()  # No started turn, so no public usage.
+    add("turn_started", {})
+    result()
+    result(usage={"input_tokens": -1, "output_tokens": True})
+    add("fork_question", {"fork_id": "f", "questions": []})
+    add("fork_answered", {"fork_id": "f", "answers": {}})
+    add("turn_failed", {"reason": failure})
+    result()
+    add("turn_started", {})  # Duplicate ID must not reopen a terminal turn.
+    result()
+    add("turn_started", {}, "other")
+    add("sdk", {"type": "result", "session_id": "s", "total_cost_usd": 1}, "other")
+    add("turn_completed", {}, "other")
+    add("sdk", {"type": "result", "session_id": "s", "total_cost_usd": 1}, "other")
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    public = Translator("p", "/workspace/project")
+    expected = [draft.event_id for row in rows for draft in public.feed(parse_row(row))
+                if draft.type is EventType.USAGE_REPORTED]
+    feed = DiagnosticFeed(path, "p", "/workspace/project")
+    assert [frame["source_event_id"] for frame in feed.poll()] == expected
+    assert not hasattr(feed, "_translator")

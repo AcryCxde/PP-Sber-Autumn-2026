@@ -41,19 +41,19 @@ export function AdminUsers({ currentUserId }: { currentUserId: string }) {
   function open(user: AdminUser) { if (actualDraft?.attempted) return; opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setDraft(beginPolicy(user, crypto.randomUUID())); setNotice(''); }
   async function submit() {
     if (!actualDraft || busy.current || !canConfirm(actualDraft)) return;
-    const submitted = actualDraft; busy.current = true; controller.current = new AbortController();
+    const submitted = actualDraft; const attempt = new AbortController(); busy.current = true; controller.current = attempt;
     setDraft(policyReducer(submitted, { type: 'submit' }));
     try {
-      await adminApi.changeAiAccess(submitted.user.id, { frozen: submitted.frozen, reason: submitted.reason.trim() || null, expected_version: submitted.user.ai_access.version }, submitted.key, controller.current.signal);
-      if (!active.current || controller.current.signal.aborted) return;
+      await adminApi.changeAiAccess(submitted.user.id, { frozen: submitted.frozen, reason: submitted.reason.trim() || null, expected_version: submitted.user.ai_access.version }, submitted.key, attempt.signal);
+      if (!active.current || controller.current !== attempt || attempt.signal.aborted) return;
       resolved(); setNotice('Изменение AI-доступа сохранено.'); state.refresh();
     } catch (error) {
-      if (!active.current || controller.current.signal.aborted) return;
+      if (!active.current || controller.current !== attempt || attempt.signal.aborted) return;
       if (failAuth(error)) return;
       if (error instanceof AdminApiError && error.status === 409 && error.code === 'policy_state_conflict') { resolved(); setNotice('Выбранное состояние AI-доступа уже установлено. Новая операция не требуется.'); state.refresh(); }
       else if (error instanceof AdminApiError && error.status === 409 && error.current) { setDraft(policyReducer(submitted, { type: 'conflict', current: error.current })); state.refresh(); }
       else setDraft(policyReducer(submitted, { type: 'error', uncertain: isUncertainPolicyError(error), message: error instanceof AdminApiError ? error.message : 'Не удалось сохранить. Повторите подтверждение с теми же данными.' }));
-    } finally { busy.current = false; }
+    } finally { if (controller.current === attempt) { controller.current = null; busy.current = false; } }
   }
   return <div className="admin-page"><h1>Пользователи</h1><p className="helper">Управление только AI-доступом: заморозка не блокирует вход и не удаляет проекты.</p><label className="admin-search">Поиск по email<input type="search" value={search} maxLength={254} onChange={(event) => setSearch(event.target.value)} /></label><RefreshStatus state={state} refresh={state.refresh} />{notice && <p role="status">{notice}</p>}<LoadState state={state}>{(data) => <>{data.items.length ? <div className="admin-table-wrap"><table className="admin-table"><thead><tr><th>Email</th><th>Регистрация</th><th>Последний визит</th><th>AI-доступ</th><th>Действия</th></tr></thead><tbody>{data.items.map((user) => <tr key={user.id}><td data-label="Email">{user.email}</td><td data-label="Регистрация">{formatTime(user.created_at)}</td><td data-label="Последний визит">{formatTime(user.last_seen_at)}</td><td data-label="AI-доступ">{user.ai_access.frozen ? 'Заморожен' : 'Разрешён'}</td><td data-label="Действия"><button className="text-button" type="button" disabled={user.id === currentUserId && !user.ai_access.frozen} title={user.id === currentUserId && !user.ai_access.frozen ? 'Самозаморозка недоступна' : undefined} onClick={() => open(user)}>{user.ai_access.frozen ? 'Снять заморозку' : 'Заморозить AI-доступ'}</button><button className="text-button" type="button" onClick={() => setAudit(user)}>История</button></td></tr>)}</tbody></table></div> : <p>Пользователи не найдены.</p>}<Pagination page={data.page} total={data.total} size={data.page_size} onChange={(page) => updateFilter({ type: 'page', page })} /></>}</LoadState>{audit && <AuditPanel key={audit.id} user={audit} onClose={() => setAudit(null)} />}{actualDraft && <PolicyDialog draft={actualDraft} dispatch={change} onClose={close} onSubmit={() => { void submit(); }} />}</div>;
 }

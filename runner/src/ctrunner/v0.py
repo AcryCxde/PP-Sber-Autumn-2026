@@ -199,7 +199,7 @@ class Translator:
             return
         run, msg = self._runs[run_id], _object(event.payload)
         if msg.get("type") == "result":
-            out.emit(run_id, EventType.USAGE_REPORTED, _usage(msg))
+            out.drafts.append(usage_draft(self._project_id, event))
             return
         parent = msg.get("parent_tool_use_id")
         author = run.roles.get(parent) if isinstance(parent, str) else None
@@ -341,6 +341,18 @@ class _Out:
             str(uuid.uuid5(_NAMESPACE, key)), self._project_id, run_id,
             datetime.fromtimestamp(self._source.ts, UTC), type_, payload,
         ))  # fmt: skip
+
+
+def usage_draft(project_id: str, event: Event) -> Draft:
+    """Identity and payload shared by public translation and the private usage-only fold.
+
+    A result row emits exactly one draft, at ordinal zero. Liveness is checked by each fold.
+    """
+    if event.turn_id is None:
+        raise ProtocolError("usage requires a turn_id")
+    out = _Out(project_id, event)
+    out.emit(event.turn_id, EventType.USAGE_REPORTED, _usage(_object(event.payload)))
+    return out.drafts[0]
 
 
 @final
