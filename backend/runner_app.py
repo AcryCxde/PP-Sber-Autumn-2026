@@ -136,7 +136,10 @@ class RunnerBridge:
                         raise
                     self.transport.skip(project, frame.get("journal_seq"))
             elif kind == "harness.diagnostic" and self.harness_diagnostics_enabled:
-                receipt = self.transport.diagnostic(project, frame)
+                # The transport owns its sqlite connection inside this worker.
+                # Await durable commit before acknowledging, without blocking
+                # HTTP, other projects or heartbeat processing on the event loop.
+                receipt = await asyncio.to_thread(self.transport.diagnostic, project, frame)
                 if receipt is not None and (receipt["status"] == "accepted" or supports_rejection):
                     await websocket.send_json(receipt)
             elif kind == "heartbeat":

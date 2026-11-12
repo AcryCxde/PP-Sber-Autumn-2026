@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { AdminApiError, adminApi, type AdminUser } from './adminApi';
-import { useAdminFailure, useAdminPolling } from './adminHooks';
+import { useAdminFailure, useAdminPolicyDraft, useAdminPolling } from './adminHooks';
 import { LoadState, Pagination, RefreshStatus } from './AdminShared';
 import { formatTime } from './adminView';
 import { beginPolicy, canConfirm, initialUsersState, isUncertainPolicyError, policyReducer, usersReducer, type PolicyDraft } from './adminUsersState';
@@ -27,14 +27,14 @@ function PolicyDialog({ draft, dispatch, onSubmit, onClose }: { draft: PolicyDra
 }
 export function AdminUsers({ currentUserId }: { currentUserId: string }) {
   const [search, setSearch] = useState(initialSearch); const [filter, updateFilter] = useReducer(usersReducer, { ...initialUsersState, q: initialSearch() });
-  const [draft, setDraft] = useState<PolicyDraft | null>(null);
+  const { draft, setDraft, leave } = useAdminPolicyDraft();
   const [audit, setAudit] = useState<AdminUser | null>(null); const [notice, setNotice] = useState('');
   const opener = useRef<HTMLElement | null>(null);
   const failAuth = useAdminFailure(); const busy = useRef(false); const active = useRef(true); const controller = useRef<AbortController | null>(null);
   const actualDraft = draft;
   const load = useCallback((signal: AbortSignal) => adminApi.users(filter, signal), [filter]); const state = useAdminPolling(load);
   useEffect(() => { const timer = setTimeout(() => updateFilter({ type: 'query', q: search.trim() }), 300); return () => clearTimeout(timer); }, [search]);
-  useEffect(() => { active.current = true; return () => { active.current = false; controller.current?.abort(); }; }, []);
+  useEffect(() => { active.current = true; return () => { active.current = false; controller.current?.abort(); leave(); }; }, [leave]);
   function close() { if (actualDraft?.attempted) return; controller.current?.abort(); setDraft(null); requestAnimationFrame(() => opener.current?.focus()); }
   function resolved() { controller.current?.abort(); setDraft(null); }
   function change(action: Parameters<typeof policyReducer>[1]) { setDraft((previous) => policyReducer(previous, action)); }

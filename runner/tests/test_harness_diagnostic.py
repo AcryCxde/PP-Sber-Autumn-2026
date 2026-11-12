@@ -96,8 +96,8 @@ def test_diagnostic_fold_does_not_retain_role_or_file_state(tmp_path):
     while not feed.caught_up():
         assert feed.poll() == []
     assert not hasattr(feed, "_translator")
-    assert feed._live == {"r"}
-    assert feed._closed == set()
+    assert feed._liveness.live("r")
+    assert feed._liveness._turns == {"r": True}
 
 
 def test_feed_only_decimal_parses_live_results(tmp_path, monkeypatch):
