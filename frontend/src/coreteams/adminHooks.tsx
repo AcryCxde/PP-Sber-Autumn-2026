@@ -1,9 +1,20 @@
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { createAdminPolicyStore, type AdminPolicyStore } from './adminPolicyStore';
+import type { PolicyDraft } from './adminUsersState';
 import { AdminApiError, isRejectedAdminOperation } from './adminApi';
 import { UnauthorizedError } from '../auth';
 import { createAdminPolling, initialPollState, pollStateForLoader, type AdminLoader, type PollState } from './adminPolling';
 
 export const AdminAccessContext = createContext<(status: 'unauthorized' | 'forbidden') => void>(() => {});
+export const AdminPolicyContext = createContext<AdminPolicyStore | null>(null);
+export function useAdminPolicyDraft() {
+  const shared = useContext(AdminPolicyContext);
+  const [local] = useState(createAdminPolicyStore);
+  const store = shared ?? local;
+  const draft = useSyncExternalStore(store.subscribe, store.get, store.get);
+  const setDraft = (next: PolicyDraft | null | ((previous: PolicyDraft | null) => PolicyDraft | null)) => store.set(typeof next === 'function' ? next(store.get()) : next);
+  return { draft, setDraft, leave: store.leave };
+}
 export function useAdminPolling<T extends { as_of: string }>(load: AdminLoader<T>) {
   const revoke = useContext(AdminAccessContext);
   const [snapshot, setSnapshot] = useState<{ load: AdminLoader<T>; state: PollState<T> }>(() => ({ load, state: initialPollState<T>() }));

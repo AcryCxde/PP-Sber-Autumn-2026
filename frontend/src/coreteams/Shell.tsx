@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import App from '../App';
 import type { User } from '../auth';
 import { themeToggleLabel, useTheme } from '../theme';
@@ -12,7 +12,8 @@ import { SocketContext, useGatewaySocket } from './socket';
 import { Modal } from './ui';
 import { AdminOverview } from './AdminOverview';
 import { AdminUsers } from './AdminUsers';
-import { AdminAccessContext } from './adminHooks';
+import { AdminAccessContext, AdminPolicyContext } from './adminHooks';
+import { createAdminPolicyStore } from './adminPolicyStore';
 import { AdminAvailability } from './AdminShared';
 
 const ADMIN_SHELL_ENABLED = import.meta.env.VITE_ADMIN_SHELL_ENABLED === 'true';
@@ -21,7 +22,8 @@ import './coreteams-extra.css';
 
 function AdminArea({ user, section }: { user: User; section: 'overview' | 'users' }) {
   const [access, setAccess] = useState<'unauthorized' | 'forbidden' | null>(null);
-  const revoke = useCallback((status: 'unauthorized' | 'forbidden') => setAccess(status), []);
+  const policy = useContext(AdminPolicyContext);
+  const revoke = useCallback((status: 'unauthorized' | 'forbidden') => { policy?.clear(); setAccess(status); }, [policy]);
   if (user.role !== 'admin' || access) return <div className="page"><h1>{access === 'unauthorized' ? 'Требуется вход' : 'Недостаточно прав'}</h1><p>Данные администрирования очищены.</p></div>;
   return <AdminAccessContext.Provider value={revoke}><div className="page admin-root"><nav className="admin-nav" aria-label="Разделы администрирования"><a href="#admin/overview" aria-current={section === 'overview' ? 'page' : undefined}>Обзор</a><a href="#admin/users" aria-current={section === 'users' ? 'page' : undefined}>Пользователи</a></nav>{section === 'overview' ? <AdminOverview /> : <AdminUsers currentUserId={user.id} />}</div></AdminAccessContext.Provider>;
 }
@@ -48,6 +50,13 @@ const NAV = [
 ] as const;
 
 export default function Shell({ user, onLogout }: { user: User; onLogout: () => void }) {
+  return <AuthenticatedShell key={`${user.id}:${user.role}`} user={user} onLogout={onLogout} />;
+}
+
+function AuthenticatedShell({ user, onLogout }: { user: User; onLogout: () => void }) {
+  const [policy] = useState(createAdminPolicyStore);
+  useEffect(() => () => policy.clear(), [policy]);
+  const logout = () => { policy.clear(); onLogout(); };
   const route = useRoute();
   const socket = useGatewaySocket();
   const [theme, toggleTheme] = useTheme();
@@ -83,7 +92,7 @@ export default function Shell({ user, onLogout }: { user: User; onLogout: () => 
 
   if (route.page === 'chat') {
     // Прежний интерфейс диалогов со своим соединением и раскладкой.
-    return <App user={user} onLogout={onLogout} />;
+    return <App user={user} onLogout={logout} />;
   }
 
   let page: ReactNode = <div className="page"><p className="helper">{loadError ?? 'Загрузка…'}</p></div>;
@@ -97,7 +106,7 @@ export default function Shell({ user, onLogout }: { user: User; onLogout: () => 
   const current = route.page === 'project' ? null : route.page;
 
   return (
-    <SocketContext.Provider value={socket}>
+    <AdminPolicyContext.Provider value={policy}><SocketContext.Provider value={socket}>
       <div className="ct ct-root">
         <a className="skip-link" href="#main" onClick={(event) => {
           event.preventDefault();
@@ -122,7 +131,7 @@ export default function Shell({ user, onLogout }: { user: User; onLogout: () => 
               {theme === 'light' ? '☾' : '☀'}
             </button>
             <span title={user.email}>{user.email}</span>
-            <button className="text-button" type="button" onClick={onLogout}>Выйти</button>
+            <button className="text-button" type="button" onClick={logout}>Выйти</button>
           </span>
         </header>
         <main id="main" tabIndex={-1}>
@@ -141,6 +150,6 @@ export default function Shell({ user, onLogout }: { user: User; onLogout: () => 
         )}
         <div className="toast" role="status" aria-live="polite" hidden={!toastText}>{toastText}</div>
       </div>
-    </SocketContext.Provider>
+    </SocketContext.Provider></AdminPolicyContext.Provider>
   );
 }

@@ -49,14 +49,17 @@ async def _record_diagnostic_acks(
     attempts: dict[str, tuple[int, float]],
     leases: dict[str, float],
 ) -> None:
-    for key in tuple(pending):
-        status = accepted.pop(key, None)
-        if status is not None:
-            accepted.awaiting.discard(key)
-            await asyncio.to_thread(receipts.record, key, status)
-            pending.pop(key)
-            attempts.pop(key, None)
-            leases.pop(key, None)
+    outcomes = {key: accepted.pop(key) for key in tuple(pending) if key in accepted}
+    if not outcomes:
+        return
+    accepted.awaiting.difference_update(outcomes)
+    # One durable transaction for this bounded mailbox snapshot. Do not clear
+    # pending until it succeeds: reconnect must replay after storage failure.
+    await asyncio.to_thread(receipts.record_many, outcomes)
+    for key in outcomes:
+        pending.pop(key)
+        attempts.pop(key, None)
+        leases.pop(key, None)
 
 
 def _rotate_diagnostics(
@@ -397,9 +400,13 @@ class GatewayClient:
                     and await asyncio.to_thread(feed.caught_up)):
                 feed.rewind()
                 revisit = False
-            for frame in await asyncio.to_thread(feed.poll, 256 - len(pending)):
+            frames = await asyncio.to_thread(feed.poll, 256 - len(pending))
+            known = await asyncio.to_thread(
+                receipts.known_ids, tuple(str(frame["diagnostic_id"]) for frame in frames)
+            ) if frames else set()
+            for frame in frames:
                 key = str(frame["diagnostic_id"])
-                if not await asyncio.to_thread(receipts.contains, key):
+                if key not in known:
                     pending[key] = frame
                     leases[key] = now + (0.05 if draining else lease_s)
             if (draining and self._public_flushed.is_set() and not pending

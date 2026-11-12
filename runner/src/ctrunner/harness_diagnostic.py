@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -9,7 +10,8 @@ from uuid import UUID, uuid5
 
 from ctrunner.eventlog import Event
 from ctrunner.protocol import EventKind, JsonValue
-from ctrunner.v0 import FailReason, parse_row, usage_draft
+from ctrunner.turn_lifecycle import TurnLiveness
+from ctrunner.v0 import parse_row, usage_draft
 
 SCHEMA = "harness.diagnostic.v1"
 DIAGNOSTIC_NAMESPACE = UUID("9439952e-1b67-49a9-9703-93791c6e46cd")
@@ -62,16 +64,40 @@ class DiagnosticReceipts:
         return sqlite3.connect(self._path, timeout=1)
 
     def contains(self, identity: str) -> bool:
+        return identity in self.known_ids((identity,))
+
+    def known_ids(self, identities: Sequence[str]) -> set[str]:
+        if not identities:
+            return set()
+        # A hot window/page is bounded to 256; reject accidental unbounded callers.
+        if len(identities) > 512:
+            raise ValueError("diagnostic_receipt_batch_too_large")
+        placeholders = ",".join("?" for _ in identities)
         with closing(self._connect()) as db:
-            row = db.execute("SELECT 1 FROM receipts WHERE id=?", (identity,)).fetchone()
-            return row is not None
+            return {row[0] for row in db.execute(
+                f"SELECT id FROM receipts WHERE id IN ({placeholders})", tuple(identities)  # noqa: S608 — placeholders only; IDs are bound
+            )}
 
     def record(self, identity: str, status: str) -> None:
-        if status not in {"accepted", "rejected"}:
+        self.record_many({identity: status})
+
+    def record_many(self, outcomes: Mapping[str, str]) -> None:
+        if not outcomes:
+            return
+        if len(outcomes) > 256:
+            raise ValueError("diagnostic_receipt_batch_too_large")
+        if any(status not in {"accepted", "rejected"} for status in outcomes.values()):
             raise ValueError("invalid_diagnostic_receipt")
         with closing(self._connect()) as db, db:
-            db.execute("INSERT INTO receipts VALUES(?,?) ON CONFLICT(id) DO NOTHING",
-                       (identity, status))
+            db.execute("BEGIN IMMEDIATE")
+            placeholders = ",".join("?" for _ in outcomes)
+            existing = dict(db.execute(
+                f"SELECT id,status FROM receipts WHERE id IN ({placeholders})", tuple(outcomes)  # noqa: S608 — placeholders only; IDs are bound
+            ))
+            if any(existing[key] != outcomes[key] for key in existing):
+                raise ValueError("conflicting_diagnostic_receipt")
+            db.executemany("INSERT INTO receipts VALUES(?,?) ON CONFLICT(id) DO NOTHING",
+                           outcomes.items())
 
 
 class DiagnosticFeed:
@@ -80,41 +106,21 @@ class DiagnosticFeed:
     def __init__(self, path: Path, project: str, root: str):
         self._path, self._project = path, project
         # Only IDs/liveness are needed; never retain roles, prompts, paths or tool content.
-        self._live: set[str] = set()
-        self._closed: set[str] = set()
+        self._liveness = TurnLiveness()
         self._offset = 0
         self.scan_pending = False
 
     def _usage_is_live(self, event: Event) -> bool:
+        self._liveness.feed(event)
         payload = event.payload if isinstance(event.payload, dict) else {}
-        run = event.turn_id
-        if event.kind is EventKind.TURN_STARTED and run is not None:
-            if run not in self._closed:
-                self._live.add(run)
-        elif event.kind is EventKind.TURN_COMPLETED and run in self._live:
-            self._live.remove(run)
-            self._closed.add(run)
-        elif event.kind is EventKind.TURN_FAILED:
-            try:
-                reason = FailReason(payload.get("reason", ""))
-            except ValueError:
-                return False
-            if reason is FailReason.STATE_CORRUPT:
-                self._closed.update(self._live)
-                self._live.clear()
-            elif (run in self._live and payload.get("fatal") is not True
-                  and reason is not FailReason.SDK_CRASHED):
-                self._live.remove(run)
-                self._closed.add(run)
-        return (event.kind is EventKind.SDK and run in self._live
+        return (event.kind is EventKind.SDK and self._liveness.live(event.turn_id)
                 and payload.get("type") == "result")
 
     def rewind(self) -> None:
         """Begin another retained-journal pass without treating silence as a receipt."""
         self._offset = 0
         self.scan_pending = False
-        self._live.clear()
-        self._closed.clear()
+        self._liveness = TurnLiveness()
 
     def caught_up(self) -> bool:
         """All retained bytes consumed; an incomplete final row waits for the deadline."""

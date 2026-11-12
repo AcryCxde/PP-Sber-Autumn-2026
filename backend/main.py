@@ -335,7 +335,9 @@ async def handle_run_create(
                 acceptance.conversation_id,
                 **wire_fields,
             )
-        except (WebSocketDisconnect, RuntimeError):
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            # Publication is optional once acceptance is durable. A failed socket
+            # must not prevent execution; reconnect replays the stored events.
             socket_available = False
 
     deliveries = getattr(app_state, "live_run_deliveries", None)
@@ -344,19 +346,38 @@ async def handle_run_create(
         app_state.live_run_deliveries = deliveries
     if not acceptance.idempotent_replay:
         deliveries[acceptance.run_id] = deliver_event
-    await deliver_event(
-        acceptance.accepted_event,
-        idempotent_replay=acceptance.idempotent_replay,
-    )
-    if acceptance.reset_event is not None:
-        await deliver_event(acceptance.reset_event)
-    del websocket
-
-    if acceptance.idempotent_replay:
-        return
-
+    execution_handed_off = False
     try:
+        await deliver_event(
+            acceptance.accepted_event,
+            idempotent_replay=acceptance.idempotent_replay,
+        )
+        if acceptance.reset_event is not None:
+            await deliver_event(acceptance.reset_event)
+        del websocket
+
+        if acceptance.idempotent_replay:
+            return
+
+        execution_handed_off = True
         await execute_accepted_run(app_state, acceptance, content, deliver_event)
+    except (Exception, asyncio.CancelledError):
+        if not execution_handed_off and not acceptance.idempotent_replay:
+            async def fail_unpublished_acceptance() -> None:
+                async with asyncio.timeout(10):
+                    async with app_state.database.session() as session:
+                        await fail_unadmitted_run(session, acceptance.run_id)
+
+            # Keep cleanup owned through repeated shutdown cancellation. The guard
+            # never terminates a Run already claimed by a different executor.
+            finalizing = asyncio.create_task(fail_unpublished_acceptance())
+            while not finalizing.done():
+                try:
+                    await asyncio.shield(finalizing)
+                except asyncio.CancelledError:
+                    pass
+            finalizing.result()
+        raise
     finally:
         if deliveries.get(acceptance.run_id) is deliver_event:
             deliveries.pop(acceptance.run_id, None)
