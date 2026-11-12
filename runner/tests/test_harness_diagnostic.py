@@ -65,6 +65,18 @@ def test_feed_pages_and_definitive_receipts_survive_reopen(tmp_path):
         reopened.record("unknown", "transient")
 
 
+def test_feed_rewind_retries_without_inventing_a_receipt(tmp_path):
+    path = tmp_path / "events.jsonl"
+    journal(path)
+    feed = DiagnosticFeed(path, "p1", "/workspace/project")
+    original = feed.poll()
+    assert feed.caught_up()
+    feed.rewind()
+    assert not feed.caught_up()
+    assert feed.poll() == original
+    assert not DiagnosticReceipts(path).contains(original[0]["diagnostic_id"])
+
+
 def test_diagnostic_fold_does_not_retain_role_or_file_state(tmp_path):
     path = tmp_path / "events.jsonl"
     rows = [

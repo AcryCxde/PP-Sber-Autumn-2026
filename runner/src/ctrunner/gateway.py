@@ -41,6 +41,44 @@ class DiagnosticAcks(dict[str, str]):
         super().__init__()
         self.awaiting: set[str] = set()
 
+
+async def _record_diagnostic_acks(
+    accepted: DiagnosticAcks,
+    receipts: DiagnosticReceipts,
+    pending: dict[str, dict[str, JsonValue]],
+    attempts: dict[str, tuple[int, float]],
+    leases: dict[str, float],
+) -> None:
+    for key in tuple(pending):
+        status = accepted.pop(key, None)
+        if status is not None:
+            accepted.awaiting.discard(key)
+            await asyncio.to_thread(receipts.record, key, status)
+            pending.pop(key)
+            attempts.pop(key, None)
+            leases.pop(key, None)
+
+
+def _rotate_diagnostics(
+    accepted: DiagnosticAcks,
+    pending: dict[str, dict[str, JsonValue]],
+    attempts: dict[str, tuple[int, float]],
+    leases: dict[str, float],
+    now: float,
+) -> bool:
+    expired = False
+    for key in tuple(pending):
+        if now >= leases[key]:
+            expired = True
+            # No receipt is written: a later journal pass retries this ID.
+            pending.pop(key)
+            attempts.pop(key, None)
+            leases.pop(key)
+            accepted.awaiting.discard(key)
+            accepted.pop(key, None)
+    return expired
+
+
 FRAME_ENVELOPE: Final = ("v", "type")
 
 
@@ -333,7 +371,12 @@ class GatewayClient:
         feed = DiagnosticFeed(self._journal, self._project_id, self._project_root)
         pending: dict[str, dict[str, JsonValue]] = {}
         attempts: dict[str, tuple[int, float]] = {}
+        leases: dict[str, float] = {}
+        # Bound one hot-window residency, not a diagnostic's lifetime. The retained
+        # journal is revisited after EOF, so old peers cannot permanently block its tail.
+        lease_s = min(30.0, max(1.0, self._poll_s * 4))
         drain_started = False
+        revisit = False
         while True:
             draining = self._draining.is_set()
             if draining and not drain_started:
@@ -342,17 +385,18 @@ class GatewayClient:
             if (draining and self._drain_deadline is not None
                     and time.monotonic() >= self._drain_deadline):
                 return
-            for key in tuple(pending):
-                status = accepted.pop(key, None)
-                if status is not None:
-                    accepted.awaiting.discard(key)
-                    await asyncio.to_thread(receipts.record, key, status)
-                    pending.pop(key)
-                    attempts.pop(key, None)
+            await _record_diagnostic_acks(accepted, receipts, pending, attempts, leases)
+            now = time.monotonic()
+            if not draining:
+                revisit = _rotate_diagnostics(accepted, pending, attempts, leases, now) or revisit
+                if revisit and not pending and await asyncio.to_thread(feed.caught_up):
+                    feed.rewind()
+                    revisit = False
             for frame in await asyncio.to_thread(feed.poll, 256 - len(pending)):
                 key = str(frame["diagnostic_id"])
                 if not await asyncio.to_thread(receipts.contains, key):
                     pending[key] = frame
+                    leases[key] = now + lease_s
             if (draining and self._public_flushed.is_set() and not pending
                     and await asyncio.to_thread(feed.caught_up)):
                 return

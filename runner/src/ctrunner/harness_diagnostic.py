@@ -108,6 +108,12 @@ class DiagnosticFeed:
         return (event.kind is EventKind.SDK and run in self._live
                 and payload.get("type") == "result")
 
+    def rewind(self) -> None:
+        """Begin another retained-journal pass without treating silence as a receipt."""
+        self._offset = 0
+        self._live.clear()
+        self._closed.clear()
+
     def caught_up(self) -> bool:
         """All retained bytes consumed; an incomplete final row waits for the deadline."""
         try:

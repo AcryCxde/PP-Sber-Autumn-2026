@@ -9,6 +9,7 @@ from backend.models import Conversation, ProductRun, Project, ProjectRun, Run, U
 from backend.harness_estimate import safe_estimate
 from backend.public_events import SAFE_FAILURE_CODES, SAFE_UNKNOWN_CODES
 from backend.scenarios import SCENARIO_KEYS, stages_for
+from backend.timestamps import utc_iso
 
 
 @dataclass(frozen=True)
@@ -43,8 +44,8 @@ def cohort(period: Period):
     return and_(Run.started_at >= period.start, Run.started_at < period.end)
 
 
-def _stamp(value):
-    return value.replace(tzinfo=UTC).isoformat() if value is not None and value.tzinfo is None else value.isoformat() if value else None
+def _stamp(value: datetime | None) -> str | None:
+    return utc_iso(value) if value is not None else None
 
 
 def _stage(row):

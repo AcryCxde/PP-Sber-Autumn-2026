@@ -159,14 +159,3 @@ def accept(db: sqlite3.Connection, frame: dict, canonical: str, now: str) -> dic
                    (frame["diagnostic_id"], SCHEMA, canonical, frame["source_event_id"], now))
     return {"v": 1, "type": "harness.diagnostic_ack", "schema": SCHEMA,
             "diagnostic_id": frame["diagnostic_id"], "status": "accepted"}
-
-
-def snapshots(db: sqlite3.Connection, backend_run: str) -> list[dict]:
-    rows = db.execute("SELECT r.canonical_body,s.source_public_seq,s.source_journal_seq,g.project,"
-        "g.transport_run,g.command_id FROM diagnostic_receipts r JOIN diagnostic_sources s "
-        "ON s.source_event_id=r.source_event_id JOIN diagnostic_segments g ON g.command_id=s.command_id "
-        "WHERE g.backend_run=? ORDER BY s.source_public_seq", (backend_run,)).fetchall()
-    return [{"frame": json.loads(row["canonical_body"]),
-             "lineage": {"project": row["project"], "transport_run": row["transport_run"], "command_id": row["command_id"]},
-             "source_order": {"public_seq": row["source_public_seq"], "journal_seq": row["source_journal_seq"]}}
-            for row in rows]
