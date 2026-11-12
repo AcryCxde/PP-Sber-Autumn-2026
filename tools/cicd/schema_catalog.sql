@@ -5,6 +5,10 @@ ns AS MATERIALIZED (
  SELECT oid, nspname FROM pg_namespace
  WHERE oid NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace,
                    'pg_toast'::regnamespace)
+ -- Match PG16 isTempNamespace/isAnyTempNamespace semantics, including stale
+ -- namespaces. Do not exempt arbitrary pg_* names or nonpermanent objects:
+ -- the closed audit below still refuses every active temporary object.
+ AND oid<>pg_my_temp_schema() AND NOT pg_is_other_temp_schema(oid)
 ),
 rels AS MATERIALIZED (
  SELECT c.*, n.nspname FROM pg_class c JOIN ns n ON n.oid=c.relnamespace
@@ -297,6 +301,14 @@ snapshot AS (
   'facts',jsonb_build_object('database',current_database(),'current_user',current_user,
    'session_user',session_user,'server_version_num',current_setting('server_version_num')::integer,
    'server_address',host(inet_server_addr()),'server_port',inet_server_port()),
+  -- pg_catalog.default is a symbolic identity, not its database-local semantics.
+  -- Keep locale/provider/version in the portable schema, never endpoint facts.
+  'database_collation',(SELECT jsonb_build_object(
+   'encoding',pg_encoding_to_char(encoding),'provider',datlocprovider::text,
+   'collate',datcollate,'ctype',datctype,'icu_locale',daticulocale,
+   'icu_rules',daticurules,'version',datcollversion,
+   'actual_version',pg_database_collation_actual_version(oid))
+   FROM pg_database WHERE datname=current_database()),
   'inventory',data,'unsupported',(SELECT jsonb_object_agg(class,n) FROM audit),
   'counts',(SELECT jsonb_object_agg(key,jsonb_array_length(value)) FROM jsonb_each(data)))::text AS payload
  FROM inventory

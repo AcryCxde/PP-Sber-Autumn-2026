@@ -119,7 +119,7 @@ def test_nonregular_docs_are_heavy(repo, change):
     assert not classify(base, git("rev-parse", "HEAD"))["docs_only"]
 
 
-HEAVY = ("build", "python", "frontend", "web-product", "compose")
+HEAVY = ("build", "python", "frontend", "web-product", "compose", "schema-postgres")
 
 
 def needs(docs="false", classification="success", result="success"):
@@ -149,6 +149,19 @@ def test_gate(docs, result, expected):
 @pytest.mark.parametrize("state", ["failure", "cancelled", "skipped"])
 def test_classification_failure(state):
     assert not gate_passes(needs(docs="true", classification=state, result="skipped"))
+
+
+@pytest.mark.parametrize("state", ["failure", "cancelled", "skipped"])
+def test_postgres_failure_blocks_code_release(state):
+    value = needs()
+    value["schema-postgres"]["result"] = state
+    assert not gate_passes(value)
+
+
+def test_missing_postgres_job_blocks_gate():
+    value = needs()
+    del value["schema-postgres"]
+    assert not gate_passes(value)
 
 
 def test_missing_job():

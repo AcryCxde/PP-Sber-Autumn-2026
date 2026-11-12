@@ -29,11 +29,69 @@ def snapshot():
             "server_address": "127.0.0.1",
             "server_port": 5432,
         },
+        "database_collation": {
+            "encoding": "UTF8",
+            "provider": "c",
+            "collate": "C",
+            "ctype": "C",
+            "icu_locale": None,
+            "icu_rules": None,
+            "version": None,
+            "actual_version": None,
+        },
         "inventory": {name: [] for name in INVENTORY},
         "unsupported": {name: 0 for name in CATALOG_CLASSES},
         "counts": dict.fromkeys(INVENTORY, 0),
     }
     return snapshot
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("encoding", "LATIN1"),
+        ("collate", "C.UTF-8"),
+        ("ctype", "C.UTF-8"),
+    ],
+)
+def test_database_collation_semantics_hashed(snapshot, field, value):
+    changed = deepcopy(snapshot)
+    changed["database_collation"][field] = value
+    assert signature(changed) != signature(snapshot)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("provider", "unknown"),
+        ("provider", "i"),
+        ("encoding", ""),
+        ("collate", None),
+        ("ctype", True),
+        ("icu_locale", "und"),
+        ("icu_rules", ""),
+        ("version", "stale"),
+        ("actual_version", "new"),
+    ],
+)
+def test_database_collation_invalid_refused(snapshot, field, value):
+    snapshot["database_collation"][field] = value
+    with pytest.raises(ProbeError):
+        signature(snapshot)
+
+
+def test_database_collation_icu_context_hashed(snapshot):
+    changed = deepcopy(snapshot)
+    changed["database_collation"].update(
+        provider="i", icu_locale="und", version="153.120", actual_version="153.120"
+    )
+    assert signature(changed) != signature(snapshot)
+    other = deepcopy(changed)
+    other["database_collation"]["icu_rules"] = "&a < b"
+    assert signature(other) != signature(changed)
+    other = deepcopy(changed)
+    other["database_collation"].update(version="154", actual_version="154")
+    assert signature(other) != signature(changed)
 
 
 def test_canonical_contract_empty(snapshot):
@@ -187,7 +245,7 @@ def test_canonical_duplicate_identity(populated):
         {"server_version_num": True},
         {"server_version_num": 160016},
         {"inventory_version": True},
-        {"inventory_version": 2},
+        {"inventory_version": 1},
         {"query_sha256": "xyz"},
         {"name": "other"},
         {"settings": list(Profile("a" * 64).settings)},

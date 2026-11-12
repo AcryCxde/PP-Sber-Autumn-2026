@@ -1,6 +1,12 @@
 """PG16 catalog contract and bounded read shell; driver imports remain lazy.
 
-Task 2 SQL must produce a JSON object with EXACTLY these five keys:
+SQL produces a JSON object with EXACTLY these six keys (inventory_version=2):
+* database_collation: exact PG16 pg_database encoding, provider, collate, ctype,
+  ICU locale/rules, recorded version and actual provider version. This portable
+  schema context IS hashed; stale recorded/actual version mismatches refuse.
+  Runtime identity Facts remain excluded. Empty temporary namespaces recognized
+  by PostgreSQL do not enter inventory; active temporary objects remain outside
+  the supported persistent-schema grammar and fail the closed catalog audit.
 * profile: Profile.to_data(); query_sha256 is supplied by the trusted caller.
   No SQL file is read here. Binding that digest to installed SQL belongs to Task 2.
 * facts: database, current_user, session_user, server_version_num, server_address
@@ -128,7 +134,7 @@ class Profile:
     query_sha256: str
     name: str = "pg_catalog_v1"
     server_version_num: int = 160015
-    inventory_version: int = 1
+    inventory_version: int = 2
     settings: tuple[tuple[str, str], ...] = SETTINGS
 
     def __post_init__(self) -> None:
@@ -139,7 +145,7 @@ class Profile:
             and type(self.server_version_num) is int
             and self.server_version_num == 160015
             and type(self.inventory_version) is int
-            and self.inventory_version == 1
+            and self.inventory_version == 2
             and type(self.settings) is tuple
             and all(type(pair) is tuple for pair in self.settings)
             and self.settings == SETTINGS
@@ -591,6 +597,65 @@ class Facts:
 
 
 @dataclass(frozen=True)
+class DatabaseCollation:
+    """Portable PG16 database semantics, separate from deployment identity facts."""
+
+    encoding: str
+    provider: str
+    collate: str
+    ctype: str
+    icu_locale: str | None
+    icu_rules: str | None
+    version: str | None
+    actual_version: str | None
+
+    def __post_init__(self) -> None:
+        for value in (self.encoding, self.provider, self.collate, self.ctype):
+            _name(value)
+        for value in (
+            self.icu_locale,
+            self.icu_rules,
+            self.version,
+            self.actual_version,
+        ):
+            _value(value, "text?")
+        _require(self.provider in ("c", "i"))
+        _require((self.provider == "i") == (self.icu_locale is not None))
+        _require(self.provider == "i" or self.icu_rules is None)
+        # A stale recorded version can hide indexes built with older semantics.
+        _require(self.version == self.actual_version)
+
+    def to_data(self) -> dict[str, object]:
+        return {
+            "encoding": self.encoding,
+            "provider": self.provider,
+            "collate": self.collate,
+            "ctype": self.ctype,
+            "icu_locale": self.icu_locale,
+            "icu_rules": self.icu_rules,
+            "version": self.version,
+            "actual_version": self.actual_version,
+        }
+
+    @classmethod
+    def parse(cls, raw: object) -> "DatabaseCollation":
+        data = _object(
+            raw,
+            {
+                "encoding",
+                "provider",
+                "collate",
+                "ctype",
+                "icu_locale",
+                "icu_rules",
+                "version",
+                "actual_version",
+            },
+        )
+        return cls(**data)
+
+
+@dataclass(frozen=True)
 class Snapshot:
     """Deeply immutable, validated catalog data; construct through parse or directly."""
 
@@ -598,9 +663,11 @@ class Snapshot:
     facts: Facts
     inventory: tuple[tuple[tuple[JSONValue, ...], ...], ...]
     unsupported: tuple[int, ...]
+    database_collation: DatabaseCollation
 
     def __post_init__(self) -> None:
         _require(type(self.profile) is Profile and type(self.facts) is Facts)
+        _require(type(self.database_collation) is DatabaseCollation)
         _require(
             type(self.inventory) is tuple and len(self.inventory) == len(INVENTORY)
         )
@@ -648,7 +715,17 @@ class Snapshot:
 
     @classmethod
     def parse(cls, raw: object) -> "Snapshot":
-        data = _object(raw, {"profile", "facts", "inventory", "unsupported", "counts"})
+        data = _object(
+            raw,
+            {
+                "profile",
+                "facts",
+                "database_collation",
+                "inventory",
+                "unsupported",
+                "counts",
+            },
+        )
         profile = Profile.parse(data["profile"])
         facts = Facts.parse(data["facts"])
         inventory = _object(data["inventory"], set(INVENTORY))
@@ -665,6 +742,7 @@ class Snapshot:
             facts,
             tuple(records),
             tuple(unsupported[name] for name in CATALOG_CLASSES),
+            DatabaseCollation.parse(data["database_collation"]),
         )
 
 
@@ -703,7 +781,11 @@ def canonical_signature(snapshot: object, profile: Profile) -> str:
             ),
         )
         inventory[section] = [_record_data(section, record) for record in ordered]
-    payload = {"profile": profile.to_data(), "inventory": inventory}
+    payload = {
+        "profile": profile.to_data(),
+        "inventory": inventory,
+        "database_collation": parsed.database_collation.to_data(),
+    }
     encoded = json.dumps(
         payload,
         ensure_ascii=False,

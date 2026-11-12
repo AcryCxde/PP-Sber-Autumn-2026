@@ -132,6 +132,35 @@ def test_product_test_sources_are_in_build_context():
     assert list((ROOT / "web-product/test").glob("*.test.*"))
 
 
+def test_artifacts_partition_final_images_and_each_ui_stage():
+    jobs = yaml.load(
+        (ROOT / ".github/workflows/ci.yml").read_text(), Loader=StrictLoader
+    )["jobs"]
+    uploads = {
+        s["with"]["name"]: s["with"]
+        for s in jobs["build"]["steps"]
+        if "upload-artifact@" in s.get("uses", "")
+    }
+    groups = {
+        "checked-images": ("backend", "frontend", "runner"),
+        "frontend-checks": ("frontend-checks",),
+        "product-checks": ("product-checks",),
+    }
+    assert set(uploads) == set(groups)
+    for artifact, images in groups.items():
+        assert set(uploads[artifact]["path"].splitlines()) == {
+            f"images/{name}.{suffix}"
+            for name in images
+            for suffix in ("tar", "image-id")
+        }
+        assert uploads[artifact]["if-no-files-found"] == "error"
+        assert uploads[artifact]["retention-days"] == 7
+    publish_download = next(
+        s for s in jobs["publish"]["steps"] if "download-artifact@" in s.get("uses", "")
+    )
+    assert publish_download["with"] == {"name": "checked-images", "path": "images"}
+
+
 def test_frontend_checks_reuse_build_artifacts():
     jobs = yaml.load(
         (ROOT / ".github/workflows/ci.yml").read_text(), Loader=StrictLoader
@@ -143,6 +172,10 @@ def test_frontend_checks_reuse_build_artifacts():
         commands = "\n".join(step.get("run", "") for step in jobs[name]["steps"])
         assert f"docker image load --input images/{tag}.tar" in commands
         assert f"check-images.sh checks images {tag}" in commands
+        download = next(
+            s for s in jobs[name]["steps"] if "download-artifact@" in s.get("uses", "")
+        )
+        assert download["with"] == {"name": tag, "path": "images"}
         assert jobs[name]["timeout-minutes"] == 15
         assert "docker build" not in commands
         assert " install" not in commands

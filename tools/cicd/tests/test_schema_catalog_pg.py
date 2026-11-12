@@ -365,10 +365,44 @@ def test_snapshot_readonly_and_connection_loss(pg16):
     asyncio.run(run())
 
 
-def test_snapshot_midfetch_connection_loss(pg16):
-    """A catalog relation lock supplies a real server-side fetch barrier."""
+@pytest.mark.parametrize("delayed_connect", [False, True])
+def test_snapshot_midfetch_connection_loss(pg16, monkeypatch, delayed_connect):
+    """Start observation at actual fetch, not at variable connection startup."""
+    import asyncpg
+
+    real_connect = asyncpg.connect
 
     async def run():
+        fetch_entered = asyncio.Event()
+        release_fetch = asyncio.Event()
+        probe_pid = None
+
+        class ObservedConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+            async def fetchval(self, *args, **kwargs):
+                nonlocal probe_pid
+                probe_pid = self.connection.get_server_pid()
+                fetch_entered.set()
+                await release_fetch.wait()
+                return await self.connection.fetchval(*args, **kwargs)
+
+        async def observed_connect(**kwargs):
+            if delayed_connect:
+                # Controlled startup delay longer than the old 0.8s observation
+                # window; does not alter the real server's 1s lock timeout.
+                connected = asyncio.Event()
+                handle = asyncio.get_running_loop().call_later(0.9, connected.set)
+                try:
+                    await connected.wait()
+                finally:
+                    handle.cancel()
+            return ObservedConnection(await real_connect(**kwargs))
+
         admin = await pg16.connect()
         task = None
         try:
@@ -380,13 +414,18 @@ def test_snapshot_midfetch_connection_loss(pg16):
                 mapping = CatalogConnection(
                     "127.0.0.1", pg16.port, "probe_test", "probe", profile
                 )
+                monkeypatch.setattr(asyncpg, "connect", observed_connect)
                 task = asyncio.create_task(read_catalog(mapping))
+                # Startup is bounded separately, before the SQL lock wait starts.
+                await asyncio.wait_for(fetch_entered.wait(), timeout=5)
+                release_fetch.set()
                 async with asyncio.timeout(0.8):
                     while True:
                         pid = await admin.fetchval(
                             "SELECT a.pid FROM pg_stat_activity a JOIN pg_locks l ON l.pid=a.pid "
-                            "WHERE a.usename='probe' AND a.datname='probe_test' "
-                            "AND l.relation='pg_catalog.pg_constraint'::regclass AND NOT l.granted"
+                            "WHERE a.pid=$1 AND a.usename='probe' AND a.datname='probe_test' "
+                            "AND l.relation='pg_catalog.pg_constraint'::regclass AND NOT l.granted",
+                            probe_pid,
                         )
                         if pid is not None:
                             break
@@ -405,6 +444,124 @@ def test_snapshot_midfetch_connection_loss(pg16):
                     await task
                 except (asyncio.CancelledError, ProbeError):
                     pass
+            await admin.close(timeout=1)
+
+    asyncio.run(run())
+
+
+def test_database_default_collation_context(pg16):
+    # The pinned Alpine image has no locale(1); inventory actual catalog providers.
+    assert (
+        pg16.execute(
+            "SELECT count(*)>0 FROM pg_collation WHERE collprovider='i' AND colliculocale='und'"
+        )
+        == "t"
+    )
+    signatures = []
+    contexts = []
+    orderings = []
+    for database, provider in (
+        ("locale_c", "libc"),
+        ("locale_icu", "icu"),
+        ("locale_c_copy", "libc"),
+    ):
+        options = (
+            "LOCALE_PROVIDER libc LOCALE 'C'"
+            if provider == "libc"
+            else "LOCALE_PROVIDER icu LOCALE 'C' ICU_LOCALE 'und'"
+        )
+        pg16.execute(
+            f"CREATE DATABASE {database} TEMPLATE template0 OWNER migrator {options}",
+            "postgres",
+        )
+        pg16.execute(
+            "REVOKE CREATE, TEMP ON DATABASE " + database + " FROM PUBLIC; "
+            "CREATE TABLE sample(value text UNIQUE)",
+            database,
+        )
+        profile = installed_catalog_profile()
+        raw = asyncio.run(
+            read_catalog(
+                CatalogConnection("127.0.0.1", pg16.port, database, "probe", profile)
+            )
+        )
+        signatures.append(canonical_signature(raw, profile))
+        contexts.append(
+            pg16.execute(
+                "SELECT json_build_array(datlocprovider, datcollate, datctype, "
+                "daticulocale, daticurules, datcollversion, "
+                "pg_database_collation_actual_version(oid)) FROM pg_database "
+                "WHERE datname=current_database()",
+                database,
+            )
+        )
+        orderings.append(
+            pg16.execute(
+                "SELECT string_agg(value,',' ORDER BY value) "
+                "FROM (VALUES ('a'::text),('Z'::text)) v(value)",
+                database,
+            )
+        )
+    assert orderings[0] != orderings[1]
+    assert contexts[0] != contexts[1]
+    assert signatures[0] != signatures[1]
+    assert signatures[0] == signatures[2]
+
+
+def test_stale_temporary_namespaces_excluded(pg16):
+    before = signature(pg16)
+    pg16.execute("CREATE TEMP TABLE transient(value text)")
+    assert (
+        int(
+            pg16.execute(
+                "SELECT count(*) FROM pg_namespace WHERE pg_is_other_temp_schema(oid)"
+            )
+        )
+        >= 2
+    )
+    assert signature(pg16) == before
+
+
+@pytest.mark.parametrize(
+    "schema", ["pg_business", "pg_temp_imitation", "pg_toast_temp_imitation"]
+)
+def test_persistent_pg_prefix_objects_not_exempt(pg16, schema):
+    # Only a superuser can make reserved-prefix imitators; still fail closed.
+    pg16.execute(
+        "CREATE SCHEMA original; CREATE TABLE original.unknown(value text); "
+        f"UPDATE pg_namespace SET nspname='{schema}' WHERE nspname='original'"
+    )
+    if schema == "pg_business":
+        before = signature(pg16)
+        pg16.execute(f"ALTER TABLE {schema}.unknown ADD COLUMN extra integer")
+        assert signature(pg16) != before
+    else:
+        with pytest.raises(ProbeError):
+            signature(pg16)
+
+
+def test_database_collation_stale_version_refused(pg16):
+    pg16.execute(
+        "UPDATE pg_database SET datcollversion='stale' WHERE datname=current_database()"
+    )
+    with pytest.raises(ProbeError):
+        signature(pg16)
+
+
+def test_active_temporary_objects_still_refused(pg16):
+    async def run():
+        admin = await pg16.connect()
+        try:
+            await admin.execute("CREATE TEMP TABLE transient(value text)")
+            profile = installed_catalog_profile()
+            raw = await read_catalog(
+                CatalogConnection(
+                    "127.0.0.1", pg16.port, "probe_test", "probe", profile
+                )
+            )
+            with pytest.raises(ProbeError, match="unsupported catalog objects"):
+                canonical_signature(raw, profile)
+        finally:
             await admin.close(timeout=1)
 
     asyncio.run(run())

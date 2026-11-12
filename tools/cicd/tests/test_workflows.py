@@ -27,7 +27,7 @@ def unique_mapping(loader, node):
 
 StrictLoader.add_constructor("tag:yaml.org,2002:map", unique_mapping)
 ROOT = Path(__file__).resolve().parents[3]
-HEAVY = {"build", "python", "frontend", "web-product", "compose"}
+HEAVY = {"build", "python", "frontend", "web-product", "compose", "schema-postgres"}
 
 
 def test_loader_contract():
@@ -71,7 +71,7 @@ def test_workflow_contract():
     assert step["env"]["EVENT_NAME"] == "${{ github.event_name }}"
     for job in HEAVY:
         assert jobs[job]["needs"] == (
-            "classify" if job == "build" else ["classify", "build"]
+            "classify" if job in {"build", "schema-postgres"} else ["classify", "build"]
         )
         assert jobs[job]["if"] == "needs.classify.outputs.docs_only != 'true'"
     gate = jobs["gate"]
@@ -91,6 +91,29 @@ def test_workflow_contract():
                 assert re.fullmatch(r"[\w/-]+@[0-9a-f]{40}", step["uses"])
             assert "${{" not in step.get("run", "")
             assert not re.search(r"\b(docker push|ssh|kubectl)\b", step.get("run", ""))
+
+
+def test_postgres_suite_is_required_and_opted_in():
+    jobs = yaml.load(
+        (ROOT / ".github/workflows/ci.yml").read_text(), Loader=StrictLoader
+    )["jobs"]
+    job = jobs["schema-postgres"]
+    assert job["timeout-minutes"] == 15
+    assert job["needs"] == "classify"
+    assert job["env"]["SCHEMA_PG16_TESTS"] == "1"
+    setup = next(s for s in job["steps"] if "setup-python@" in s.get("uses", ""))
+    assert setup["with"]["python-version"] == "3.12"
+    commands = "\n".join(s.get("run", "") for s in job["steps"])
+    assert "pip install -r tools/cicd/requirements.txt '.[test]'" in commands
+    from tools.cicd.tests.schema_pg_fixture import IMAGE
+
+    assert f"docker pull {IMAGE}" in commands
+    assert "python -m pytest -c tools/cicd/pytest.ini tools/cicd/tests -q" in commands
+    assert "-o asyncio_default_fixture_loop_scope=function" in commands
+    assert "continue-on-error" not in str(job)
+    assert "schema-postgres" in jobs["gate"]["needs"]
+    assert "schema-postgres" in jobs["publish"]["needs"]
+    assert "SCHEMA_PG16_TESTS" not in str(jobs["classify"])
 
 
 def test_publish_is_downstream_disabled_and_trusted_only():

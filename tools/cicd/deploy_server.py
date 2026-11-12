@@ -23,6 +23,7 @@ from typing import BinaryIO, Protocol
 
 from tools.cicd.classify import _is_doc
 from tools.cicd.release import REPOSITORY, SHA, Release, _json, _object, _require
+from tools.cicd.verify_release import tree
 
 LIMIT = 16384
 NAMES = ("backend", "frontend")
@@ -198,46 +199,6 @@ def read_state(directory: Path) -> dict | None:
     if data["status"] == "succeeded":
         _require(data["deployed_sha"] == data["requested"]["sha"], "state SHA mismatch")
     return data
-
-
-def tree(api: API, sha: str) -> dict[str, tuple[str, str, str]]:
-    commit = api.get(f"{PREFIX}/git/commits/{sha}")
-    commit_tree = commit.get("tree")
-    _require(
-        isinstance(commit_tree, dict)
-        and isinstance(commit_tree.get("sha"), str)
-        and SHA.fullmatch(commit_tree["sha"]),
-        "invalid commit tree",
-    )
-    data = api.get(f"{PREFIX}/git/trees/{commit_tree['sha']}?recursive=1")
-    _require(
-        data.get("truncated") is False and isinstance(data.get("tree"), list),
-        "unknown/truncated tree",
-    )
-    result = {}
-    for item in data["tree"]:
-        _require(isinstance(item, dict), "invalid tree entry")
-        path, mode, kind, identity = (
-            item.get(k) for k in ("path", "mode", "type", "sha")
-        )
-        _require(
-            isinstance(path, str)
-            and path
-            and path not in result
-            and all(p not in {"", ".", ".."} for p in path.split("/")),
-            "invalid tree path",
-        )
-        _require(
-            isinstance(mode, str)
-            and kind in {"blob", "tree", "commit"}
-            and isinstance(identity, str)
-            and SHA.fullmatch(identity),
-            "invalid tree metadata",
-        )
-        # Directory identities change with their children, not separate code paths.
-        if kind != "tree":
-            result[path] = (mode, kind, identity)
-    return result
 
 
 def migration_risk(api: API, baseline: str, candidate: str) -> bool:

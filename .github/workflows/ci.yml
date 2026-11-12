@@ -41,7 +41,7 @@ jobs:
 
   gate:
     if: ${{ always() }}
-    needs: [classify, build, python, frontend, web-product, compose]
+    needs: [classify, build, python, frontend, web-product, compose, schema-postgres]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -69,9 +69,52 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: checked-images
-          path: images/
+          path: |
+            images/backend.tar
+            images/backend.image-id
+            images/frontend.tar
+            images/frontend.image-id
+            images/runner.tar
+            images/runner.image-id
           if-no-files-found: error
           retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: frontend-checks
+          path: |
+            images/frontend-checks.tar
+            images/frontend-checks.image-id
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: product-checks
+          path: |
+            images/product-checks.tar
+            images/product-checks.image-id
+          if-no-files-found: error
+          retention-days: 7
+
+  schema-postgres:
+    needs: classify
+    if: needs.classify.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SCHEMA_PG16_TESTS: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Install isolated schema test dependencies
+        run: python -m pip install -r tools/cicd/requirements.txt '.[test]'
+      - name: Cache the pinned disposable PostgreSQL fixture image
+        run: docker pull postgres@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+      - name: Test schema contracts against owned PostgreSQL servers
+        run: >-
+          python -m pytest -c tools/cicd/pytest.ini tools/cicd/tests -q
+          -o asyncio_default_fixture_loop_scope=function
 
   python:
     needs: [classify, build]
@@ -107,7 +150,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: checked-images
+          name: frontend-checks
           path: images
       - name: Test and lint saved frontend build stage
         run: |
@@ -123,7 +166,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: checked-images
+          name: product-checks
           path: images
       - name: Test, typecheck and lint saved product build stage
         run: |
@@ -131,7 +174,7 @@ jobs:
           bash tools/cicd/check-images.sh checks images product-checks
 
   publish:
-    needs: [classify, build, python, frontend, web-product, compose, gate]
+    needs: [classify, build, python, frontend, web-product, compose, schema-postgres, gate]
     if: >-
       ${{ success() && github.event_name == 'push' &&
           github.ref == 'refs/heads/master' &&

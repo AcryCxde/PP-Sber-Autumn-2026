@@ -4,7 +4,9 @@ import json
 import os
 from collections.abc import Mapping
 
-HEAVY_JOBS = frozenset({"build", "python", "frontend", "web-product", "compose"})
+HEAVY_JOBS = frozenset(
+    {"build", "python", "frontend", "web-product", "compose", "schema-postgres"}
+)
 
 
 def gate_passes(needs: object) -> bool:

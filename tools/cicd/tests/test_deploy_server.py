@@ -13,6 +13,7 @@ import pytest
 
 from tools.cicd import deploy_server as server
 from tools.cicd.release import IMAGE_REPOSITORIES, Context, Image, Release
+from tools.cicd.verify_release import verify_freshness
 
 
 def release(sha: str = "a" * 40) -> Release:
@@ -388,6 +389,51 @@ def test_truncated_tree_fails(environment) -> None:
     api.truncated = True
     with pytest.raises(ValueError, match="truncated"):
         server.deploy(release("d" * 40), **options)
+
+
+@pytest.mark.parametrize("gate", [server.migration_risk, verify_freshness])
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [("docs", "040000", "tree"), ("docs", "040000", "tree")],
+        [("docs", "100644", "tree")],
+        [("docs/guide.md", "040000", "blob")],
+        [("docs/guide.md", "100644", "commit")],
+        [("docs/guide.md", "100644", "tag")],
+        [("README.md", "100644", "blob")],
+        [("../README.md", "100644", "blob")],
+        [("/README.md", "100644", "blob")],
+        [("docs/./README.md", "100644", "blob")],
+        [("docs//README.md", "100644", "blob")],
+        [("docs/README\0.md", "100644", "blob")],
+    ],
+    ids=[
+        "duplicate-directory",
+        "malformed-directory-mode",
+        "malformed-blob-mode",
+        "malformed-submodule-mode",
+        "unsupported-entry-type",
+        "duplicate-blob",
+        "parent-traversal",
+        "absolute-path",
+        "dot-component",
+        "empty-component",
+        "nul-path",
+    ],
+)
+def test_malformed_git_tree_fails_closed_at_both_gates(gate, entries) -> None:
+    class MalformedAPI(FakeGitHub):
+        def get(self, path: str) -> dict:
+            result = super().get(path)
+            if "/git/trees/" in path:
+                result["tree"].extend(
+                    {"path": p, "mode": mode, "type": kind, "sha": "3" * 40}
+                    for p, mode, kind in entries
+                )
+            return result
+
+    with pytest.raises(ValueError):
+        gate(MalformedAPI(), "a" * 40, "d" * 40)
 
 
 def hold_lock(directory, ready, finish):

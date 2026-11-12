@@ -114,7 +114,7 @@ Local ingress HTTPS 200 и TLS valid; external URL timeout с сервера н�
   CA — отдельный public-readable root-owned файл без group/world write; TLS verify hostname обязателен.
   Clearance keys: `sha/signature/target/preflight/rehearsal/approval`; target связывает mapping
   и observed DB/user/version/backend address/port, signature равна offline expected canonical.
-  Profile строго PG `160015`, `pg_catalog_v1`, inventory 1, SHA256 installed `schema_catalog.sql`;
+  Profile строго PG `160015`, `pg_catalog_v1`, inventory 2 (default collation), SHA256 installed `schema_catalog.sql`;
   это узкий SERIAL/heap/btree profile, не универсальный SQL proof. Standard builtin trust,
   unsupported/external DDL → отказ. Actual production compatibility всё ещё UNVERIFIED.
 Mapping JSON shape (только placeholder-схема, не готовый production config):
@@ -122,7 +122,7 @@ Mapping JSON shape (только placeholder-схема, не готовый pro
 {"schema":1,"endpoint":"<TLS DNS>","port":5432,"ca_file":"<absolute CA path>",
  "cluster_identity":"<reviewed identity>","database":"<DB>","role":"<read-only role>",
  "schemas":["public"],"profile":{"name":"pg_catalog_v1","server_version_num":160015,
- "inventory_version":1,"query_sha256":"<64hex installed SQL SHA256>","settings":{
+ "inventory_version":2,"query_sha256":"<64hex installed SQL SHA256>","settings":{
  "search_path":"pg_catalog","standard_conforming_strings":"on","TimeZone":"UTC",
  "DateStyle":"ISO, YMD","IntervalStyle":"postgres","extra_float_digits":"3"}}}
 ```

@@ -172,6 +172,22 @@ def test_required_check_must_succeed(env, check, result):
         trusted_context(env)
 
 
+def test_release_requires_postgres_evidence_in_context_and_manifest(
+    env, images, tmp_path
+):
+    assert "schema-postgres" in CHECKS
+    release = publish(trusted_context(env), images, tmp_path / "release.json", Docker())
+    manifest = release.to_dict()
+    del manifest["checks"]["schema-postgres"]
+    with pytest.raises(ValueError):
+        Release.parse(json.dumps(manifest))
+    needs = json.loads(env["NEEDS_JSON"])
+    del needs["schema-postgres"]
+    env["NEEDS_JSON"] = json.dumps(needs)
+    with pytest.raises(ValueError):
+        trusted_context(env)
+
+
 def test_docs_only_cannot_publish(env):
     needs = json.loads(env["NEEDS_JSON"])
     needs["classify"]["outputs"]["docs_only"] = "true"
