@@ -2,7 +2,6 @@
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
 
 from backend.db import Database
 from backend.models import Conversation, Run, User

@@ -7,7 +7,7 @@ from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import case, exists, select, update
+from sqlalchemy import case, exists, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -578,6 +578,24 @@ async def _lock_run_context(
         .with_for_update().execution_options(populate_existing=True)
     )
     return (run, conversation) if run is not None else None
+
+
+async def fail_unadmitted_run(
+    session: AsyncSession, run_id: str,
+) -> RunFinalization | None:
+    """Fail only work that has not been claimed by another executor."""
+    if session.get_bind().dialect.name == "sqlite":
+        await session.execute(text("BEGIN IMMEDIATE"))
+    locked = await _lock_run_context(session, run_id)
+    if locked is None:
+        return None
+    run, _ = locked
+    if run.status != "pending" or run.admitted_at is not None:
+        return None
+    return await finalize_run(
+        session, run_id, assistant_content=None, status="failed",
+        exit_code=None, error_code="ai_policy_unavailable",
+    )
 
 
 async def finalize_run(

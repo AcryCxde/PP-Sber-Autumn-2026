@@ -93,9 +93,13 @@ class RunnerBridge:
                 raise TransportError("journal_regressed")
             welcome = {"v": 1, "type": "welcome", "acked_seq": acked}
             if self.harness_diagnostics_enabled:
-                welcome["capabilities"] = {"harness_diagnostic_v1": True}
+                welcome["capabilities"] = {"harness_diagnostic_v1": True,
+                                           "harness_diagnostic_rejection_v1": True}
             await websocket.send_json(welcome)
-            tasks = [asyncio.create_task(self._receive(websocket, project)),
+            supports_rejection = (isinstance(hello.get("capabilities"), dict)
+                                  and hello["capabilities"].get("harness_diagnostic_rejection_v1") is True)
+            tasks = [asyncio.create_task(self._receive(websocket, project,
+                                                       supports_rejection=supports_rejection)),
                      asyncio.create_task(self._commands(websocket, project))]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -116,7 +120,7 @@ class RunnerBridge:
             if registered:
                 self._connections.discard(project)
 
-    async def _receive(self, websocket: WebSocket, project: str) -> None:
+    async def _receive(self, websocket: WebSocket, project: str, *, supports_rejection: bool = False) -> None:
         while True:
             frame = await websocket.receive_json()
             if not isinstance(frame, dict) or type(frame.get("v")) is not int or frame["v"] != 1:
@@ -133,7 +137,7 @@ class RunnerBridge:
                     self.transport.skip(project, frame.get("journal_seq"))
             elif kind == "harness.diagnostic" and self.harness_diagnostics_enabled:
                 receipt = self.transport.diagnostic(project, frame)
-                if receipt is not None:
+                if receipt is not None and (receipt["status"] == "accepted" or supports_rejection):
                     await websocket.send_json(receipt)
             elif kind == "heartbeat":
                 self.transport.heartbeat(project, frame)

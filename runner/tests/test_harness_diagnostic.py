@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ctrunner.gateway import JournalFeed, event_message
-from ctrunner.harness_diagnostic import DiagnosticFeed
+from ctrunner.harness_diagnostic import DiagnosticFeed, DiagnosticReceipts
 from ctrunner.v0 import Translator
 
 
@@ -47,6 +47,22 @@ def test_invalid_amount_is_not_a_zero_snapshot(tmp_path, value):
     path = tmp_path / "events.jsonl"
     journal(path, value)
     assert DiagnosticFeed(path, "p1", "/workspace/project").poll() == []
+
+
+def test_feed_pages_and_definitive_receipts_survive_reopen(tmp_path):
+    path = tmp_path / "events.jsonl"
+    journal(path)
+    feed = DiagnosticFeed(path, "p1", "/workspace/project")
+    assert feed.poll(0) == []
+    assert feed.poll(1) == []  # bounded scan of the non-result row
+    frames = feed.poll(1)
+    assert len(frames) == 1
+    receipts = DiagnosticReceipts(path)
+    receipts.record(frames[0]["diagnostic_id"], "rejected")
+    reopened = DiagnosticReceipts(path)
+    assert reopened.contains(frames[0]["diagnostic_id"])
+    with pytest.raises(ValueError, match="invalid_diagnostic_receipt"):
+        reopened.record("unknown", "transient")
 
 
 def test_decimal_canonical_and_missing_session(tmp_path):

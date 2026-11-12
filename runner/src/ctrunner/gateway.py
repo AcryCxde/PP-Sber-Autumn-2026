@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import sqlite3
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -16,7 +17,7 @@ from typing import Final, assert_never, final
 from websockets.asyncio.client import ClientConnection, connect
 
 from ctrunner.diag import diag
-from ctrunner.harness_diagnostic import SCHEMA, DiagnosticFeed
+from ctrunner.harness_diagnostic import SCHEMA, DiagnosticFeed, DiagnosticReceipts
 from ctrunner.inbox import has_command, put
 from ctrunner.protocol import (
     Command,
@@ -31,6 +32,15 @@ from ctrunner.v0 import Draft, Translator, parse_row
 
 WIRE_VERSION: Final = 1
 STABLE_CONNECTION_S: Final = 30.0
+
+
+class DiagnosticAcks(dict[str, str]):
+    """Connection-local ACK mailbox limited to actually outstanding private frames."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.awaiting: set[str] = set()
+
 FRAME_ENVELOPE: Final = ("v", "type")
 
 
@@ -244,6 +254,7 @@ class GatewayClient:
                 project_id=self._project_id, runner_version=self._runner_version,
                 session_id=self._session_id, last_seq=self._last_seq(),
             )  # fmt: skip
+            hello["capabilities"] = {"harness_diagnostic_rejection_v1": True}
             await ws.send(json.dumps(hello, ensure_ascii=False))
             async with asyncio.timeout(10):
                 welcome = json.loads(await ws.recv())
@@ -251,11 +262,15 @@ class GatewayClient:
             diag("gateway_connected", acked_seq=acked)
             translator = Translator(self._project_id, self._project_root)
             feed = JournalFeed(self._journal, translator, acked)
-            accepted_diagnostics: set[str] = set()
+            capabilities = welcome.get("capabilities")
+            supports_rejection = (isinstance(capabilities, dict)
+                                  and capabilities.get("harness_diagnostic_rejection_v1") is True)
+            accepted_diagnostics = DiagnosticAcks()
             tasks = [
                 asyncio.create_task(self._send_events(ws, feed)),
                 asyncio.create_task(self._send_heartbeats(ws)),
-                asyncio.create_task(self._receive(ws, accepted_diagnostics)),
+                asyncio.create_task(self._receive(ws, accepted_diagnostics,
+                                                   supports_rejection=supports_rejection)),
             ]
             capabilities = welcome.get("capabilities")
             if isinstance(capabilities, dict) and capabilities.get("harness_diagnostic_v1") is True:
@@ -280,22 +295,39 @@ class GatewayClient:
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._draining.wait(), self._poll_s)
 
-    async def _send_diagnostics(self, ws: ClientConnection, accepted: set[str]) -> None:
+    async def _send_diagnostics(self, ws: ClientConnection, accepted: DiagnosticAcks) -> None:
+        try:
+            receipts = await asyncio.to_thread(DiagnosticReceipts, self._journal)
+            await self._diagnostic_loop(ws, accepted, receipts)
+        except (OSError, sqlite3.Error) as error:
+            # Optional private storage failure must not disconnect legacy delivery.
+            diag("gateway_diagnostics_unavailable", error=type(error).__name__)
+            await asyncio.Future()
+
+    async def _diagnostic_loop(
+        self, ws: ClientConnection, accepted: DiagnosticAcks, receipts: DiagnosticReceipts
+    ) -> None:
         feed = DiagnosticFeed(self._journal, self._project_id, self._project_root)
         pending: dict[str, dict[str, JsonValue]] = {}
         attempts: dict[str, tuple[int, float]] = {}
         while not self._draining.is_set():
-            for frame in await asyncio.to_thread(feed.poll):
-                pending[str(frame["diagnostic_id"])] = frame
-            now = time.monotonic()
             for key in tuple(pending):
-                if key in accepted:
+                status = accepted.pop(key, None)
+                if status is not None:
+                    accepted.awaiting.discard(key)
+                    await asyncio.to_thread(receipts.record, key, status)
                     pending.pop(key)
                     attempts.pop(key, None)
-                    continue
+            for frame in await asyncio.to_thread(feed.poll, 256 - len(pending)):
+                key = str(frame["diagnostic_id"])
+                if not await asyncio.to_thread(receipts.contains, key):
+                    pending[key] = frame
+            now = time.monotonic()
+            for key, frame in pending.items():
                 count, due = attempts.get(key, (0, 0.0))
                 if now >= due:
-                    await ws.send(json.dumps(pending[key], ensure_ascii=False))
+                    accepted.awaiting.add(key)
+                    await ws.send(json.dumps(frame, ensure_ascii=False))
                     attempts[key] = (count + 1, now + min(30.0, self._poll_s * 2 ** min(count, 10)))
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._draining.wait(), self._poll_s)
@@ -313,7 +345,8 @@ class GatewayClient:
         except (OSError, ValueError):
             return None  # файла ещё нет или он пишется: следующий heartbeat через период
 
-    async def _receive(self, ws: ClientConnection, accepted_diagnostics: set[str]) -> None:
+    async def _receive(self, ws: ClientConnection, accepted_diagnostics: DiagnosticAcks,
+                       *, supports_rejection: bool = False) -> None:
         async for raw in ws:
             try:
                 frame = json.loads(raw)
@@ -323,9 +356,12 @@ class GatewayClient:
             if not isinstance(frame, dict):
                 continue
             if (frame.get("type") == "harness.diagnostic_ack" and frame.get("v") == 1
-                    and frame.get("schema") == SCHEMA and frame.get("status") == "accepted"
+                    and frame.get("schema") == SCHEMA
+                    and (frame.get("status") == "accepted" or
+                         (supports_rejection and frame.get("status") == "rejected"))
                     and isinstance(frame.get("diagnostic_id"), str)):
-                accepted_diagnostics.add(frame["diagnostic_id"])
+                if frame["diagnostic_id"] in accepted_diagnostics.awaiting:
+                    accepted_diagnostics[frame["diagnostic_id"]] = frame["status"]
                 continue
             if frame.get("type") != "command":
                 continue

@@ -35,6 +35,9 @@ def initialize(db: sqlite3.Connection) -> None:
       CREATE TABLE IF NOT EXISTS diagnostic_receipts (
         diagnostic_id TEXT PRIMARY KEY, schema TEXT NOT NULL, canonical_body TEXT NOT NULL,
         source_event_id TEXT NOT NULL UNIQUE, accepted_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS diagnostic_rejections (
+        diagnostic_id TEXT PRIMARY KEY, canonical_body TEXT NOT NULL,
+        reason TEXT NOT NULL, rejected_at TEXT NOT NULL);
     """)
 
 
@@ -108,16 +111,41 @@ def parse(frame: object, project: str) -> tuple[dict, str]:
     return frame, json.dumps(frame, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
+def _rejection(db: sqlite3.Connection, frame: dict, canonical: str, now: str,
+               reason: str) -> dict:
+    db.execute("INSERT INTO diagnostic_rejections VALUES(?,?,?,?)",
+               (frame["diagnostic_id"], canonical, reason, now))
+    return {"v": 1, "type": "harness.diagnostic_ack", "schema": SCHEMA,
+            "diagnostic_id": frame["diagnostic_id"], "status": "rejected", "reason": reason}
+
+
 def accept(db: sqlite3.Connection, frame: dict, canonical: str, now: str) -> dict | None:
+    rejected = db.execute("SELECT canonical_body,reason FROM diagnostic_rejections WHERE diagnostic_id=?",
+                          (frame["diagnostic_id"],)).fetchone()
+    if rejected:
+        if rejected["canonical_body"] != canonical:
+            raise DiagnosticError("diagnostic_conflict")
+        return {"v": 1, "type": "harness.diagnostic_ack", "schema": SCHEMA,
+                "diagnostic_id": frame["diagnostic_id"], "status": "rejected", "reason": rejected["reason"]}
     seen = db.execute("SELECT canonical_body FROM diagnostic_receipts WHERE diagnostic_id=?",
                       (frame["diagnostic_id"],)).fetchone()
     if seen:
         if seen[0] != canonical:
             raise DiagnosticError("diagnostic_conflict")
     else:
-        source = db.execute("SELECT s.* FROM diagnostic_sources s JOIN diagnostic_segments g "
-            "ON g.command_id=s.command_id WHERE s.source_event_id=?", (frame["source_event_id"],)).fetchone()
+        source = db.execute("SELECT * FROM diagnostic_sources WHERE source_event_id=?",
+                            (frame["source_event_id"],)).fetchone()
         if source is None:
+            event = db.execute("SELECT project,run FROM events WHERE event_id=?",
+                               (frame["source_event_id"],)).fetchone()
+            if event is not None:
+                if (event["project"], event["run"]) != (frame["project_id"], frame["transport_run_id"]):
+                    raise DiagnosticError("diagnostic_source_mismatch")
+                return _rejection(db, frame, canonical, now, "source_binding_unavailable")
+            run = db.execute("SELECT status FROM runs WHERE id=? AND project=?",
+                             (frame["transport_run_id"], frame["project_id"])).fetchone()
+            if run and run["status"] in {"completed", "failed", "outcome_unknown"}:
+                return _rejection(db, frame, canonical, now, "source_not_accepted_terminal")
             return None
         if (source["project"], source["transport_run"], source["source_journal_seq"]) != (
                 frame["project_id"], frame["transport_run_id"], frame["source_journal_seq"]):
@@ -125,6 +153,8 @@ def accept(db: sqlite3.Connection, frame: dict, canonical: str, now: str) -> dic
         event = db.execute("SELECT body FROM events WHERE event_id=?", (frame["source_event_id"],)).fetchone()
         if event is None or json.loads(event[0])["occurred_at"] != frame["payload"]["observed_at"]:
             raise DiagnosticError("diagnostic_source_mismatch")
+        if source["command_id"] is None:
+            return _rejection(db, frame, canonical, now, "source_binding_unavailable")
         db.execute("INSERT INTO diagnostic_receipts VALUES(?,?,?,?,?)",
                    (frame["diagnostic_id"], SCHEMA, canonical, frame["source_event_id"], now))
     return {"v": 1, "type": "harness.diagnostic_ack", "schema": SCHEMA,
