@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import ssl
+import stat
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -278,13 +279,15 @@ def test_trusted_probe_path_refusal(tmp_path, monkeypatch, change):
     def fake(fd):
         info = original(fd)
         mode, uid = info.st_mode, 0
-        is_file = __import__("stat").S_ISREG(mode)
+        is_file = stat.S_ISREG(mode)
+        if not is_file:
+            mode = stat.S_IFDIR | 0o755
         if change == "uid" and is_file:
             uid = 1234
-        if (change == "writable" and is_file) or (
-            change == "parent_writable" and not is_file
-        ):
+        if change == "writable" and is_file:
             mode |= 0o020
+        if change == "parent_writable" and not is_file:
+            mode = stat.S_IFDIR | 0o1777
         return SimpleNamespace(st_mode=mode, st_uid=uid, st_size=info.st_size)
 
     monkeypatch.setattr(os, "fstat", fake)
@@ -304,8 +307,11 @@ def test_trusted_probe_path_refusal(tmp_path, monkeypatch, change):
         probe.protected_read(path, 16)
 
 
+@pytest.mark.parametrize("parent_mode", [0o755, 0o1777])
 @pytest.mark.parametrize("mode", [0o644, 0o640, 0o604, 0o600, 0o400])
-def test_trusted_probe_credential_confidentiality(tmp_path, monkeypatch, mode):
+def test_trusted_probe_credential_confidentiality(
+    tmp_path, monkeypatch, mode, parent_mode
+):
     path = tmp_path / "credential.json"
     path.write_bytes(b'{"username":"probe","password":"secret"}')
     path.chmod(mode)
@@ -313,10 +319,14 @@ def test_trusted_probe_credential_confidentiality(tmp_path, monkeypatch, mode):
 
     def root_owned(fd):
         info = original(fd)
-        return SimpleNamespace(st_mode=info.st_mode, st_uid=0, st_size=info.st_size)
+        # Model the reviewed installation, not the host's temporary directories.
+        file_mode = (
+            stat.S_IFDIR | parent_mode if stat.S_ISDIR(info.st_mode) else info.st_mode
+        )
+        return SimpleNamespace(st_mode=file_mode, st_uid=0, st_size=info.st_size)
 
     monkeypatch.setattr(os, "fstat", root_owned)
-    if mode & 0o077:
+    if mode & 0o077 or parent_mode & 0o022:
         with pytest.raises(probe.ProbeError) as error:
             probe.protected_credential_read(path)
         assert "secret" not in str(error.value)
