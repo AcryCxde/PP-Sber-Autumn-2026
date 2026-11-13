@@ -88,6 +88,25 @@ Local ingress HTTPS 200 и TLS valid; external URL timeout с сервера н�
   Реализация использует tag `<40hex>`, не `sha-<40hex>`; истина — `@sha256:<64hex>`.
   Это расхождение с ранним дизайном сверить до A; не создавать packages по старым именам.
   Publish только master push после всех checks, не manual CI/PR/docs-only; no rebuild.
+- [ ] До app publish отдельно bootstrap-ить все три exact private packages и настроить
+  package access для репозитория. Guard не создаёт packages: missing/403/сетевая ошибка,
+  public/internal или неверная metadata блокируют **все** push. После publish повторная
+  проверка visibility блокирует release.json при drift, но не отменяет уже сделанные push.
+- [ ] Отдельно доказать Actions metadata access, не включая publish/deploy flags:
+  `.github/workflows/package-metadata-preflight.yml` — manual metadata-only workflow,
+  `packages: read`, без checkout/build/login/upload. Он доступен для dispatch только после
+  попадания workflow в default branch (отдельные review/merge approval), исполняется только
+  на master. Сейчас workflow **не запускался**, runtime contract **unresolved**; offline
+  tests не доказывают доступ GITHUB_TOKEN. Отсутствующие packages сначала требуют bootstrap.
+  Official OpenAPI `packages/get-package-for-user` для exact
+  `GET /users/{username}/packages/{package_type}/{package_name}` описывает public package и
+  `enabledForGitHubApps: false`; authenticated owner PAT может читать private metadata,
+  но это не доказательство для Actions integration token. `/user/packages` owner PAT route
+  не подменяет Actions token (его `/user` может обозначать bot). Никакого fallback на
+  public listing, нового PAT secret или расширения permissions: отказ остаётся закрытым.
+  Источник: https://github.com/github/rest-api-description/blob/main/descriptions/api.github.com/api.github.com.json
+  (`packages/get-package-for-user`, сверено 2026-11-12). Даже успешный read-only preflight
+  не доказывает право upload. Оба флага оставить off до отдельного решения.
 - [ ] Проверить private visibility/access для каждого package, в том числе ранее существовавшего.
   Пользователь предоставляет credential **только read:packages** с package access для pull;
   publish token не устанавливать на VM. Namespace Secret не хранить в git/logs.

@@ -412,3 +412,39 @@ def test_compose_render_preserved():
         "POSTGRES_PASSWORD=ci-only S3_ACCESS_KEY=ci-only S3_SECRET_KEY=ci-only docker compose config"
         in command
     )
+
+
+def test_package_preflight_is_isolated_read_only_static():
+    workflow = yaml.load(
+        (ROOT / ".github/workflows/package-metadata-preflight.yml").read_text(),
+        Loader=StrictLoader,
+    )
+    assert workflow["on"] == {"workflow_dispatch": None}
+    assert workflow["permissions"] == {"packages": "read"}
+    assert set(workflow["jobs"]) == {"metadata"}
+    job = workflow["jobs"]["metadata"]
+    assert "github.ref == 'refs/heads/master'" in job["if"]
+    assert "github.repository == 'AcryCxde/PP-Sber-Autumn-2026'" in job["if"]
+    assert job["timeout-minutes"] == 3
+    assert len(job["steps"]) == 1
+    step = job["steps"][0]
+    assert "uses" not in step
+    assert step["env"] == {"GHCR_TOKEN": "${{ github.token }}"}
+    command = step["run"]
+    assert "python3 -I" in command
+    assert "${{" not in command
+    assert "https://api.github.com/users/AcryCxde/packages/container/" in command
+    assert "timeout=20" in command
+    assert "response.read(65537)" in command
+    assert 'data.get("visibility") == "private"' in command
+    for forbidden in (
+        "checkout",
+        "docker",
+        "subprocess",
+        "upload-artifact",
+        "urlopen",
+        "secrets.",
+    ):
+        assert forbidden not in str(step)
+    # Verify embedded static Python syntax without executing network calls.
+    compile(command.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0], "preflight", "exec")
