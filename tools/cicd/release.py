@@ -9,6 +9,8 @@ import os
 import re
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -201,8 +203,75 @@ def docker(args: Sequence[str]) -> str:
     ).stdout.strip()
 
 
+class PackageMetadata(Protocol):
+    def get(self, name: str) -> object: ...
+
+
+class NoPackageRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+class PackageAPI:
+    """Fixed metadata targets only; no redirects, retries or caller-supplied URLs.
+
+    The repository provenance client deliberately cannot access package URLs.
+    Actions token support is NOT established by offline tests (see runbook).
+    """
+
+    def __init__(self, token: str | None = None) -> None:
+        self.token = token if token is not None else os.environ.get("GHCR_TOKEN", "")
+        _require(
+            bool(self.token) and all(33 <= ord(c) <= 126 for c in self.token),
+            "missing/invalid package credential",
+        )
+        self.opener = urllib.request.build_opener(NoPackageRedirect())
+
+    def get(self, name: str) -> object:
+        _require(
+            name in {repo.rsplit("/", 1)[1] for repo in IMAGE_REPOSITORIES.values()},
+            "foreign package target",
+        )
+        request = urllib.request.Request(
+            f"https://api.github.com/users/AcryCxde/packages/container/{name}",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Authorization": f"Bearer {self.token}",
+            },
+        )
+        try:
+            with self.opener.open(request, timeout=20) as response:
+                _require(response.status == 200, "unexpected package HTTP status")
+                data = response.read(65537)
+                _require(len(data) <= 65536, "package response exceeds size bound")
+                return _json(data.decode("utf-8"))
+        except (ValueError, OSError, TimeoutError, urllib.error.URLError):
+            # Do not expose credentials, response bodies or infrastructure error text.
+            raise ValueError("package metadata request failed") from None
+
+
+def require_private_packages(metadata: PackageMetadata) -> None:
+    for repository in IMAGE_REPOSITORIES.values():
+        name = repository.rsplit("/", 1)[1]
+        data = metadata.get(name)
+        _require(
+            isinstance(data, dict)
+            and data.get("name") == name
+            and data.get("package_type") == "container"
+            and data.get("visibility") == "private"
+            and isinstance(data.get("owner"), dict)
+            and data["owner"].get("login") == "AcryCxde",
+            "package metadata must identify the exact private container package",
+        )
+
+
 def publish(
-    context: Context, directory: Path, output: Path, run: DockerRunner = docker
+    context: Context,
+    directory: Path,
+    output: Path,
+    run: DockerRunner = docker,
+    metadata: PackageMetadata | None = None,
 ) -> Release:
     # A pre-existing output must never survive a failed attempt as a fresh release.
     output.unlink(missing_ok=True)
@@ -226,6 +295,9 @@ def publish(
             == image_id,
             "archive image ID mismatch",
         )
+    metadata = metadata if metadata is not None else PackageAPI()
+    # All three must already exist and be private before ANY registry upload.
+    require_private_packages(metadata)
     images = {}
     for name, repository in IMAGE_REPOSITORIES.items():
         tag = f"{repository}:{context.sha}"
@@ -256,6 +328,8 @@ def publish(
             "registry digest mismatch",
         )
         images[name] = Image(repository, digest, ids[name])
+    # Detect visibility drift; this does not replace the pre-upload guard.
+    require_private_packages(metadata)
     release = Release(context, **images)
     temporary = None
     try:
