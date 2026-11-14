@@ -200,6 +200,7 @@ jobs:
       - name: Publish and verify exact tested images
         env:
           GHCR_TOKEN: ${{ github.token }}
+          GHCR_METADATA_OWNER_TOKEN: ${{ secrets.CICD_GHCR_METADATA_OWNER_READ_TOKEN }}
           CICD_PUBLISH_ENABLED: ${{ vars.CICD_PUBLISH_ENABLED }}
           NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
@@ -207,8 +208,8 @@ jobs:
           export DOCKER_CONFIG
           DOCKER_CONFIG=$(mktemp -d)
           trap 'rm -rf "$DOCKER_CONFIG"' EXIT
-          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          # Keep the same scoped token for authenticated package metadata checks.
+          printf '%s' "$GHCR_TOKEN" | env -u GHCR_METADATA_OWNER_TOKEN docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          # Metadata uses the separate owner credential; OCI keeps github.token.
           python -m tools.cicd.release
           unset GHCR_TOKEN
       - name: Upload complete verified release only

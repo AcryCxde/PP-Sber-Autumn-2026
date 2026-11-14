@@ -47,7 +47,7 @@ def test_workflow_contract():
         assert not trigger or not ({"paths", "paths-ignore"} & trigger.keys())
     assert workflow["permissions"] == {"contents": "read"}
     assert "pull_request_target" not in text
-    assert "secrets." not in text  # github.token is scoped to the trusted publish job.
+    assert text.count("secrets.") == 1  # Owner metadata secret: publish step only.
     jobs = workflow["jobs"]
     assert set(jobs) == HEAVY | {"classify", "gate", "publish"}
     assert "if" not in jobs["classify"]
@@ -420,7 +420,7 @@ def test_package_preflight_is_isolated_read_only_static():
         Loader=StrictLoader,
     )
     assert workflow["on"] == {"workflow_dispatch": None}
-    assert workflow["permissions"] == {"packages": "read"}
+    assert workflow["permissions"] == {}
     assert set(workflow["jobs"]) == {"metadata"}
     job = workflow["jobs"]["metadata"]
     assert "github.ref == 'refs/heads/master'" in job["if"]
@@ -429,11 +429,13 @@ def test_package_preflight_is_isolated_read_only_static():
     assert len(job["steps"]) == 1
     step = job["steps"][0]
     assert "uses" not in step
-    assert step["env"] == {"GHCR_TOKEN": "${{ github.token }}"}
+    assert step["env"] == {
+        "GHCR_METADATA_OWNER_TOKEN": "${{ secrets.CICD_GHCR_METADATA_OWNER_READ_TOKEN }}"
+    }
     command = step["run"]
     assert "python3 -I" in command
     assert "${{" not in command
-    assert "https://api.github.com/users/AcryCxde/packages/container/" in command
+    assert "https://api.github.com/user/packages/container/" in command
     assert "timeout=20" in command
     assert "response.read(65537)" in command
     assert 'data.get("visibility") == "private"' in command
@@ -443,8 +445,116 @@ def test_package_preflight_is_isolated_read_only_static():
         "subprocess",
         "upload-artifact",
         "urlopen",
-        "secrets.",
     ):
         assert forbidden not in str(step)
     # Verify embedded static Python syntax without executing network calls.
     compile(command.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0], "preflight", "exec")
+
+
+def test_publish_metadata_secret_is_step_scoped_and_never_docker_password():
+    workflow = yaml.load(
+        (ROOT / ".github/workflows/ci.yml").read_text(), Loader=StrictLoader
+    )
+    publish = workflow["jobs"]["publish"]
+    assert "env" not in workflow and "env" not in publish
+    step = next(s for s in publish["steps"] if "run" in s)
+    assert step["env"]["GHCR_METADATA_OWNER_TOKEN"] == (
+        "${{ secrets.CICD_GHCR_METADATA_OWNER_READ_TOKEN }}"
+    )
+    assert step["env"]["GHCR_TOKEN"] == "${{ github.token }}"
+    assert (
+        "printf '%s' \"$GHCR_TOKEN\" | env -u GHCR_METADATA_OWNER_TOKEN docker login"
+        in step["run"]
+    )
+    assert step["run"].count("GHCR_METADATA_OWNER_TOKEN") == 1
+    assert "docker build" not in step["run"]
+    assert all(
+        "uses" not in s or "checkout@" not in s["uses"] for s in publish["steps"][4:]
+    )
+
+
+@pytest.mark.parametrize(
+    "failure", [None, "credential", "403", "404", "network", "malformed", "owner"]
+)
+def test_static_preflight_owner_contract_offline(monkeypatch, capsys, failure):
+    import urllib.error
+    import urllib.request
+
+    step = yaml.load(
+        (ROOT / ".github/workflows/package-metadata-preflight.yml").read_text(),
+        Loader=StrictLoader,
+    )["jobs"]["metadata"]["steps"][0]
+    source = step["run"].split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    monkeypatch.setenv(
+        "GHCR_METADATA_OWNER_TOKEN", "" if failure == "credential" else "owner-only"
+    )
+    monkeypatch.setenv("GHCR_TOKEN", "oci-not-metadata")
+    calls = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self, size):
+            assert size == 65537
+            if failure == "malformed":
+                return b"owner-only invalid-json"
+            return json.dumps(
+                {
+                    "name": calls[-1],
+                    "package_type": "container",
+                    "visibility": "private",
+                    "owner": {"login": "other" if failure == "owner" else "AcryCxde"},
+                }
+            ).encode()
+
+    class Opener:
+        def open(self, request, timeout):
+            assert request.full_url.startswith(
+                "https://api.github.com/user/packages/container/"
+            )
+            assert request.get_header("Authorization") == "Bearer owner-only"
+            assert timeout == 20
+            calls.append(request.full_url.rsplit("/", 1)[1])
+            if failure in ("403", "404"):
+                raise urllib.error.HTTPError(
+                    request.full_url, int(failure), "owner-only", {}, None
+                )
+            if failure == "network":
+                raise urllib.error.URLError("owner-only arbitrary exception")
+            return Response()
+
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *args: Opener())
+    if failure is None:
+        exec(compile(source, "preflight", "exec"), {})  # noqa: S102 — trusted repo YAML; network replaced by fake.
+        assert calls == [
+            "pp-sber-autumn-2026-" + name for name in ("backend", "frontend", "runner")
+        ]
+    else:
+        with pytest.raises(SystemExit) as caught:
+            exec(compile(source, "preflight", "exec"), {})  # noqa: S102 — trusted repo YAML; network replaced by fake.
+        category = (
+            "http"
+            if failure in ("403", "404")
+            else "metadata"
+            if failure == "owner"
+            else failure
+        )
+        code = (
+            failure
+            if failure in ("403", "404")
+            else "200"
+            if failure in ("malformed", "owner")
+            else "none"
+        )
+        assert (
+            str(caught.value)
+            == f"package=pp-sber-autumn-2026-backend class={category} http={code}"
+        )
+        assert len(calls) == (0 if failure == "credential" else 1)
+        assert capsys.readouterr() == ("", "")

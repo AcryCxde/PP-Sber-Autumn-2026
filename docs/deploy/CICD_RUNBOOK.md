@@ -92,21 +92,74 @@ Local ingress HTTPS 200 и TLS valid; external URL timeout с сервера н�
   package access для репозитория. Guard не создаёт packages: missing/403/сетевая ошибка,
   public/internal или неверная metadata блокируют **все** push. После publish повторная
   проверка visibility блокирует release.json при drift, но не отменяет уже сделанные push.
-- [ ] Отдельно доказать Actions metadata access, не включая publish/deploy flags:
-  `.github/workflows/package-metadata-preflight.yml` — manual metadata-only workflow,
-  `packages: read`, без checkout/build/login/upload. Он доступен для dispatch только после
-  попадания workflow в default branch (отдельные review/merge approval), исполняется только
-  на master. Сейчас workflow **не запускался**, runtime contract **unresolved**; offline
-  tests не доказывают доступ GITHUB_TOKEN. Отсутствующие packages сначала требуют bootstrap.
-  Official OpenAPI `packages/get-package-for-user` для exact
-  `GET /users/{username}/packages/{package_type}/{package_name}` описывает public package и
-  `enabledForGitHubApps: false`; authenticated owner PAT может читать private metadata,
-  но это не доказательство для Actions integration token. `/user/packages` owner PAT route
-  не подменяет Actions token (его `/user` может обозначать bot). Никакого fallback на
-  public listing, нового PAT secret или расширения permissions: отказ остаётся закрытым.
-  Источник: https://github.com/github/rest-api-description/blob/main/descriptions/api.github.com/api.github.com.json
-  (`packages/get-package-for-user`, сверено 2026-11-12). Даже успешный read-only preflight
-  не доказывает право upload. Оба флага оставить off до отдельного решения.
+- [ ] Разделённый auth contract: metadata использует **repository Actions secret**
+  `CICD_GHCR_METADATA_OWNER_READ_TOKEN` → step env `GHCR_METADATA_OWNER_TOKEN`.
+  Это отдельный classic PAT владельца **AcryCxde**, только `read:packages`, без
+  `repo`, `write:packages`, `delete:packages`; не текущий широкий личный token.
+  Через GitHub UI оператор создаёт ограниченный credential с expiration и добавляет
+  secret, не передавая значение в чат, argv, manifests или logs. Secret доступен
+  только trusted publish step и metadata-only preflight step; PR jobs его не получают.
+  Owner login проверяется в каждой exact metadata; чужой owner → отказ.
+  OCI login/push/pull сохраняют `github.token` (`GHCR_TOKEN`, publish `packages: write`);
+  metadata credential исключён из Docker subprocess env и login, не используется для OCI.
+- [ ] Metadata route: `GET /user/packages/container/<exact-name>`, не public user route,
+  без fallback/listing/retries. До первого upload все три exact packages обязаны быть
+  private; absent secret/403/404/network/malformed/owner mismatch → closed failure.
+  Повторная проверка после push сохраняется; drift блокирует manifest, не откатывает uploads.
+  Диагностика: только exact package, нормализованный class и HTTP status (`none`, если нет).
+  Источник owner route/read scope: [GitHub REST Packages](https://docs.github.com/en/rest/packages/packages#get-a-package-for-the-authenticated-user),
+  предоставленный snapshot `REST API endpoints for packages - GitHub Docs.mhtml`, API
+  **2026-03-10**. Код намеренно сохраняет **2022-11-28**; совместимость owner route с этой
+  версией — допущение до отдельно разрешённой API/CI проверки, offline tests её не доказывают.
+- [ ] `.github/workflows/package-metadata-preflight.yml`: manual metadata-only,
+  `permissions: {}`, master only, без checkout/artifacts/build/login/upload;
+  secret bearing job не исполняет код release artifacts. Dispatch возможен после
+  separately approved review/merge в default branch. **API проверки и GitHub CI/dispatch
+  требуют отдельного approval**, здесь не выполнялись. Оба activation flags остаются off.
+### Private GHCR bootstrap — только процедура, НЕ выполнять сейчас
+
+1. Получить отдельное разрешение на создание **ровно трёх** packages и package settings.
+   `CICD_PUBLISH_ENABLED` и `CICD_DEPLOY_ENABLED` оставить отсутствующими/не `true`.
+2. **STOP перед первым push:** в предоставленном REST MHTML не найдено доказательства
+   default-private creation contract GHCR. До подтверждения официальным источником
+   GitHub, что **первый push нового container package создаёт private package**, push
+   запрещён: последующий перевод public → private уже не обеспечивает no-public-upload.
+   Кандидат для независимой проверки:
+   [Working with the Container registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#pushing-container-images).
+   Это ссылка для проверки, не подтверждённый здесь source default-private утверждения.
+   Если контракт не подтверждён — остановиться и запросить помощь, guard не обходить.
+3. Только после source + approval оператор использует **отдельный** краткоживущий
+   bootstrap credential с минимальным `write:packages` (и требуемым registry `read:packages`),
+   не metadata secret, не существующий широкий личный token. Значение вводится по
+   protected stdin в Docker login; не в чат, shell history, argv или git. Отдельный
+   временный `DOCKER_CONFIG`, logout и удаление config после работ; не выдавать bootstrap
+   credential CI или серверу. Создание credential/settings отдельно согласовать через UI.
+4. В новом пустом временном каталоге подготовить inert marker Dockerfile — **только**:
+
+   ```dockerfile
+   FROM scratch
+   LABEL org.opencontainers.image.description="Private package bootstrap marker; not a release"
+   ```
+
+   Без COPY/ADD/RUN/CMD/ENTRYPOINT/application bytes. После всех STOP gates собрать marker
+   и push **только tag `bootstrap-private-v1`**, не release `<40hex>`/latest, по трём targets:
+   - `ghcr.io/acrycxde/pp-sber-autumn-2026-backend:bootstrap-private-v1`
+   - `ghcr.io/acrycxde/pp-sber-autumn-2026-frontend:bootstrap-private-v1`
+   - `ghcr.io/acrycxde/pp-sber-autumn-2026-runner:bootstrap-private-v1`
+
+   Bootstrap marker не запускать, не deploy-ить и не включать в release manifest.
+5. После каждого push оператор в package UI подтверждает owner, exact name и **Private**;
+   неожиданная visibility → STOP, не продолжать остальные push. В Package settings →
+   Manage Actions access добавить `AcryCxde/PP-Sber-Autumn-2026` с **Write** для штатного
+   `github.token` publish (включает pull). Одной repository linkage недостаточно;
+   проверить effective Actions access. Официальная процедура UI:
+   [Configuring access control and visibility](https://docs.github.com/en/packages/learn-github-packages/configuring-a-packages-access-control-and-visibility#ensuring-workflow-access-to-your-package).
+6. Через repo Settings → Secrets and variables → Actions установить вышеописанный
+   **read-only owner** secret. После отдельного API/CI approval запустить master-only
+   metadata preflight; все три private exact packages должны пройти до разрешения
+   app publish. Это ещё не доказательство OCI upload. Flags не включать автоматически;
+   publish activation и первый deploy требуют отдельных решений. Никаких server changes.
+
 - [ ] Проверить private visibility/access для каждого package, в том числе ранее существовавшего.
   Пользователь предоставляет credential **только read:packages** с package access для pull;
   publish token не устанавливать на VM. Namespace Secret не хранить в git/logs.

@@ -479,7 +479,7 @@ def test_package_http_malformed_is_redacted(payload):
         def open(self, request, timeout):
             assert (
                 request.full_url
-                == "https://api.github.com/users/AcryCxde/packages/container/pp-sber-autumn-2026-backend"
+                == "https://api.github.com/user/packages/container/pp-sber-autumn-2026-backend"
             )
             assert timeout == 20
             return Response()
@@ -522,9 +522,67 @@ def test_package_http_failure_is_redacted_before_push(
 
     api.opener = Opener()
     docker = Docker()
-    with pytest.raises(ValueError, match="^package metadata request failed$") as caught:
+    with pytest.raises(
+        ValueError,
+        match=r"^package=pp-sber-autumn-2026-backend class=(http|network) http=(301|302|403|404|429|500|none)$",
+    ) as caught:
         publish(trusted_context(env), images, tmp_path / "release.json", docker, api)
     assert caught.value.__suppress_context__
     assert "secret-token" not in str(caught.value)
     assert not any(call[0] == "push" for call in docker.calls)
     assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("owner_token", [None, "", "bad\nsecret"])
+def test_missing_metadata_owner_token_never_uses_oci_token(
+    env, images, tmp_path, monkeypatch, owner_token
+):
+    monkeypatch.setenv("GHCR_TOKEN", "oci-token-not-metadata")
+    if owner_token is None:
+        monkeypatch.delenv("GHCR_METADATA_OWNER_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("GHCR_METADATA_OWNER_TOKEN", owner_token)
+    docker = Docker()
+    output = tmp_path / "release.json"
+    with pytest.raises(ValueError, match="class=credential http=none"):
+        publish(trusted_context(env), images, output, docker)
+    assert not output.exists()
+    assert not any(call[0] == "push" for call in docker.calls)
+
+
+def test_metadata_owner_auth_is_separate(monkeypatch):
+    monkeypatch.setenv("GHCR_TOKEN", "oci-only")
+    monkeypatch.setenv("GHCR_METADATA_OWNER_TOKEN", "owner-only")
+    api = PackageAPI()
+
+    class Opener:
+        def open(self, request, timeout):
+            assert request.full_url == (
+                "https://api.github.com/user/packages/container/"
+                "pp-sber-autumn-2026-backend"
+            )
+            assert request.get_header("Authorization") == "Bearer owner-only"
+            assert request.get_header("X-github-api-version") == "2022-11-28"
+            raise urllib.error.URLError("owner-only oci-only arbitrary body")
+
+    api.opener = Opener()
+    with pytest.raises(ValueError) as caught:
+        api.get("pp-sber-autumn-2026-backend")
+    assert str(caught.value) == (
+        "package=pp-sber-autumn-2026-backend class=network http=none"
+    )
+
+
+def test_docker_subprocess_does_not_inherit_metadata_credential(monkeypatch):
+    from tools.cicd.release import docker
+
+    monkeypatch.setenv("GHCR_METADATA_OWNER_TOKEN", "owner-only")
+    monkeypatch.setenv("GHCR_TOKEN", "oci-only")
+
+    def run(args, **kwargs):
+        assert "GHCR_METADATA_OWNER_TOKEN" not in kwargs["env"]
+        assert kwargs["env"]["GHCR_TOKEN"] == "oci-only"
+        return subprocess.CompletedProcess(args, 0, stdout="ok")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert docker(["push", "fixed-target"]) == "ok"
