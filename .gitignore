@@ -10,6 +10,10 @@ __pycache__/
 !.env.gateway.example
 .vscode/
 plans/
+!/docs/plans/
+/docs/plans/*
+!/docs/plans/2026-11-12-admin-redesign-design.md
+!/docs/plans/2026-11-12-admin-redesign-implementation.md
 backend/data/
 
 # Logs

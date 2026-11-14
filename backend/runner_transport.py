@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from backend import harness_diagnostics as diagnostics
+
 
 TERMINAL = {"completed", "failed", "outcome_unknown"}
 ID = re.compile(r"[0-9A-Za-z_-]{1,64}\Z")
@@ -202,6 +204,9 @@ class RunnerTransport:
                 run TEXT NOT NULL, id TEXT NOT NULL, created TEXT NOT NULL, saved TEXT,
                 PRIMARY KEY(run,id));
             """)
+            diagnostics.initialize(db)
+            db.execute("CREATE INDEX IF NOT EXISTS diagnostic_source_order "
+                       "ON diagnostic_sources(command_id,source_public_seq DESC)")
 
     @contextmanager
     def _db(self) -> Iterator[sqlite3.Connection]:
@@ -249,7 +254,8 @@ class RunnerTransport:
 
     def message(self, project: str, run_id: str, client_request_id: str, text: str,
                 *, roles: list[str] | None = None, stage: str | None = None,
-                input_files: list[str] | None = None) -> dict[str, Any]:
+                input_files: list[str] | None = None,
+                backend_run_id: str | None = None) -> dict[str, Any]:
         _id(run_id)
         if (not isinstance(project, str) or not project or not isinstance(text, str) or not text
                 or not isinstance(client_request_id, str) or not client_request_id):
@@ -285,10 +291,12 @@ class RunnerTransport:
                 raise TransportError("active_run_or_id_conflict") from None
             self._append(db, _event(project, run_id, "run.accepted",
                                    {"client_request_id": client_request_id}), "gateway")
+            diagnostics.segment(db, project, run_id, run_id, backend_run_id, pending=False)
         return command
 
     def answer(self, project: str, run_id: str, command_id: str,
-               question_id: str, answers: dict[str, str]) -> dict[str, Any]:
+               question_id: str, answers: dict[str, str], *,
+               backend_run_id: str | None = None) -> dict[str, Any]:
         _id(command_id)
         command = {"v": 1, "type": "command", "id": command_id,
                    "kind": "fork_answer", "fork_id": question_id, "answers": answers}
@@ -309,6 +317,7 @@ class RunnerTransport:
                 raise TransportError("answers_mismatch")
             db.execute("INSERT INTO commands VALUES(?,?,?,?,NULL)",
                        (command_id, project, run_id, json.dumps(command)))
+            diagnostics.segment(db, project, run_id, command_id, backend_run_id, pending=True)
         return command
 
     def commands(self, project: str) -> list[dict[str, Any]]:
@@ -377,8 +386,41 @@ class RunnerTransport:
                 if kind.startswith("run.") and kind[4:] in TERMINAL:
                     status = kind[4:]
                 db.execute("UPDATE runs SET status=? WHERE id=?", (status, run["id"]))
+            diagnostics.observe(db, project, journal_seq, event)
             db.execute("UPDATE projects SET cursor=MAX(cursor,?) WHERE id=?", (journal_seq, project))
         return True
+
+    def diagnostic(self, project: str, frame: object) -> dict | None:
+        try:
+            body, canonical = diagnostics.parse(frame, project)
+            with self._db() as db:
+                db.execute("BEGIN IMMEDIATE")
+                return diagnostics.accept(db, body, canonical, _now())
+        except diagnostics.DiagnosticError as error:
+            raise TransportError(str(error)) from error
+
+    def diagnostic_snapshots(self, backend_run: str) -> list[dict]:
+        """Return the latest accepted observation of this immutable Run segment."""
+        with self._db() as db:
+            segment = db.execute("SELECT command_id,project,transport_run FROM diagnostic_segments "
+                                 "WHERE backend_run=?", (backend_run,)).fetchone()
+            if segment is None:
+                return []
+            # Scan the indexed segment backwards; an unreceived source is not a snapshot.
+            row = db.execute(
+                "SELECT r.canonical_body,s.source_public_seq,s.source_journal_seq "
+                "FROM diagnostic_sources s INDEXED BY diagnostic_source_order "
+                "JOIN diagnostic_receipts r ON r.source_event_id=s.source_event_id "
+                "WHERE s.command_id=? ORDER BY s.source_public_seq DESC LIMIT 1",
+                (segment["command_id"],),
+            ).fetchone()
+            if row is None:
+                return []
+            return [{"frame": json.loads(row["canonical_body"]),
+                     "lineage": {"project": segment["project"], "transport_run": segment["transport_run"],
+                                 "command_id": segment["command_id"]},
+                     "source_order": {"public_seq": row["source_public_seq"],
+                                      "journal_seq": row["source_journal_seq"]}}]
 
     def _finish_if_saved(self, db: sqlite3.Connection, project: str, run: str) -> None:
         row = self._run(db, project, run)

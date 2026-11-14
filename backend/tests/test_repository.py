@@ -183,7 +183,12 @@ async def test_explicit_context_reset_keeps_chat_and_starts_fresh_session(tmp_pa
 
         assert reset.context_mode == "reset"
         assert reset.resume_session_id == "old-session"
-        assert reset.reset_event is not None
+        assert reset.reset_event is None
+
+        async with database.session() as session:
+            conversation = await session.get(Conversation, first.conversation_id)
+            assert conversation.claude_session_id == "old-session"
+            await mark_run_running(session, reset.run_id)
 
         async with database.session() as session:
             conversation = await session.get(Conversation, first.conversation_id)
@@ -201,8 +206,8 @@ async def test_explicit_context_reset_keeps_chat_and_starts_fresh_session(tmp_pa
         assert [(item.sequence, item.role, item.kind) for item in messages] == [
             (1, "user", "text"),
             (2, "assistant", "text"),
-            (3, "system", "context_reset"),
-            (4, "user", "text"),
+            (3, "user", "text"),
+            (4, "system", "context_reset"),
         ]
     finally:
         await database.dispose()

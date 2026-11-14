@@ -60,6 +60,7 @@ async def test_hello_then_events_after_welcome(tmp_path: Path) -> None:
             assert hello == {
                 "v": 1, "type": "hello", "project_id": "demo-a", "runner_version": "0.1.0",
                 "session_id": "s-1", "last_seq": 3,
+                "capabilities": {"harness_diagnostic_rejection_v1": True},
             }  # fmt: skip
             await gw.wait_for(lambda m: m.get("event", {}).get("type") == "facilitator.question")
         assert [e["event"]["type"] for e in gw.events()] == ["run.started", "facilitator.question"]

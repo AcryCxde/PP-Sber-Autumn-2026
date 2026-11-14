@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import sqlite3
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
@@ -16,6 +17,7 @@ from typing import Final, assert_never, final
 from websockets.asyncio.client import ClientConnection, connect
 
 from ctrunner.diag import diag
+from ctrunner.harness_diagnostic import SCHEMA, DiagnosticFeed, DiagnosticReceipts
 from ctrunner.inbox import has_command, put
 from ctrunner.protocol import (
     Command,
@@ -30,6 +32,56 @@ from ctrunner.v0 import Draft, Translator, parse_row
 
 WIRE_VERSION: Final = 1
 STABLE_CONNECTION_S: Final = 30.0
+
+
+class DiagnosticAcks(dict[str, str]):
+    """Connection-local ACK mailbox limited to actually outstanding private frames."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.awaiting: set[str] = set()
+
+
+async def _record_diagnostic_acks(
+    accepted: DiagnosticAcks,
+    receipts: DiagnosticReceipts,
+    pending: dict[str, dict[str, JsonValue]],
+    attempts: dict[str, tuple[int, float]],
+    leases: dict[str, float],
+) -> None:
+    outcomes = {key: accepted.pop(key) for key in tuple(pending) if key in accepted}
+    if not outcomes:
+        return
+    accepted.awaiting.difference_update(outcomes)
+    # One durable transaction for this bounded mailbox snapshot. Do not clear
+    # pending until it succeeds: reconnect must replay after storage failure.
+    await asyncio.to_thread(receipts.record_many, outcomes)
+    for key in outcomes:
+        pending.pop(key)
+        attempts.pop(key, None)
+        leases.pop(key, None)
+
+
+def _rotate_diagnostics(
+    accepted: DiagnosticAcks,
+    pending: dict[str, dict[str, JsonValue]],
+    attempts: dict[str, tuple[int, float]],
+    leases: dict[str, float],
+    now: float,
+) -> bool:
+    expired = False
+    for key in tuple(pending):
+        if now >= leases[key]:
+            expired = True
+            # No receipt is written: a later journal pass retries this ID.
+            pending.pop(key)
+            attempts.pop(key, None)
+            leases.pop(key)
+            accepted.awaiting.discard(key)
+            accepted.pop(key, None)
+    return expired
+
+
 FRAME_ENVELOPE: Final = ("v", "type")
 
 
@@ -215,9 +267,14 @@ class GatewayClient:
         self._backoff = backoff
         self._failures = 0
         self._draining = asyncio.Event()
+        self._drain_deadline: float | None = None
+        self._public_flushed = asyncio.Event()
 
     def drain(self) -> None:
         """Выход runner: дослать хвост журнала и закончить `run` без реконнекта."""
+        if self._drain_deadline is None:
+            # Reserve time for socket teardown within RunningGateway.stop's five seconds.
+            self._drain_deadline = time.monotonic() + 4.0
         self._draining.set()
 
     async def run(self) -> None:
@@ -243,19 +300,46 @@ class GatewayClient:
                 project_id=self._project_id, runner_version=self._runner_version,
                 session_id=self._session_id, last_seq=self._last_seq(),
             )  # fmt: skip
+            hello["capabilities"] = {"harness_diagnostic_rejection_v1": True}
             await ws.send(json.dumps(hello, ensure_ascii=False))
             async with asyncio.timeout(10):
-                acked = parse_welcome(json.loads(await ws.recv()))
+                welcome = json.loads(await ws.recv())
+                acked = parse_welcome(welcome)
             diag("gateway_connected", acked_seq=acked)
             translator = Translator(self._project_id, self._project_root)
             feed = JournalFeed(self._journal, translator, acked)
+            capabilities = welcome.get("capabilities")
+            supports_rejection = (isinstance(capabilities, dict)
+                                  and capabilities.get("harness_diagnostic_rejection_v1") is True)
+            accepted_diagnostics = DiagnosticAcks()
+            self._public_flushed.clear()
+            public_task = asyncio.create_task(self._send_events(ws, feed))
+            diagnostic_task: asyncio.Task[None] | None = None
+            drain_task = asyncio.create_task(self._draining.wait())
             tasks = [
-                asyncio.create_task(self._send_events(ws, feed)),
+                public_task,
+                drain_task,
                 asyncio.create_task(self._send_heartbeats(ws)),
-                asyncio.create_task(self._receive(ws)),
+                asyncio.create_task(self._receive(ws, accepted_diagnostics,
+                                                   supports_rejection=supports_rejection)),
             ]
+            capabilities = welcome.get("capabilities")
+            if isinstance(capabilities, dict) and capabilities.get("harness_diagnostic_v1") is True:
+                diagnostic_task = asyncio.create_task(
+                    self._send_diagnostics(ws, accepted_diagnostics)
+                )
+                tasks.append(diagnostic_task)
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                if self._draining.is_set() and self._drain_deadline is not None:
+                    flush = [public_task]
+                    if diagnostic_task is not None:
+                        flush.append(diagnostic_task)
+                    remaining = max(0.0, self._drain_deadline - time.monotonic())
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(
+                            asyncio.gather(*(asyncio.shield(task) for task in flush)), remaining
+                        )
             finally:
                 for task in tasks:
                     task.cancel()
@@ -270,7 +354,84 @@ class GatewayClient:
                 for draft in drafts:
                     await ws.send(json.dumps(event_message(seq, draft), ensure_ascii=False))
             if last:
+                self._public_flushed.set()
                 return
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self._draining.wait(), self._poll_s)
+
+    async def _send_diagnostics(self, ws: ClientConnection, accepted: DiagnosticAcks) -> None:
+        try:
+            receipts = await asyncio.to_thread(DiagnosticReceipts, self._journal)
+            await self._diagnostic_loop(ws, accepted, receipts)
+        except (OSError, sqlite3.Error) as error:
+            # Optional private storage failure must not disconnect legacy delivery.
+            diag("gateway_diagnostics_unavailable", error=type(error).__name__)
+            await self._public_flushed.wait()
+
+    async def _diagnostic_loop(
+        self, ws: ClientConnection, accepted: DiagnosticAcks, receipts: DiagnosticReceipts
+    ) -> None:
+        feed = DiagnosticFeed(self._journal, self._project_id, self._project_root)
+        pending: dict[str, dict[str, JsonValue]] = {}
+        attempts: dict[str, tuple[int, float]] = {}
+        leases: dict[str, float] = {}
+        # Bound one hot-window residency, not a diagnostic's lifetime. The retained
+        # journal is revisited after EOF, so old peers cannot permanently block its tail.
+        lease_s = min(30.0, max(1.0, self._poll_s * 4))
+        drain_started = False
+        revisit = False
+        while True:
+            draining = self._draining.is_set()
+            if draining and not drain_started:
+                attempts.clear()  # Shutdown must not inherit the normal thirty-second backoff.
+                # Give old frames one last ACK opportunity, then scan the unread tail.
+                # Eviction is not a receipt: retained rows remain retryable on reconnect.
+                last_chance = time.monotonic() + 0.05
+                leases = {key: min(expiry, last_chance) for key, expiry in leases.items()}
+                drain_started = True
+            if (draining and self._drain_deadline is not None
+                    and time.monotonic() >= self._drain_deadline):
+                return
+            await _record_diagnostic_acks(accepted, receipts, pending, attempts, leases)
+            now = time.monotonic()
+            if not draining or not await asyncio.to_thread(feed.caught_up):
+                revisit = _rotate_diagnostics(accepted, pending, attempts, leases, now) or revisit
+            if (not draining and revisit and not pending
+                    and await asyncio.to_thread(feed.caught_up)):
+                feed.rewind()
+                revisit = False
+            frames = await asyncio.to_thread(feed.poll, 256 - len(pending))
+            known = await asyncio.to_thread(
+                receipts.known_ids, tuple(str(frame["diagnostic_id"]) for frame in frames)
+            ) if frames else set()
+            for frame in frames:
+                key = str(frame["diagnostic_id"])
+                if key not in known:
+                    pending[key] = frame
+                    leases[key] = now + (0.05 if draining else lease_s)
+            if (draining and self._public_flushed.is_set() and not pending
+                    and await asyncio.to_thread(feed.caught_up)):
+                return
+            now = time.monotonic()
+            for key, frame in pending.items():
+                count, due = attempts.get(key, (0, 0.0))
+                if now >= due:
+                    accepted.awaiting.add(key)
+                    await ws.send(json.dumps(frame, ensure_ascii=False))
+                    delay = min(30.0, self._poll_s * 2 ** min(count, 10))
+                    attempts[key] = (count + 1, now + (min(delay, 0.05) if draining else delay))
+            await self._wait_for_diagnostic_page(
+                draining=draining, scan_pending=feed.scan_pending and len(pending) < 256
+            )
+
+    async def _wait_for_diagnostic_page(self, *, draining: bool, scan_pending: bool) -> None:
+        if scan_pending:
+            # A full scan page is not EOF. Yield between bounded I/O/CPU pages,
+            # but do not impose the append-poll interval on retained history.
+            await asyncio.sleep(0)
+        elif draining:
+            await asyncio.sleep(min(self._poll_s, 0.05))
+        else:
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._draining.wait(), self._poll_s)
 
@@ -287,14 +448,25 @@ class GatewayClient:
         except (OSError, ValueError):
             return None  # файла ещё нет или он пишется: следующий heartbeat через период
 
-    async def _receive(self, ws: ClientConnection) -> None:
+    async def _receive(self, ws: ClientConnection, accepted_diagnostics: DiagnosticAcks,
+                       *, supports_rejection: bool = False) -> None:
         async for raw in ws:
             try:
                 frame = json.loads(raw)
             except ValueError:
                 diag("gateway_bad_frame")
                 continue
-            if not isinstance(frame, dict) or frame.get("type") != "command":
+            if not isinstance(frame, dict):
+                continue
+            if (frame.get("type") == "harness.diagnostic_ack" and frame.get("v") == 1
+                    and frame.get("schema") == SCHEMA
+                    and (frame.get("status") == "accepted" or
+                         (supports_rejection and frame.get("status") == "rejected"))
+                    and isinstance(frame.get("diagnostic_id"), str)):
+                if frame["diagnostic_id"] in accepted_diagnostics.awaiting:
+                    accepted_diagnostics[frame["diagnostic_id"]] = frame["status"]
+                continue
+            if frame.get("type") != "command":
                 continue
             # Маленький файл в inbox: вызов короткий, а проверка реестра развилок выполняется
             # в потоке цикла событий, где живёт Session.

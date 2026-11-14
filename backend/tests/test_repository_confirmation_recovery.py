@@ -119,6 +119,7 @@ async def test_delayed_success_does_not_restore_superseded_context(database, new
             session, conversation_id=created.conversation_id, client_request_id=str(uuid4()),
             content="new owner", requested_context_mode="reset",
         )
+        await mark_run_running(session, newer.run_id)
         if newer_completed:
             await finalize_run(
                 session, newer.run_id, assistant_content="new result", status="completed",

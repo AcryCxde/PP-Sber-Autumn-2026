@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { presentChatEvents } from './chatPresentation';
 import {
   artifactFromEvent,
   canonicalMessage,
@@ -903,7 +904,7 @@ function App({ user, onLogout }: AppProps) {
             )}
             {resetContextOnNextRun && <div className="context-reset-pending">Следующий запрос начнёт новую Claude-сессию в этом чате.</div>}
 
-            {events.map((event, index) => {
+            {presentChatEvents(events).map((event, index) => {
               const key = typeof event.event_id === 'string' ? event.event_id : `${event.run_id ?? event.client_request_id ?? 'local'}-${event.seq ?? index}-${event.type}`;
 
               if (event.type === 'context.reset') {

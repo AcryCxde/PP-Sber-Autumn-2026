@@ -6,7 +6,7 @@ import weakref
 from collections.abc import AsyncIterator
 from pathlib import Path
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from backend import models  # noqa: F401
-from backend.api.admin import router as admin_router
+from backend.api.admin import router as admin_router, v1_router as admin_v1_router
 from backend.api.auth import router as auth_router
 from backend.api.conversation_files import router as conversation_files_router
 from backend.api.history import router as history_router
@@ -22,13 +22,14 @@ from backend.api.product import router as product_router
 from backend.api.projects import router as projects_router
 from backend.artifact_confirmations import reconcile_artifact_confirmations
 from backend.auth import CurrentUser, owns_conversation, owns_run, websocket_user_id
+from backend.ai_access import AiAccessError, AdmissionResult, AdmissionState, admit_run, policy_transaction
 from backend.config import PROJECT_ROOT, Settings
 from backend.container_registry import ContainerRegistry
 from backend.containers import ContainerError, ContainerManager
 from backend.db import Database
 from backend.artifact_files import save_agent_file
 from backend.materials import MATERIALS_DIR, conversation_materials, materials_note, write_workspace_materials
-from backend.models import Event, Message, Run
+from backend.models import Event, Message, Run, User
 from backend.parser import (
     NormalizedEvent,
     normalized_event,
@@ -38,14 +39,15 @@ from backend.projects import ProjectRunError, link_run, owned_project, prepare_r
 from backend.public_events import message_created_event, project_public_event_data
 from backend.repository import (
     TERMINAL_RUN_STATUSES,
+    ExecutionPhase,
     RunAcceptance,
     RunAcceptanceError,
     accept_run,
     append_event,
     client_request_exists,
     finalize_run,
+    fail_unadmitted_run,
     list_run_events,
-    mark_run_running,
     reconcile_orphaned_runs,
 )
 from backend.runner_app import RunnerBridge, create_runner_router
@@ -333,7 +335,9 @@ async def handle_run_create(
                 acceptance.conversation_id,
                 **wire_fields,
             )
-        except (WebSocketDisconnect, RuntimeError):
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            # Publication is optional once acceptance is durable. A failed socket
+            # must not prevent execution; reconnect replays the stored events.
             socket_available = False
 
     deliveries = getattr(app_state, "live_run_deliveries", None)
@@ -342,19 +346,38 @@ async def handle_run_create(
         app_state.live_run_deliveries = deliveries
     if not acceptance.idempotent_replay:
         deliveries[acceptance.run_id] = deliver_event
-    if acceptance.reset_event is not None:
-        await deliver_event(acceptance.reset_event)
-    await deliver_event(
-        acceptance.accepted_event,
-        idempotent_replay=acceptance.idempotent_replay,
-    )
-    del websocket
-
-    if acceptance.idempotent_replay:
-        return
-
+    execution_handed_off = False
     try:
+        await deliver_event(
+            acceptance.accepted_event,
+            idempotent_replay=acceptance.idempotent_replay,
+        )
+        if acceptance.reset_event is not None:
+            await deliver_event(acceptance.reset_event)
+        del websocket
+
+        if acceptance.idempotent_replay:
+            return
+
+        execution_handed_off = True
         await execute_accepted_run(app_state, acceptance, content, deliver_event)
+    except (Exception, asyncio.CancelledError):
+        if not execution_handed_off and not acceptance.idempotent_replay:
+            async def fail_unpublished_acceptance() -> None:
+                async with asyncio.timeout(10):
+                    async with app_state.database.session() as session:
+                        await fail_unadmitted_run(session, acceptance.run_id)
+
+            # Keep cleanup owned through repeated shutdown cancellation. The guard
+            # never terminates a Run already claimed by a different executor.
+            finalizing = asyncio.create_task(fail_unpublished_acceptance())
+            while not finalizing.done():
+                try:
+                    await asyncio.shield(finalizing)
+                except asyncio.CancelledError:
+                    pass
+            finalizing.result()
+        raise
     finally:
         if deliveries.get(acceptance.run_id) is deliver_event:
             deliveries.pop(acceptance.run_id, None)
@@ -373,9 +396,98 @@ async def execute_accepted_run(
     content: str,
     deliver_event: Any,
 ) -> None:
-    """Выполняет принятый запуск; deliver_event доставляет сохранённые события подписчику."""
+    """Commit the unique admission before any executor or workspace side effect."""
+    committed_admission: AdmissionResult | None = None
+
+    async def owned_admission() -> AdmissionResult:
+        nonlocal committed_admission
+        # Resolve commit ownership before propagating shutdown cancellation. Otherwise
+        # commit may have succeeded while its caller never received AdmissionResult.
+        async with asyncio.timeout(30):
+            async with app_state.database.session() as session:
+                committed_admission = await policy_transaction(session, lambda: admit_run(session, acceptance.run_id))
+                return committed_admission
+
+    OwnedResult = TypeVar("OwnedResult")
+
+    async def await_owned(task: asyncio.Task[OwnedResult]) -> tuple[OwnedResult, bool]:
+        interrupted = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                interrupted = True
+        return task.result(), interrupted
+
+    async def store_publication_failure(*, cancelled: bool) -> None:
+        # Admission is committed, but no executor has started. Persist an outcome
+        # independently of the failing subscriber; replay can deliver it later.
+        async def bounded_finalize() -> None:
+            async with asyncio.timeout(10):
+                async with app_state.database.session() as session:
+                    await finalize_run(
+                        session, acceptance.run_id, assistant_content=None, exit_code=None,
+                        status="outcome_unknown" if cancelled else "failed",
+                        error_code="heartbeat_lost" if cancelled else "claude_request_failed",
+                        execution_phase=ExecutionPhase.BEFORE_EXECUTOR,
+                    )
+
+        # Keep ownership until the bounded attempt finishes. shield alone would
+        # detach cleanup if shutdown cancels this task a second time.
+        finalizing = asyncio.create_task(bounded_finalize())
+        cancelled_again = False
+        while not finalizing.done():
+            try:
+                await asyncio.shield(finalizing)
+            except asyncio.CancelledError:
+                cancelled_again = True
+        finalizing.result()
+        if cancelled_again:
+            raise asyncio.CancelledError()
+
+    async def fail_pending() -> Any:
+        async with asyncio.timeout(10):
+            async with app_state.database.session() as session:
+                return await fail_unadmitted_run(session, acceptance.run_id)
+
+    admitting = asyncio.create_task(owned_admission())
+    try:
+        admission, interrupted = await await_owned(admitting)
+    except (AiAccessError, TimeoutError):
+        # Session cleanup may time out after commit but before returning the result.
+        # The captured result proves ownership; never infer it from running status.
+        if committed_admission is not None and committed_admission.state == AdmissionState.ADMITTED:
+            await store_publication_failure(cancelled=True)
+            raise
+        # Only unclaimed work belongs to this failed attempt, never another worker.
+        final, interrupted = await await_owned(asyncio.create_task(fail_pending()))
+        if interrupted or asyncio.current_task().cancelling():
+            raise asyncio.CancelledError()
+        if final is not None:
+            await deliver_event(final.terminal_event)
+        return
+    if interrupted:
+        if admission.state == AdmissionState.ADMITTED:
+            await store_publication_failure(cancelled=True)
+        raise asyncio.CancelledError()
+
+    try:
+        for context_event in admission.context_events:
+            await deliver_event(context_event)
+        if admission.event is not None:
+            await deliver_event(admission.event)
+    except asyncio.CancelledError:
+        if admission.state == AdmissionState.ADMITTED:
+            await store_publication_failure(cancelled=True)
+        raise
+    except Exception:
+        if admission.state == AdmissionState.ADMITTED:
+            await store_publication_failure(cancelled=False)
+        raise
+    if admission.state != AdmissionState.ADMITTED:
+        return
     if app_state.settings.executor == "runner":
-        await run_via_runner(app_state, acceptance, content, deliver_event)
+        await run_via_runner(app_state, acceptance, content, deliver_event, admission=admission)
         return
 
     process: subprocess.Popen[str] | None = None
@@ -512,11 +624,6 @@ async def execute_accepted_run(
             logger.warning("Artifact baseline discovery truncated", extra={
                 "run_id": acceptance.run_id, "entries_scanned": files_before.entries_scanned,
             })
-
-        async with app_state.database.session() as session:
-            started_event = await mark_run_running(session, acceptance.run_id)
-        if started_event is not None:
-            await deliver_event(started_event)
 
         process = await start_claude(
             content + materials_note(materials),
@@ -1030,6 +1137,11 @@ async def dispatch_project_run(
                     client_request_id=client_request_id,
                 )
                 return
+            if await session.scalar(select(User.ai_frozen).where(User.id == owner_id)):
+                await send_command_error(websocket, code="ai_access_frozen",
+                    message="AI-доступ временно приостановлен.", client_request_id=client_request_id,
+                    conversation_id=project.conversation_id)
+                return
             try:
                 prepared = await prepare_run(session, project, kind=kind, text=text)
             except ProjectRunError as error:
@@ -1176,6 +1288,7 @@ def create_app(
     application.state.live_run_deliveries = {}
     application.include_router(auth_router)
     application.include_router(admin_router)
+    application.include_router(admin_v1_router)
     application.include_router(history_router)
     application.include_router(conversation_files_router)
     application.include_router(projects_router)
@@ -1193,6 +1306,7 @@ def create_app(
         bridge = RunnerBridge(
             transport,
             heartbeat_timeout=selected_settings.runner_heartbeat_timeout_seconds,
+            harness_diagnostics_enabled=selected_settings.runner_harness_diagnostics_enabled,
         )
         application.state.runner_transport = transport
         application.state.runner_manager = ContainerManager(

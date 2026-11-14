@@ -846,7 +846,7 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
             Свободный чат
           </a>
           {user.role === "admin" ? (
-            <a className="text-btn" href="#admin">
+            <a className="text-btn" href="/#admin/overview">
               Админка
             </a>
           ) : null}

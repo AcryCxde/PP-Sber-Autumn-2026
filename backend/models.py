@@ -50,6 +50,12 @@ class SafeText(TypeDecorator[str]):
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint("ai_policy_version >= 0", name="ck_users_ai_policy_version"),
+    )
+
+    ai_frozen: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    ai_policy_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     # Хранится нормализованным (strip + lower): уникальность не зависит от регистра.
@@ -68,6 +74,36 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+
+
+class AiPolicyAudit(Base):
+    __tablename__ = "ai_policy_audits"
+    __table_args__ = (
+        UniqueConstraint("actor_id", "idempotency_key", name="uq_ai_policy_audits_actor_key"),
+        CheckConstraint("action IN ('freeze', 'unfreeze')", name="ck_ai_policy_audits_action"),
+        CheckConstraint("before_version >= 0 AND after_version = before_version + 1", name="ck_ai_policy_audits_versions"),
+        CheckConstraint("length(idempotency_key) BETWEEN 1 AND 64", name="ck_ai_policy_audits_key"),
+        # Structural guard only: Unicode strip/validation belongs to ai_access.
+        CheckConstraint(
+            "(reason IS NULL AND action = 'unfreeze') OR "
+            "(reason IS NOT NULL AND length(reason) <= 1000 AND "
+            "(action = 'unfreeze' OR length(trim(reason)) > 0))",
+            name="ck_ai_policy_audits_reason",
+        ),
+        Index("ix_ai_policy_audits_target_created_id", "target_id", "created_at", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    actor_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    target_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, server_default=text("CURRENT_TIMESTAMP"))
+    action: Mapped[str] = mapped_column(String(8))
+    reason: Mapped[str | None] = mapped_column(Text)
+    before_version: Mapped[int] = mapped_column(Integer)
+    after_version: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    response: Mapped[dict[str, Any]] = mapped_column(JSON)
 
 
 class UserActivityDay(Base):
@@ -140,6 +176,7 @@ class Conversation(Base):
 class Run(Base):
     __tablename__ = "runs"
     __table_args__ = (
+        Index("ix_runs_started_id", "started_at", "id"),
         Index(
             "uq_runs_one_active_per_conversation",
             "conversation_id",
@@ -167,6 +204,9 @@ class Run(Base):
     next_event_seq: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    admitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    admission_policy_version: Mapped[int | None] = mapped_column(Integer)
+    harness_estimate: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
     turns: Mapped[int | None] = mapped_column(Integer)
