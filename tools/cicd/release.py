@@ -199,7 +199,12 @@ class DockerRunner(Protocol):
 
 def docker(args: Sequence[str]) -> str:
     return subprocess.run(
-        ["docker", *args], check=True, text=True, stdout=subprocess.PIPE, timeout=300
+        ["docker", *args],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        timeout=300,
+        env={k: v for k, v in os.environ.items() if k != "GHCR_METADATA_OWNER_TOKEN"},
     ).stdout.strip()
 
 
@@ -216,14 +221,18 @@ class PackageAPI:
     """Fixed metadata targets only; no redirects, retries or caller-supplied URLs.
 
     The repository provenance client deliberately cannot access package URLs.
-    Actions token support is NOT established by offline tests (see runbook).
+    Owner read-only metadata credential is separate from the OCI Actions token.
     """
 
     def __init__(self, token: str | None = None) -> None:
-        self.token = token if token is not None else os.environ.get("GHCR_TOKEN", "")
+        self.token = (
+            token
+            if token is not None
+            else os.environ.get("GHCR_METADATA_OWNER_TOKEN", "")
+        )
         _require(
             bool(self.token) and all(33 <= ord(c) <= 126 for c in self.token),
-            "missing/invalid package credential",
+            "package=pp-sber-autumn-2026-backend class=credential http=none",
         )
         self.opener = urllib.request.build_opener(NoPackageRedirect())
 
@@ -233,22 +242,29 @@ class PackageAPI:
             "foreign package target",
         )
         request = urllib.request.Request(
-            f"https://api.github.com/users/AcryCxde/packages/container/{name}",
+            f"https://api.github.com/user/packages/container/{name}",
             headers={
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
                 "Authorization": f"Bearer {self.token}",
             },
         )
+        status = None
         try:
             with self.opener.open(request, timeout=20) as response:
-                _require(response.status == 200, "unexpected package HTTP status")
+                status = response.status
+                if status != 200:
+                    raise ValueError(f"package={name} class=http http={status}")
                 data = response.read(65537)
-                _require(len(data) <= 65536, "package response exceeds size bound")
+                _require(len(data) <= 65536, "response size")
                 return _json(data.decode("utf-8"))
-        except (ValueError, OSError, TimeoutError, urllib.error.URLError):
-            # Do not expose credentials, response bodies or infrastructure error text.
-            raise ValueError("package metadata request failed") from None
+        except urllib.error.HTTPError as error:
+            raise ValueError(f"package={name} class=http http={error.code}") from None
+        except (OSError, TimeoutError, urllib.error.URLError):
+            raise ValueError(f"package={name} class=network http=none") from None
+        except ValueError:
+            category = "malformed" if status == 200 else "http"
+            raise ValueError(f"package={name} class={category} http={status}") from None
 
 
 def require_private_packages(metadata: PackageMetadata) -> None:
@@ -262,7 +278,7 @@ def require_private_packages(metadata: PackageMetadata) -> None:
             and data.get("visibility") == "private"
             and isinstance(data.get("owner"), dict)
             and data["owner"].get("login") == "AcryCxde",
-            "package metadata must identify the exact private container package",
+            f"package={name} class=metadata http=200",
         )
 
 
