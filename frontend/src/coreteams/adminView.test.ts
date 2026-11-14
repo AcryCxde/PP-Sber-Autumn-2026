@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { fixedPeriod, parseExplicitPeriod, statusLabel, estimateLabel, stageLabel, userLabel } from './adminView';
+import { formatCompactTime, formatClock, fixedPeriod, parseExplicitPeriod, statusLabel, estimateLabel, stageLabel, userLabel } from './adminView';
 import { parseRoute, routeHash } from './router';
 
 describe('admin routes and honest view models', () => {
@@ -19,7 +19,18 @@ describe('admin routes and honest view models', () => {
   });
   it('never turns an unknown estimate into zero or a session total into run cost', () => {
     expect(estimateLabel({ state: 'unknown', scope: 'unknown', value_usd: null })).toBe('Нет данных');
-    expect(estimateLabel({ state: 'known', scope: 'session_total', value_usd: '0.062745' })).toContain('Вся сессия');
+    expect(estimateLabel({ state: 'known', scope: 'run_delta', value_usd: '0' })).toBe('Оценка этого запуска: 0 USD');
+    expect(estimateLabel({ state: 'known', scope: 'session_total', value_usd: '0.062745' })).toBe('Оценка всей сессии, не отдельного запуска: 0.062745 USD');
+    expect(estimateLabel({ state: 'known', scope: 'run_delta', value_usd: null })).toBe('Нет данных');
+    expect(estimateLabel({ state: 'known', scope: 'run_delta', value_usd: '123456789.12345678901234567890' })).toBe('Оценка этого запуска: 123456789.12345678901234567890 USD');
+  });
+  it('formats compact local table timestamps without losing calendar context', () => {
+    const now = new Date(2026, 10, 14, 12, 0);
+    expect(formatClock(new Date(2026, 10, 14, 11, 5).toISOString())).toBe('11:05');
+    expect(formatCompactTime(new Date(2026, 10, 14, 11, 5).toISOString(), now)).toBe('Сегодня, 11:05');
+    expect(formatCompactTime(new Date(2026, 10, 7, 11, 5).toISOString(), now)).toBe('7 ноя, 11:05');
+    expect(formatCompactTime(new Date(2025, 10, 7, 11, 5).toISOString(), now)).toBe('7 ноя 2025, 11:05');
+    expect(formatCompactTime(null, now)).toBe('Нет данных');
   });
   it('freezes period bounds and requires explicit timezone through DST', () => {
     const period = fixedPeriod(7, new Date('2026-11-12T00:00:00Z'));
