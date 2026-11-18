@@ -3,15 +3,16 @@ from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import case, exists, select, update
+from sqlalchemy import case, exists, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models import Artifact, ArtifactConfirmation, Conversation, Event, Message, Project, Run
+from backend.models import Artifact, ArtifactConfirmation, Conversation, Event, Message, Project, Run, User
 from backend.storage import StoredFile
 from backend.public_events import (
     SAFE_FAILURE_CODES,
@@ -59,6 +60,11 @@ class RunAcceptance:
     accepted_event: Event
     reset_event: Event | None
     idempotent_replay: bool
+
+
+class ExecutionPhase(StrEnum):
+    BEFORE_EXECUTOR = "before_executor"
+    EXECUTOR_STARTED = "executor_started"
 
 
 @dataclass(frozen=True)
@@ -272,7 +278,9 @@ async def accept_run_in_transaction(
     if requested_context_mode not in {"resume", "reset"}:
         raise RunAcceptanceError("invalid_context_mode", "Некорректный context_mode.")
 
-    reset_message: Message | None = None
+    if conversation_id is None and owner_id is not None and await session.scalar(select(User.ai_frozen).where(User.id == owner_id)):
+        raise RunAcceptanceError("ai_access_frozen", "AI-доступ временно приостановлен.")
+
     if conversation_id is None:
         if requested_context_mode == "reset":
             raise RunAcceptanceError(
@@ -324,11 +332,12 @@ async def accept_run_in_transaction(
         if conversation.next_message_seq == 0 and conversation.title == NEW_CONVERSATION_TITLE:
             conversation.title = make_title(content)
 
+    if owner_id is not None and await session.scalar(select(User.ai_frozen).where(User.id == owner_id)):
+        raise RunAcceptanceError("ai_access_frozen", "AI-доступ временно приостановлен.")
+
     previous_session_id = conversation.claude_session_id
     if requested_context_mode == "reset":
         context_mode = "reset"
-        conversation.claude_session_id = None
-        conversation.context_state = "reset"
     elif conversation.claude_session_id:
         context_mode = "resume"
     else:
@@ -343,24 +352,6 @@ async def accept_run_in_transaction(
     )
     session.add(run)
     await session.flush()
-
-    reset_event: Event | None = None
-    if context_mode == "reset":
-        reset_message = Message(
-            conversation_id=conversation.id,
-            run_id=run.id,
-            role="system",
-            kind="context_reset",
-            sequence=await _next_message_sequence(session, conversation.id),
-            content="Контекст Claude был явно сброшен.",
-        )
-        session.add(reset_message)
-        await session.flush()
-        reset_event = await _append_event_in_transaction(
-            session,
-            run.id,
-            context_reset_event(message_payload(reset_message)),
-        )
 
     user_message = Message(
         conversation_id=conversation.id,
@@ -393,7 +384,7 @@ async def accept_run_in_transaction(
         resume_session_id=run.resume_session_id,
         user_message=user_message,
         accepted_event=accepted_event,
-        reset_event=reset_event,
+        reset_event=None,
         idempotent_replay=False,
     )
 
@@ -481,13 +472,39 @@ async def create_request(
     )
 
 
+async def apply_run_context_reset(
+    session: AsyncSession, run: Run, conversation: Conversation,
+) -> Event | None:
+    """Apply reset intent under the caller's conversation/Run locks, without commit."""
+    if run.context_mode != "reset":
+        return None
+    existing = await session.scalar(select(Event).where(
+        Event.run_id == run.id, Event.type == "context.reset"))
+    if existing is not None:
+        return None
+    conversation.claude_session_id = None
+    conversation.context_state = "reset"
+    reset_message = Message(
+        conversation_id=conversation.id, run_id=run.id, role="system", kind="context_reset",
+        sequence=await _next_message_sequence(session, conversation.id),
+        content="Контекст Claude был явно сброшен.",
+    )
+    session.add(reset_message)
+    await session.flush()
+    return await _append_event_in_transaction(
+        session, run.id, context_reset_event(message_payload(reset_message)),
+    )
+
+
 async def mark_run_running(session: AsyncSession, run_id: str) -> Event | None:
-    run = await session.get(Run, run_id)
-    if run is None:
+    locked = await _lock_run_context(session, run_id)
+    if locked is None:
         raise LookupError(f"Run {run_id} was not found")
+    run, conversation = locked
     if run.status != "pending":
         return None
 
+    await apply_run_context_reset(session, run, conversation)
     run.status = "running"
     run.started_at = datetime.now(UTC)
     event = await _append_event_in_transaction(
@@ -574,6 +591,24 @@ async def _lock_run_context(
     return (run, conversation) if run is not None else None
 
 
+async def fail_unadmitted_run(
+    session: AsyncSession, run_id: str,
+) -> RunFinalization | None:
+    """Fail only work that has not been claimed by another executor."""
+    if session.get_bind().dialect.name == "sqlite":
+        await session.execute(text("BEGIN IMMEDIATE"))
+    locked = await _lock_run_context(session, run_id)
+    if locked is None:
+        return None
+    run, _ = locked
+    if run.status != "pending" or run.admitted_at is not None:
+        return None
+    return await finalize_run(
+        session, run_id, assistant_content=None, status="failed",
+        exit_code=None, error_code="ai_policy_unavailable",
+    )
+
+
 async def finalize_run(
     session: AsyncSession,
     run_id: str,
@@ -588,6 +623,7 @@ async def finalize_run(
     error: str | None = None,
     error_code: str | None = None,
     commit: bool = True,
+    execution_phase: ExecutionPhase = ExecutionPhase.EXECUTOR_STARTED,
 ) -> RunFinalization:
     del error
     if status not in TERMINAL_RUN_STATUSES:
@@ -671,14 +707,19 @@ async def finalize_run(
     elif status == "completed":
         conversation.claude_session_id = None
         conversation.context_state = "unavailable"
-    elif status == "outcome_unknown" or error_code in {
-        "artifact_save_failed",
-        "claude_cli_failed",
-        "claude_request_failed",
-        "claude_session_unavailable",
-        "claude_session_mismatch",
-        "claude_session_state_uncertain",
-    }:
+    # A subscriber failure before executor handoff cannot invalidate a resume
+    # context. Leave the locked current value untouched rather than restoring a
+    # captured session over a concurrent context change. Reset is not reversible.
+    elif (execution_phase != ExecutionPhase.BEFORE_EXECUTOR or run.context_mode != "resume") and (
+        status == "outcome_unknown" or error_code in {
+            "artifact_save_failed",
+            "claude_cli_failed",
+            "claude_request_failed",
+            "claude_session_unavailable",
+            "claude_session_mismatch",
+            "claude_session_state_uncertain",
+        }
+    ):
         conversation.claude_session_id = None
         conversation.context_state = "unavailable"
 

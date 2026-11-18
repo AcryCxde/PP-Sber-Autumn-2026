@@ -21,13 +21,15 @@ from backend.runner_transport import RunnerTransport, TransportError
 
 class RunnerBridge:
     def __init__(self, transport: RunnerTransport, project_tokens: dict[str, str] | None = None,
-                 *, poll_seconds: float = 0.1, heartbeat_timeout: float = 30):
+                 *, poll_seconds: float = 0.1, heartbeat_timeout: float = 30,
+                 harness_diagnostics_enabled: bool = False):
         self.transport = transport
         self._tokens: dict[str, str] = {}
         self._connections: set[str] = set()
         self._monitor: asyncio.Task[None] | None = None
         self.poll_seconds = poll_seconds
         self.heartbeat_timeout = heartbeat_timeout
+        self.harness_diagnostics_enabled = harness_diagnostics_enabled
         for project, token in (project_tokens or {}).items():
             self.register(project, token)
 
@@ -89,8 +91,15 @@ class RunnerBridge:
             acked = self.transport.hello(project)
             if hello["last_seq"] < acked:
                 raise TransportError("journal_regressed")
-            await websocket.send_json({"v": 1, "type": "welcome", "acked_seq": acked})
-            tasks = [asyncio.create_task(self._receive(websocket, project)),
+            welcome = {"v": 1, "type": "welcome", "acked_seq": acked}
+            if self.harness_diagnostics_enabled:
+                welcome["capabilities"] = {"harness_diagnostic_v1": True,
+                                           "harness_diagnostic_rejection_v1": True}
+            await websocket.send_json(welcome)
+            supports_rejection = (isinstance(hello.get("capabilities"), dict)
+                                  and hello["capabilities"].get("harness_diagnostic_rejection_v1") is True)
+            tasks = [asyncio.create_task(self._receive(websocket, project,
+                                                       supports_rejection=supports_rejection)),
                      asyncio.create_task(self._commands(websocket, project))]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -111,7 +120,7 @@ class RunnerBridge:
             if registered:
                 self._connections.discard(project)
 
-    async def _receive(self, websocket: WebSocket, project: str) -> None:
+    async def _receive(self, websocket: WebSocket, project: str, *, supports_rejection: bool = False) -> None:
         while True:
             frame = await websocket.receive_json()
             if not isinstance(frame, dict) or type(frame.get("v")) is not int or frame["v"] != 1:
@@ -126,6 +135,13 @@ class RunnerBridge:
                     if str(error) != "terminal_run":
                         raise
                     self.transport.skip(project, frame.get("journal_seq"))
+            elif kind == "harness.diagnostic" and self.harness_diagnostics_enabled:
+                # The transport owns its sqlite connection inside this worker.
+                # Await durable commit before acknowledging, without blocking
+                # HTTP, other projects or heartbeat processing on the event loop.
+                receipt = await asyncio.to_thread(self.transport.diagnostic, project, frame)
+                if receipt is not None and (receipt["status"] == "accepted" or supports_rejection):
+                    await websocket.send_json(receipt)
             elif kind == "heartbeat":
                 self.transport.heartbeat(project, frame)
             elif kind == "command_ack":

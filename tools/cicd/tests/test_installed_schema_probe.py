@@ -65,8 +65,8 @@ def test_trusted_probe_expected_before_network(monkeypatch):
         )
 
 
-@pytest.fixture
-def installed(monkeypatch):
+@pytest.fixture(params=[probe.BRIDGE_CHECKPOINT, probe.RELEASE_HEAD])
+def installed(monkeypatch, request):
     profile = probe.installed_catalog_profile()
     mapping = probe.TargetMapping(
         "db.example.test",
@@ -112,7 +112,8 @@ def installed(monkeypatch):
         signature,
         mapping.signature(),
         signature,
-        tuple((r, signature) for r in sorted(probe.UPGRADE_PATHS)),
+        tuple((r, signature) for r in sorted(probe.upgrade_paths(request.param))),
+        migration_head=request.param,
     )
     clearance = Clearance(
         "a" * 40,

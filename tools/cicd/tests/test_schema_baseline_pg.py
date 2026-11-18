@@ -14,24 +14,31 @@ from tools.cicd.schema_baseline import (
     release_source,
 )
 from tools.cicd.schema_probe import (
-    UPGRADE_PATHS,
     CatalogConnection,
     ProbeError,
     TargetMapping,
     canonical_signature,
     read_catalog,
+    upgrade_paths,
 )
 from tools.cicd.tests.schema_pg_fixture import pg16 as pg16_fixture
 from tools.cicd.tests.test_schema_baseline import SHA, mapping_data
+from tools.cicd.tests.test_schema_release_compatibility import CANDIDATE_SHA
 
 pg16 = pg16_fixture
 
 
-def test_baseline_all_release_chains(pg16):
+@pytest.mark.parametrize(
+    "release_sha,expected_head",
+    [(SHA, "20261111_0005"), (CANDIDATE_SHA, "20261112_0001")],
+)
+def test_baseline_all_release_chains(pg16, release_sha, expected_head):
     """HEAD here is a test input, explicitly NOT an approved deployment SHA."""
     mapping = TargetMapping.parse(mapping_data())
-    with release_source(ROOT, SHA) as source:
-        baseline = collect_baseline(source, SHA, mapping, pg16.container, pg16.port)
+    with release_source(ROOT, release_sha) as source:
+        baseline = collect_baseline(
+            source, release_sha, mapping, pg16.container, pg16.port
+        )
         # Independently rerun canonical clean; do not use the collection's value.
         database = "baseline_independent"
         _psql(pg16.container, f"CREATE DATABASE {database} OWNER migrator")
@@ -57,8 +64,9 @@ def test_baseline_all_release_chains(pg16):
             )
         finally:
             _psql(pg16.container, f"DROP DATABASE {database} WITH (FORCE)")
-    baseline.bind(SHA, mapping)
-    assert set(dict(baseline.upgrade_signatures)) == set(UPGRADE_PATHS)
+    baseline.bind(release_sha, mapping)
+    assert baseline.migration_head == expected_head
+    assert set(dict(baseline.upgrade_signatures)) == set(upgrade_paths(expected_head))
     assert set(dict(baseline.upgrade_signatures).values()) == {baseline.clean_signature}
     print("TEST-ONLY canonical signature", baseline.expected_signature)
     print("query SHA256", mapping.profile.query_sha256)
@@ -99,7 +107,13 @@ def test_source_exact_commit_ignores_dirty_checkout(tmp_path, pg16):
             _psql(pg16.container, f"DROP DATABASE {database} WITH (FORCE)")
 
 
-def test_baseline_generate_local_output_and_cleanup(tmp_path):
+@pytest.mark.parametrize(
+    "release_sha,expected_head",
+    [(SHA, "20261111_0005"), (CANDIDATE_SHA, "20261112_0001")],
+)
+def test_baseline_generate_local_output_and_cleanup(
+    tmp_path, release_sha, expected_head
+):
     import os
 
     if os.environ.get("SCHEMA_PG16_TESTS") != "1":
@@ -109,7 +123,9 @@ def test_baseline_generate_local_output_and_cleanup(tmp_path):
 
     output = tmp_path / "test-only-baseline.json"
     mapping = TargetMapping.parse(mapping_data())
-    baseline = generate(ROOT, SHA, mapping, output)
+    baseline = generate(ROOT, release_sha, mapping, output)
+    assert baseline.migration_head == expected_head
+    baseline.bind(release_sha, mapping)
     assert Baseline.parse(parse_json(output.read_bytes())) == baseline
     assert output.stat().st_mode & 0o777 == 0o600
     assert baseline.profile == mapping.profile

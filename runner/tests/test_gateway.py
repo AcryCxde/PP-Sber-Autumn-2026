@@ -5,6 +5,8 @@ import pytest
 
 from ctrunner.eventlog import EventLog
 from ctrunner.gateway import (
+    DiagnosticAcks,
+    GatewayClient,
     JournalFeed,
     accept_command,
     command_ack,
@@ -14,6 +16,7 @@ from ctrunner.gateway import (
     hello_message,
     parse_welcome,
 )
+from ctrunner.harness_diagnostic import SCHEMA
 from ctrunner.inbox import Inbox
 from ctrunner.protocol import (
     EventKind,
@@ -212,3 +215,41 @@ def test_command_to_raw_carries_message_inputs_only_when_given() -> None:
     assert raw == {"id": "c1", "kind": "message", "text": "go", "roles": ["r"], "stage": "s",
                    "input_files": ["a.md"]}  # fmt: skip
     assert parse_command(raw) == cmd
+
+
+async def test_private_ack_mailbox_ignores_finished_unsolicited_and_unnegotiated(tmp_path):
+    mailbox = DiagnosticAcks()
+    mailbox.awaiting.add("next")
+    frames = [{"v": 1, "type": "harness.diagnostic_ack", "schema": SCHEMA,
+               "diagnostic_id": f"finished-{i}", "status": "accepted"} for i in range(256)]
+    frames.extend([
+        {"v": 1, "type": "harness.diagnostic_ack", "schema": SCHEMA,
+         "diagnostic_id": "next", "status": "rejected"},
+        {"v": 1, "type": "harness.diagnostic_ack", "schema": SCHEMA,
+         "diagnostic_id": "next", "status": "accepted"},
+    ])
+
+    class Socket:
+        def __aiter__(self):
+            self.frames = iter(frames)
+            return self
+
+        async def __anext__(self):
+            try:
+                return json.dumps(next(self.frames))
+            except StopIteration:
+                raise StopAsyncIteration from None
+
+    client = GatewayClient(url="ws://unused", token="fake", project_id="p1", runner_version="test",
+        session_id=None, journal=tmp_path / "journal", health_file=tmp_path / "health",
+        inbox_dir=tmp_path / "inbox", project_root=ROOT, last_seq=lambda: 0,
+        fork_questions=lambda _: None)
+    await client._receive(Socket(), mailbox)
+    assert mailbox == {"next": "accepted"}
+    mailbox.clear()
+    # A rejected ACK is terminal only after bilateral capability negotiation.
+    frames = [frames[-2]]
+    await client._receive(Socket(), mailbox)
+    assert mailbox == {}
+    await client._receive(Socket(), mailbox, supports_rejection=True)
+    assert mailbox == {"next": "rejected"}

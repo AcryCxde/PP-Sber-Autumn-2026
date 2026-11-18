@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+from threading import Event as ThreadEvent
 
 import pytest
 from sqlalchemy import select
@@ -407,22 +408,44 @@ async def test_terminal_abandon_timeout_does_not_block_reconciliation(tmp_path) 
         await add_confirmation(database, run_id, project_id, "artifact-1")
         transport = RecordingTransport([TransportError("storage_receipt_conflict")])
 
+        loop = asyncio.get_running_loop()
+        abandon_started = asyncio.Event()
+        release_abandon = ThreadEvent()
+        abandon_finished = asyncio.Event()
+
         def blocked_abandon(*_args: object) -> None:
-            import time
-            time.sleep(0.2)
+            loop.call_soon_threadsafe(abandon_started.set)
+            try:
+                release_abandon.wait()
+            finally:
+                loop.call_soon_threadsafe(abandon_finished.set)
 
         transport.abandon = blocked_abandon  # type: ignore[method-assign]
-        await asyncio.wait_for(
-            reconcile_artifact_confirmations(
-                database, transport,
-                confirmation_settings(artifact_confirmation_timeout_seconds=0.01),
-                now=datetime.now(UTC),
-            ),
-            timeout=0.1,
-        )
-        async with database.session() as session:
-            row = await session.scalar(select(ArtifactConfirmation))
-            assert (row.status, row.abandon_delivered) == ("conflicted", False)
+        reconciliation = asyncio.create_task(reconcile_artifact_confirmations(
+            database, transport, confirmation_settings(), now=datetime.now(UTC),
+        ))
+        try:
+            # Deadlock guards, not elapsed-time assertions: only cleanup releases the worker.
+            await asyncio.wait_for(abandon_started.wait(), timeout=10)
+            result = await asyncio.wait_for(reconciliation, timeout=10)
+            assert result.conflicted == 1
+            assert len(result.terminal_events) == 1
+            async with database.session() as session:
+                row = await session.scalar(select(ArtifactConfirmation))
+                run = await session.get(Run, run_id)
+                assert (row.status, row.abandon_delivered) == ("conflicted", False)
+                assert (run.status, run.error_code) == (
+                    "outcome_unknown", "artifact_confirmation_failed",
+                )
+            assert not release_abandon.is_set()
+            assert not abandon_finished.is_set()
+        finally:
+            release_abandon.set()
+            if not reconciliation.done():
+                reconciliation.cancel()
+            await asyncio.gather(reconciliation, return_exceptions=True)
+            if abandon_started.is_set():
+                await asyncio.wait_for(abandon_finished.wait(), timeout=10)
     finally:
         await database.dispose()
 

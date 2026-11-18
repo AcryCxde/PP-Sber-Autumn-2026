@@ -62,6 +62,141 @@ def test_explicit_operator_admin_role_is_preserved(tmp_path) -> None:
         assert client.get("/api/admin/overview").status_code == 200
 
 
+def test_policy_management_defaults_disabled(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        registered = sign_in(client, ADMIN)
+        async def grant():
+            async with app.state.database.session() as session:
+                user = await session.get(User, registered["id"])
+                user.role = "admin"
+                await session.commit()
+        client.portal.call(grant)
+        response = client.patch("/api/admin/v1/users/target/ai-access", json={
+            "frozen": True, "reason": "private", "expected_version": 0,
+        }, headers={"X-CoreTeams-Admin": "1", "Idempotency-Key": "test"})
+        assert response.status_code == 503
+
+
+def test_policy_http_contract_auth_privacy_and_replay(tmp_path, caplog) -> None:
+    app = make_app(tmp_path)
+    app.state.settings.admin_policy_management_enabled = True
+    path = "/api/admin/v1/users/target/ai-access"
+    headers = {"X-CoreTeams-Admin": "1", "Idempotency-Key": "first"}
+    sentinel = "PRIVATE-REASON-NEVER-PUBLIC"
+    with TestClient(app) as client:
+        assert client.get("/api/admin/v1/users").status_code == 401
+        assert client.patch(path, json={}, headers=headers).status_code == 401
+        target = sign_in(client, "target@example.test")
+        assert client.get("/api/admin/v1/users").status_code == 403
+        assert client.get(f"/api/admin/v1/users/{target['id']}/audit").status_code == 403
+        assert client.patch(path, json={}, headers=headers).status_code == 403
+        client.cookies.clear()
+        operator = sign_in(client, "operator@example.test")
+        async def grant():
+            async with app.state.database.session() as session:
+                user = await session.get(User, operator["id"])
+                user.role = "admin"
+                await session.commit()
+        client.portal.call(grant)
+        path = f"/api/admin/v1/users/{target['id']}/ai-access"
+        body = {"frozen": True, "reason": sentinel, "expected_version": 0}
+        for extra in ({}, {"X-CoreTeams-Admin": "1", "Idempotency-Key": "a", "Origin": "https://evil.test"}):
+            assert client.patch(path, json=body, headers=extra).status_code == 403
+        missing_key = client.patch(path, json=body, headers={"X-CoreTeams-Admin": "1"})
+        assert missing_key.status_code == 422
+        for invalid in (True, -1, "0"):
+            response = client.patch(path, json={**body, "expected_version": invalid}, headers=headers)
+            assert response.status_code == 422 and sentinel not in response.text
+        for reason in ("\t", "\n", " ", "x" * 1001):
+            response = client.patch(path, json={**body, "reason": reason}, headers=headers)
+            assert response.status_code == 422
+        first = client.patch(path, json=body, headers=headers)
+        replay = client.patch(path, json=body, headers=headers)
+        assert first.status_code == 200 and first.json() == replay.json()
+        assert sentinel not in first.text
+        assert first.json()["user"]["ai_access"] == {"frozen": True, "version": 1}
+        conflict = client.patch(path, json={**body, "reason": "changed"}, headers=headers)
+        assert conflict.status_code == 409 and sentinel not in conflict.text
+        stale = client.patch(path, json=body, headers={**headers, "Idempotency-Key": "stale"})
+        assert stale.status_code == 409
+        assert stale.json()["current"] == {"frozen": True, "version": 1}
+        own = client.patch(f"/api/admin/v1/users/{operator['id']}/ai-access", json=body, headers=headers)
+        assert own.status_code == 403
+        audit = client.get(f"/api/admin/v1/users/{target['id']}/audit")
+        assert audit.status_code == 200 and audit.json()["total"] == 1
+        assert audit.json()["items"][0]["reason"] == sentinel
+        users = client.get("/api/admin/v1/users", params={"q": "TARGET@EXAMPLE"})
+        assert users.status_code == 200 and users.json()["total"] == 1
+        assert sentinel not in users.text
+        assert users.headers["cache-control"] == "no-store"
+        client.cookies.clear()
+        from backend.tests.auth_helpers import PASSWORD
+        login = client.post("/api/auth/login", json={"email": "target@example.test", "password": PASSWORD})
+        assert login.status_code == 200
+        assert login.json()["id"] == target["id"]
+        me = client.get("/api/auth/me")
+        assert me.status_code == 200 and sentinel not in me.text
+        assert client.get("/api/admin/v1/users").status_code == 403
+    assert sentinel not in caplog.text
+
+
+def test_policy_get_validation_has_domain_shape_without_echo(tmp_path) -> None:
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        operator = sign_in(client, "validation@example.test")
+        async def grant():
+            async with app.state.database.session() as session:
+                user = await session.get(User, operator["id"])
+                user.role = "admin"
+                await session.commit()
+        client.portal.call(grant)
+        for path in ("/api/admin/v1/users", f"/api/admin/v1/users/{operator['id']}/audit"):
+            for query in ({"page": "private-invalid"}, {"page": 0}, {"page_size": 101}):
+                response = client.get(path, params=query)
+                assert response.status_code == 422
+                assert response.json()["code"] == "invalid_pagination"
+                assert "private-invalid" not in response.text
+                assert response.headers["cache-control"] == "no-store"
+
+
+def test_policy_http_audit_failure_rolls_back_without_private_echo(tmp_path, monkeypatch, caplog) -> None:
+    from sqlalchemy.exc import IntegrityError
+    from backend.models import AiPolicyAudit
+    from sqlalchemy.ext.asyncio import AsyncSession
+    app = make_app(tmp_path)
+    app.state.settings.admin_policy_management_enabled = True
+    sentinel = "PRIVATE-FAILED-AUDIT"
+    with TestClient(app) as client:
+        target = sign_in(client, "rollback-target@example.test")
+        client.cookies.clear()
+        actor = sign_in(client, "rollback-admin@example.test")
+        async def grant():
+            async with app.state.database.session() as session:
+                user = await session.get(User, actor["id"])
+                user.role = "admin"
+                await session.commit()
+        client.portal.call(grant)
+        original_flush = AsyncSession.flush
+        async def fail_audit(self, *args, **kwargs):
+            if any(isinstance(item, AiPolicyAudit) for item in self.new):
+                raise IntegrityError("insert", {"reason": sentinel}, ValueError("audit failure"))
+            return await original_flush(self, *args, **kwargs)
+        monkeypatch.setattr(AsyncSession, "flush", fail_audit)
+        response = client.patch(f"/api/admin/v1/users/{target['id']}/ai-access",
+            json={"frozen": True, "reason": sentinel, "expected_version": 0},
+            headers={"X-CoreTeams-Admin": "1", "Idempotency-Key": "audit-fail"})
+        assert response.status_code == 503 and sentinel not in response.text
+        async def stored():
+            async with app.state.database.session() as session:
+                user = await session.get(User, target["id"])
+                from sqlalchemy import func
+                count = await session.scalar(select(func.count()).select_from(AiPolicyAudit))
+                return user.ai_frozen, user.ai_policy_version, count
+        assert client.portal.call(stored) == (False, 0, 0)
+    assert sentinel not in caplog.text
+
+
 def test_requests_record_one_activity_day(tmp_path) -> None:
     app = make_app(tmp_path)
 

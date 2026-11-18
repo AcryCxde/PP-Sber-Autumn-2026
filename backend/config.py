@@ -1,7 +1,9 @@
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +52,44 @@ class Settings(BaseSettings):
     auth_cookie_secure: bool = False
     # Legacy compatibility only; unverified email addresses never grant administrator roles.
     admin_emails: str = ""
+    # Включать только после enforcement всех путей запуска и race-проверок.
+    admin_policy_management_enabled: bool = False
+    # Explicit browser origin at the trusted edge; never infer it from forwarded headers.
+    admin_public_origin: str | None = None
+    runner_harness_diagnostics_enabled: bool = False
+
+    @field_validator("admin_public_origin")
+    @classmethod
+    def validate_admin_public_origin(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        message = "admin_public_origin must be a canonical HTTP(S) origin (lowercase ASCII host, no default port)"
+        if any(ord(character) <= 32 or ord(character) >= 127 for character in value):
+            raise ValueError(message)
+        parsed = urlsplit(value)
+        host = parsed.hostname
+        if (parsed.scheme not in {"http", "https"} or not host
+                or parsed.username is not None or parsed.password is not None
+                or parsed.path or parsed.query or parsed.fragment):
+            raise ValueError(message)
+        if ":" in host:
+            if "%" in host:
+                raise ValueError(message)
+            canonical_host = f"[{ip_address(host).compressed}]"
+        else:
+            if any(not (character.isalnum() or character in ".-") for character in host):
+                raise ValueError(message)
+            # Reject browser-specific short/numeric IPv4 spellings instead of guessing them.
+            last_label = host.rsplit(".", 1)[-1]
+            if last_label.isdigit() or last_label.startswith("0x"):
+                canonical_host = str(ip_address(host))
+            else:
+                canonical_host = host
+        port = parsed.port
+        suffix = "" if port is None or port == {"http": 80, "https": 443}[parsed.scheme] else f":{port}"
+        if value != f"{parsed.scheme}://{canonical_host}{suffix}":
+            raise ValueError(message)
+        return value
 
     # "cli" — claude подпроцессом в контейнере backend; "runner" — контейнер ctrunner на сессию.
     executor: Literal["cli", "runner"] = "cli"

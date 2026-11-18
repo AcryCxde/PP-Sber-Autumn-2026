@@ -20,6 +20,7 @@ from typing import Final, assert_never, final
 from ctrunner.config import DEFAULT_WORKSPACE
 from ctrunner.eventlog import Event
 from ctrunner.protocol import EventKind, JsonValue, ProtocolError
+from ctrunner.turn_lifecycle import FailReason, LifecycleChange, TurnLiveness
 
 SCHEMA: Final = "events.v0"
 # Постоянное пространство имён: от него зависят все event_id, менять нельзя.
@@ -52,15 +53,6 @@ class EventType(StrEnum):
 TERMINAL: Final = frozenset(
     {EventType.RUN_COMPLETED, EventType.RUN_FAILED, EventType.RUN_OUTCOME_UNKNOWN}
 )
-
-
-class FailReason(StrEnum):
-    RESULT_ERROR = "result_error"
-    SDK_CRASHED = "sdk_crashed"
-    DISK_FULL = "disk_full"
-    CHECKPOINT_FAILED = "checkpoint_failed"
-    RESUME_LIMIT = "resume_limit"
-    STATE_CORRUPT = "state_corrupt"
 
 
 class Stage(StrEnum):
@@ -133,7 +125,6 @@ class _Run:
     roles: dict[str, str] = field(default_factory=dict)  # tool_use_id → role_id, активные
     writes: dict[str, _Write] = field(default_factory=dict)  # tool_use_id → запись без ответа
     written: dict[str, _Write] = field(default_factory=dict)  # path → успешная запись
-    terminal: bool = False
 
 
 @final
@@ -144,16 +135,18 @@ class Translator:
         self._project_id = project_id
         self._root = project_root.rstrip("/")
         self._runs: dict[str, _Run] = {}
+        self._liveness = TurnLiveness()
 
     def feed(self, event: Event) -> tuple[Draft, ...]:  # noqa: PLR0912 — по ветке на вид
         out = _Out(self._project_id, event)
+        change = self._liveness.feed(event)
         match event.kind:
             case EventKind.SESSION_STARTED | EventKind.ACCESS_DENIED:
                 pass  # служебное и аудит: в публичную ленту не идут
             case EventKind.TURN_STARTED:
-                if event.turn_id is not None and event.turn_id not in self._runs:
-                    self._runs[event.turn_id] = _Run()
-                    out.emit(event.turn_id, EventType.RUN_STARTED, {})
+                if change.started is not None:
+                    self._runs[change.started] = _Run()
+                    out.emit(change.started, EventType.RUN_STARTED, {})
             case EventKind.SDK:
                 self._sdk(out, event)
             case EventKind.FORK_QUESTION:
@@ -169,11 +162,10 @@ class Translator:
             case EventKind.CHECKPOINT:
                 self._checkpoint(out, event)
             case EventKind.TURN_COMPLETED:
-                if (run_id := self._live(event)) is not None:
-                    self._runs[run_id].terminal = True
+                for run_id in change.closed:
                     out.emit(run_id, EventType.RUN_COMPLETED, {})
             case EventKind.TURN_FAILED:
-                self._failed(out, event)
+                self._failed(out, change)
             case EventKind.TURN_INTERRUPTED:
                 if (run_id := self._live(event)) is not None:
                     out.emit(run_id, EventType.PROGRESS_UPDATED, {"stage": Stage.RECOVERING.value})
@@ -191,15 +183,14 @@ class Translator:
 
     def _live(self, event: Event) -> str | None:
         """Ход, который ещё не получил терминальное событие; иначе событие не публикуется."""
-        run = self._runs.get(event.turn_id) if event.turn_id is not None else None
-        return event.turn_id if run is not None and not run.terminal else None
+        return event.turn_id if self._liveness.live(event.turn_id) else None
 
     def _sdk(self, out: "_Out", event: Event) -> None:
         if (run_id := self._live(event)) is None:
             return
         run, msg = self._runs[run_id], _object(event.payload)
         if msg.get("type") == "result":
-            out.emit(run_id, EventType.USAGE_REPORTED, _usage(msg))
+            out.drafts.append(usage_draft(self._project_id, event))
             return
         parent = msg.get("parent_tool_use_id")
         author = run.roles.get(parent) if isinstance(parent, str) else None
@@ -290,28 +281,18 @@ class Translator:
             out.emit(run_id, EventType.ARTIFACT_CREATED, created)
         run.written.clear()
 
-    def _failed(self, out: "_Out", event: Event) -> None:
-        payload = _object(event.payload)
-        try:
-            reason = FailReason(_str(payload, "reason"))
-        except ValueError as error:
-            raise ProtocolError(f"unknown turn_failed reason: {payload.get('reason')!r}") from error
+    def _failed(self, out: "_Out", change: LifecycleChange) -> None:
+        reason = change.reason
         if reason is FailReason.STATE_CORRUPT:
-            # turn_id нет: состояние потеряно, исход всех открытых ходов неизвестен.
-            for open_id, run in self._runs.items():
-                if not run.terminal:
-                    run.terminal = True
-                    out.emit(open_id, EventType.RUN_OUTCOME_UNKNOWN, {"code": reason.value})
-            return
-        if (run_id := self._live(event)) is None:
-            return
-        # sdk_crashed старых журналов — всегда падение процесса.
-        if payload.get("fatal") is True or reason is FailReason.SDK_CRASHED:
-            out.emit(run_id, EventType.PROGRESS_UPDATED, {"stage": Stage.INTERRUPTED.value})
-            return
-        self._runs[run_id].terminal = True
-        failure: dict[str, JsonValue] = {"code": reason.value, "retryable": _retryable(reason)}
-        out.emit(run_id, EventType.RUN_FAILED, failure)
+            for run_id in change.closed:
+                out.emit(run_id, EventType.RUN_OUTCOME_UNKNOWN, {"code": reason.value})
+        elif change.interrupted is not None:
+            out.emit(change.interrupted, EventType.PROGRESS_UPDATED,
+                     {"stage": Stage.INTERRUPTED.value})
+        elif change.closed and reason is not None:
+            for run_id in change.closed:
+                out.emit(run_id, EventType.RUN_FAILED,
+                         {"code": reason.value, "retryable": _retryable(reason)})
 
     def _public_path(self, raw: JsonValue | None) -> str | None:
         """Путь относительно корня проекта; всё вне проекта (служебные каталоги) не публикуется."""
@@ -341,6 +322,18 @@ class _Out:
             str(uuid.uuid5(_NAMESPACE, key)), self._project_id, run_id,
             datetime.fromtimestamp(self._source.ts, UTC), type_, payload,
         ))  # fmt: skip
+
+
+def usage_draft(project_id: str, event: Event) -> Draft:
+    """Identity and payload shared by public translation and the private usage-only fold.
+
+    A result row emits exactly one draft, at ordinal zero. Liveness is checked by each fold.
+    """
+    if event.turn_id is None:
+        raise ProtocolError("usage requires a turn_id")
+    out = _Out(project_id, event)
+    out.emit(event.turn_id, EventType.USAGE_REPORTED, _usage(_object(event.payload)))
+    return out.drafts[0]
 
 
 @final

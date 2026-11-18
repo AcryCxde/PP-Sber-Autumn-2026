@@ -14,10 +14,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import sqlite3
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from sqlalchemy.exc import DBAPIError
+
 from backend.artifact_confirmations import reconcile_artifact_confirmations
+from backend.ai_access import AdmissionResult, AdmissionState
+from backend.harness_estimate import catch_up
 from backend.containers import ContainerError, ContainerManager
 from backend.models import Event
 from backend.materials import conversation_materials, materials_note
@@ -27,7 +32,6 @@ from backend.repository import (
     stage_runner_artifact,
     append_event,
     finalize_run,
-    mark_run_running,
 )
 from backend.runner_transport import RunnerTransport, TransportError
 from backend.storage import StorageError, store_file, text_preview
@@ -65,7 +69,10 @@ async def run_via_runner(
     acceptance: RunAcceptance,
     content: str,
     deliver_event: Callable[[Event], Awaitable[None]],
+    *, admission: AdmissionResult,
 ) -> None:
+    if admission.state != AdmissionState.ADMITTED or admission.run_id != acceptance.run_id:
+        raise RunnerRunError("ai_policy_unavailable")
     manager: ContainerManager = app_state.runner_manager
     transport: RunnerTransport = app_state.runner_transport
     database = app_state.database
@@ -152,6 +159,13 @@ async def run_via_runner(
                 turns=usage.get("num_turns"),
                 error_code=error_code,
             )
+        # Diagnostic delivery can lag terminal; admin detail also catches up receipts.
+        try:
+            snapshots = await asyncio.to_thread(transport.diagnostic_snapshots, run_id)
+            await catch_up(database, run_id, snapshots)
+        except (DBAPIError, sqlite3.Error, ValueError):
+            # The durable receipt remains recoverable by detail; diagnostics cannot undo completion.
+            logger.warning("Harness diagnostic projection pending", extra={"run_id": run_id})
         return finalization.terminal_event
 
     try:
@@ -161,11 +175,6 @@ async def run_via_runner(
             raise RunnerRunError("claude_session_unavailable")
         if acceptance.context_mode == "reset":
             await manager.discard(project, reason="context_reset")
-
-        async with database.session() as session:
-            started = await mark_run_running(session, run_id)
-        if started is not None:
-            await deliver_event(started)
 
         await manager.ensure_running(project, run_id=run_id)
         materials = await conversation_materials(database, acceptance.conversation_id, run_id=acceptance.run_id)
@@ -177,7 +186,7 @@ async def run_via_runner(
             after_seq = transport.events(project, transport_run)[-1]["seq"]
             question = active["question"]
             transport.answer(project, transport_run, run_id, question["question_id"],
-                             {item["text"]: content for item in question["questions"]})
+                             {item["text"]: content for item in question["questions"]}, backend_run_id=run_id)
         else:
             if active is not None:
                 if active["run_id"] in manager.relaying:
@@ -185,7 +194,8 @@ async def run_via_runner(
                 # Хозяина у запуска нет (backend перезапускался): закрыть, иначе проект заблокирован.
                 transport.abandon(project, active["run_id"], "gateway_restarted")
             transport_run, after_seq = run_id, 0
-            transport.message(project, transport_run, run_id, content + materials_note(materials))
+            transport.message(project, transport_run, run_id, content + materials_note(materials),
+                              backend_run_id=run_id)
 
         manager.relaying.add(transport_run)
         done = False

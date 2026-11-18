@@ -6,18 +6,31 @@
 функций дат SQLite и Postgres.
 """
 
+import asyncio
+import sqlite3
+
 from collections import Counter
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from pydantic import ConfigDict, StrictBool, StrictInt, ValidationError
+
+from backend.ai_access import AiAccessError, change_ai_access, policy_transaction
+from backend import admin_queries
+from backend.models import AiPolicyAudit
 from pydantic import BaseModel
-from sqlalchemy import Select, case, func, select
+from sqlalchemy import Select, case, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import DBAPIError
 
 from backend.api.history import SessionDependency
 from backend.auth import AdminUser
+from backend.timestamps import utc_iso
 from backend.models import (
     Artifact,
     ArtifactApproval,
@@ -346,3 +359,176 @@ async def users(admin: AdminUser, session: SessionDependency, days: PeriodDays =
     del admin
     period_start = datetime.now(UTC).date() - timedelta(days=days - 1)
     return await _engagement(session, period_start)
+
+
+class PolicyRoute(APIRoute):
+    """Keep validation input private only on the new admin policy boundary."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def validated(request: Request):
+            try:
+                return await handler(request)
+            except RequestValidationError as error:
+                locations = {item["loc"][1] for item in error.errors() if len(item["loc"]) > 1}
+                code = "invalid_pagination" if locations & {"page", "page_size"} else "invalid_policy_request"
+                return _policy_error(AiAccessError(code, 422, "Некорректные параметры запроса."))
+
+        return validated
+
+
+v1_router = APIRouter(prefix="/api/admin/v1", tags=["admin"], route_class=PolicyRoute)
+
+
+class AiPolicyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    frozen: StrictBool
+    reason: str | None = None
+    expected_version: StrictInt
+
+
+def _policy_error(error: AiAccessError) -> JSONResponse:
+    body: dict[str, object] = {"code": error.code, "detail": error.message}
+    if error.current is not None:
+        body["current"] = error.current
+    return JSONResponse(body, status_code=error.status_code, headers={"Cache-Control": "no-store"})
+
+
+@v1_router.patch("/users/{user_id}/ai-access")
+async def change_policy(user_id: str, request: Request, admin: AdminUser, session: SessionDependency):
+    if not request.app.state.settings.admin_policy_management_enabled:
+        return _policy_error(AiAccessError("policy_management_unavailable", 503, "Управление AI-доступом пока недоступно."))
+    origin = request.headers.get("origin")
+    expected_origin = (request.app.state.settings.admin_public_origin
+                       or f"{request.url.scheme}://{request.url.netloc}")
+    if (request.headers.get("x-coreteams-admin") != "1" or
+            (origin is not None and origin != expected_origin) or
+            request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json"):
+        return _policy_error(AiAccessError("invalid_admin_origin", 403, "Недопустимый источник изменения."))
+    try:
+        raw = await request.body()
+        if len(raw) > 16384:
+            raise AiAccessError("invalid_policy_request", 422, "Некорректный запрос.")
+        # Explicit parsing prevents FastAPI's validation response echoing private input.
+        payload = AiPolicyRequest.model_validate_json(raw)
+        key = request.headers.get("idempotency-key", "")
+        actor_id = admin.id
+        result = await policy_transaction(session, lambda: change_ai_access(
+            session, actor_id=actor_id, target_id=user_id, frozen=payload.frozen,
+            reason=payload.reason, expected_version=payload.expected_version,
+            idempotency_key=key))
+        return JSONResponse(result.response, headers={"Cache-Control": "no-store"})
+    except ValidationError:
+        return _policy_error(AiAccessError("invalid_policy_request", 422, "Некорректный запрос."))
+    except AiAccessError as error:
+        return _policy_error(error)
+
+
+@v1_router.get("/users")
+async def policy_users(admin: AdminUser, session: SessionDependency,
+                       q: Annotated[str, Query(max_length=254)] = "",
+                       page: Annotated[int, Query(ge=1)] = 1,
+                       page_size: Annotated[int, Query(ge=1, le=100)] = 25):
+    del admin
+    predicate = User.email.icontains(q.strip(), autoescape=True)
+    count = select(func.count().label("total")).select_from(User).where(predicate).cte("user_count")
+    selected = (select(User.id).where(predicate)
+        .order_by(User.created_at.desc(), User.id.desc())
+        .limit(page_size).offset((page - 1) * page_size).cte("selected_users"))
+    statement = (select(User, count.c.total).select_from(count)
+        .outerjoin(selected, literal(True)).outerjoin(User, User.id == selected.c.id)
+        .order_by(User.created_at.desc(), User.id.desc()))
+    rows = (await session.execute(statement)).all()
+    return JSONResponse({"as_of": datetime.now(UTC).isoformat(), "items": [
+        {"id": user.id, "email": user.email, "created_at": utc_iso(user.created_at),
+         "last_seen_at": utc_iso(user.last_seen_at) if user.last_seen_at else None,
+         "ai_access": {"frozen": user.ai_frozen, "version": user.ai_policy_version}}
+         for user, _ in rows if user is not None],
+        "total": rows[0].total, "page": page, "page_size": page_size}, headers={"Cache-Control": "no-store"})
+
+
+@v1_router.get("/users/{user_id}/audit")
+async def policy_audit(user_id: str, admin: AdminUser, session: SessionDependency,
+                       page: Annotated[int, Query(ge=1)] = 1,
+                       page_size: Annotated[int, Query(ge=1, le=100)] = 25):
+    del admin
+    if await session.get(User, user_id) is None:
+        return _policy_error(AiAccessError("user_not_found", 404, "Пользователь не найден."))
+    predicate = AiPolicyAudit.target_id == user_id
+    count = (select(func.count().label("total")).select_from(AiPolicyAudit)
+        .where(predicate).cte("audit_count"))
+    selected = (select(AiPolicyAudit.id).where(predicate)
+        .order_by(AiPolicyAudit.created_at.desc(), AiPolicyAudit.id.desc())
+        .limit(page_size).offset((page - 1) * page_size).cte("selected_audits"))
+    statement = (select(AiPolicyAudit, count.c.total).select_from(count)
+        .outerjoin(selected, literal(True)).outerjoin(AiPolicyAudit, AiPolicyAudit.id == selected.c.id)
+        .order_by(AiPolicyAudit.created_at.desc(), AiPolicyAudit.id.desc()))
+    rows = (await session.execute(statement)).all()
+    return JSONResponse({"as_of": datetime.now(UTC).isoformat(), "items": [
+        {"id": row.id, "actor_id": row.actor_id, "target_id": row.target_id,
+         "created_at": utc_iso(row.created_at), "action": row.action, "reason": row.reason,
+         "before_version": row.before_version, "after_version": row.after_version}
+         for row, _ in rows if row is not None],
+        "total": rows[0].total, "page": page, "page_size": page_size}, headers={"Cache-Control": "no-store"})
+
+
+@v1_router.get("/overview")
+async def operational_overview(admin: AdminUser, session: SessionDependency,
+        start: str | None = None, end: str | None = None,
+        attention_start: str | None = None, attention_end: str | None = None,
+        active_page: Annotated[int, Query(ge=1)] = 1,
+        attention_page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=100)] = 25, attention_no_start: bool = False):
+    del admin
+    now = datetime.now(UTC)
+    try:
+        period = admin_queries.parse_period(start, end, now)
+        attention_period = admin_queries.parse_period(attention_start, attention_end, now)
+    except ValueError:
+        return _policy_error(AiAccessError("invalid_period", 422, "Некорректный период."))
+    body = await admin_queries.overview(session, period, attention_period, active_page=active_page,
+        attention_page=attention_page, page_size=page_size, attention_no_start=attention_no_start)
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
+
+
+@v1_router.get("/runs")
+async def operational_runs(admin: AdminUser, session: SessionDependency,
+        start: str | None = None, end: str | None = None, status: str = "all",
+        page: Annotated[int, Query(ge=1)] = 1,
+        page_size: Annotated[int, Query(ge=1, le=100)] = 25):
+    del admin
+    try:
+        period = admin_queries.parse_period(start, end, datetime.now(UTC))
+        if status not in {"all", "failed", "outcome_unknown", "running"}:
+            raise ValueError
+    except ValueError:
+        return _policy_error(AiAccessError("invalid_period", 422, "Некорректная выборка."))
+    return JSONResponse(await admin_queries.runs(session, period, status=status, page=page, page_size=page_size),
+                        headers={"Cache-Control": "no-store"})
+
+
+@v1_router.get("/runs/{run_id}")
+async def operational_detail(run_id: str, request: Request, admin: AdminUser, session: SessionDependency):
+    del admin
+    transport = getattr(request.app.state, "runner_transport", None)
+    projection_unavailable = False
+    if transport is not None:
+        from backend.harness_estimate import catch_up
+        try:
+            snapshots = await asyncio.to_thread(transport.diagnostic_snapshots, run_id)
+            await catch_up(request.app.state.database, run_id, snapshots)
+        except (DBAPIError, sqlite3.Error):
+            # Transport uses sqlite3 directly; catch_up owns a separate session.
+            projection_unavailable = True
+        except ValueError as error:
+            if str(error) not in {"harness_lineage_conflict", "harness_observation_conflict", "invalid_harness_snapshot"}:
+                raise
+            projection_unavailable = True
+    body = await admin_queries.run_detail(session, run_id)
+    if body is None:
+        return _policy_error(AiAccessError("run_not_found", 404, "Запуск не найден."))
+    if projection_unavailable:
+        body["harness_estimate"] = admin_queries.unknown_estimate()
+        body["harness_estimate"]["unavailable_reason"] = "projection_unavailable"
+    return JSONResponse(body, headers={"Cache-Control": "no-store"})
