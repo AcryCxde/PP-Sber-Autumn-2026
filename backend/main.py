@@ -2,6 +2,8 @@ import asyncio
 import errno
 import json
 import logging
+import socket
+import sqlite3
 import subprocess
 import weakref
 from collections.abc import AsyncIterator
@@ -41,7 +43,7 @@ from backend.parser import (
     parse_event,
 )
 from backend.projects import ProjectRunError, link_run, owned_project, prepare_run
-from backend.public_events import message_created_event, project_public_event_data
+from backend.public_events import TERMINAL_EVENT_TYPES, message_created_event, project_public_event_data
 from backend.repository import (
     TERMINAL_RUN_STATUSES,
     RunAcceptance,
@@ -428,6 +430,8 @@ async def execute_accepted_run(
         return task.result(), interrupted
 
     def transient_network_error(error: OSError) -> bool:
+        if isinstance(error, socket.gaierror):
+            return error.errno == socket.EAI_AGAIN
         return isinstance(error, ConnectionError) or error.errno in {
             errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ETIMEDOUT,
         }
@@ -435,11 +439,12 @@ async def execute_accepted_run(
     async def recover_handoff(
         *, cancelled: bool = False, allow_pending: bool = False,
         error_code: str = "ai_policy_unavailable",
-    ) -> Any:
+    ) -> Event | None:
         # Retain this application's existing run slot and exact attempt identity
         # until the DB returns. Never detach retries or scan another worker's runs.
         delay = 0.25
         failures = 0
+        finalization_attempted = False
         while True:
             try:
                 async with asyncio.timeout(10):
@@ -448,16 +453,33 @@ async def execute_accepted_run(
                             session, acceptance.run_id, admission_attempt_id,
                             cancelled=cancelled, allow_pending=allow_pending,
                             error_code=error_code,
+                            invalidate_runner_reset=app_state.settings.executor == "runner",
                         )
+                        terminal = final.terminal_event if final is not None else None
+                        if final is not None:
+                            finalization_attempted = True
+                        elif finalization_attempted:
+                            # A prior terminal COMMIT/close may have lost its ACK.
+                            # fail_admission_handoff still holds the context/run locks.
+                            # Replay the authoritative saved outcome, even if a rival
+                            # finalized it; never claim attribution or modify it.
+                            terminal = await session.scalar(select(Event).where(
+                                Event.run_id == acceptance.run_id,
+                                Event.type.in_(TERMINAL_EVENT_TYPES),
+                            ).order_by(Event.seq.desc()).limit(1))
                         await session.commit()
-                        return final
+                        return terminal
             except (DBAPIError, TimeoutError, PoolTimeoutError, OSError) as error:
                 if isinstance(error, OSError) and not isinstance(error, TimeoutError):
                     if not transient_network_error(error):
                         raise
                 if isinstance(error, DBAPIError):
                     sqlstate = getattr(error.orig, "sqlstate", "") or ""
-                    if not (error.connection_invalidated
+                    sqlite_code = getattr(error.orig, "sqlite_errorcode", None)
+                    sqlite_contention = sqlite_code is not None and sqlite_code & 0xff in {
+                        sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED,
+                    }
+                    if not (error.connection_invalidated or sqlite_contention
                             or (isinstance(error.orig, OSError) and transient_network_error(error.orig))
                             or sqlstate.startswith(("08", "53"))
                             or sqlstate in {"40P01", "55P03", "57P01", "57P02", "57P03"}):
@@ -500,7 +522,7 @@ async def execute_accepted_run(
         if cancelled_again:
             raise asyncio.CancelledError()
 
-    async def fail_pending() -> Any:
+    async def fail_pending() -> Event | None:
         return await recover_handoff(allow_pending=True)
 
     admitting = asyncio.create_task(owned_admission())
@@ -521,7 +543,7 @@ async def execute_accepted_run(
         if interrupted or asyncio.current_task().cancelling():
             raise asyncio.CancelledError()
         if final is not None:
-            await deliver_event(final.terminal_event)
+            await deliver_event(final)
         return
     if interrupted:
         recovery_stopping.set()

@@ -182,6 +182,7 @@ async def fail_admission_handoff(
     session: AsyncSession, run_id: str, attempt_id: str, *,
     cancelled: bool = False, allow_pending: bool = False,
     error_code: str = "ai_policy_unavailable",
+    invalidate_runner_reset: bool = False,
 ) -> RunFinalization | None:
     """Fail closed only an unclaimed run or this attempt's untouched admission.
 
@@ -194,7 +195,7 @@ async def fail_admission_handoff(
     locked = await _lock_run_context(session, run_id)
     if locked is None:
         return None
-    run, _ = locked
+    run, conversation = locked
     pending = allow_pending and run.status == "pending" and run.admitted_at is None
     if not pending:
         if (run.status != "running" or run.admitted_at is None
@@ -206,6 +207,11 @@ async def fail_admission_handoff(
         # Executor/concurrent activity is not a pre-executor handoff failure.
         if started_seq is None or started_seq != run.next_event_seq:
             return None
+    if invalidate_runner_reset and not pending and run.context_mode == "reset":
+        # Admission reset the DB, but this owner never reached runner.discard().
+        # Fail closed durably so a later request cannot reuse the old SDK/turn.
+        conversation.claude_session_id = None
+        conversation.context_state = "unavailable"
     return await finalize_run(
         session, run_id, assistant_content=None, exit_code=None,
         status="outcome_unknown" if cancelled else "failed",

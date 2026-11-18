@@ -1,6 +1,8 @@
 """COMMIT outcome uncertainty: apply durably, then lose the application acknowledgement."""
 import asyncio
 import errno
+import socket
+import sqlite3
 
 import asyncpg
 from sqlalchemy.engine import make_url
@@ -11,7 +13,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, TimeoutError as PoolTimeoutError
 
 from backend import main
@@ -20,7 +22,7 @@ from backend.ai_access import (
 )
 from backend.public_events import message_created_event, run_started_event
 from backend.models import Conversation, Event, Run
-from backend.repository import accept_run, append_event, finalize_run
+from backend.repository import RunAcceptanceError, accept_run, append_event, finalize_run
 from backend.tests.test_reset_admission import reset_db as reset_db
 
 
@@ -87,7 +89,7 @@ async def test_commit_ack_loss_is_not_rollback(
         assert run.error_code == "ai_policy_unavailable"
         reset_applied = applied and context_mode == "reset"
         assert (conversation.claude_session_id, conversation.context_state) == (
-            (None, "reset") if reset_applied else ("previous-session", "active"))
+            (None, "unavailable") if reset_applied else ("previous-session", "active"))
         events = list(await session.scalars(select(Event).where(Event.run_id == run.id).order_by(Event.seq)))
         expected = ["run.accepted"]
         if reset_applied:
@@ -99,9 +101,16 @@ async def test_commit_ack_loss_is_not_rollback(
             client_request_id=key, content="continue", requested_context_mode=context_mode,
             owner_id="reset-owner")
         assert replay.idempotent_replay
-        following = await accept_run(session, conversation_id=conversation_id,
-            client_request_id=str(uuid4()), content="next", owner_id="reset-owner")
-        assert following.resume_session_id == (None if reset_applied else "previous-session")
+        if reset_applied:
+            with pytest.raises(RunAcceptanceError) as refused:
+                await accept_run(session, conversation_id=conversation_id,
+                    client_request_id=str(uuid4()), content="next", owner_id="reset-owner")
+            assert refused.value.code == "conversation_context_unavailable"
+            await session.rollback()
+        else:
+            following = await accept_run(session, conversation_id=conversation_id,
+                client_request_id=str(uuid4()), content="next", owner_id="reset-owner")
+            assert following.resume_session_id == "previous-session"
 
 
 @pytest.mark.parametrize("activity", ["other_owner", "message", "started_again", "terminal"])
@@ -380,7 +389,8 @@ async def test_recovery_does_not_retry_programming_database_failure(reset_db, mo
 
 
 @pytest.mark.parametrize("boundary", ["admission", "recovery"])
-@pytest.mark.parametrize("network_errno", [errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ETIMEDOUT, errno.EACCES])
+@pytest.mark.parametrize("network_errno", [errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ETIMEDOUT, errno.EACCES,
+                                          socket.EAI_AGAIN, socket.EAI_NONAME])
 async def test_fresh_connection_network_errors_preserve_owned_recovery(
     reset_db, monkeypatch, boundary, network_errno,
 ):
@@ -398,6 +408,8 @@ async def test_fresh_connection_network_errors_preserve_owned_recovery(
     async def connect():
         connect_attempts.append(True)
         if len(connect_attempts) == failing_connection_number:
+            if network_errno in {socket.EAI_AGAIN, socket.EAI_NONAME}:
+                raise socket.gaierror(network_errno, "simulated resolver failure")
             raise OSError(network_errno, "simulated connect failure")
         return await asyncpg.connect(make_url(database.url).set(
             drivername="postgresql").render_as_string(hide_password=False))
@@ -426,10 +438,10 @@ async def test_fresh_connection_network_errors_preserve_owned_recovery(
     monkeypatch.setattr(main, "run_via_runner", forbidden)
     try:
         state = SimpleNamespace(database=database, settings=SimpleNamespace(executor="runner"))
-        if network_errno == errno.EACCES:
+        if network_errno in {errno.EACCES, socket.EAI_NONAME}:
             with pytest.raises(OSError) as caught:
                 await main.execute_accepted_run(state, accepted, "continue", deliver)
-            assert caught.value.errno == errno.EACCES
+            assert caught.value.errno == network_errno
             assert len(connect_attempts) == failing_connection_number
         else:
             await asyncio.wait_for(main.execute_accepted_run(state, accepted, "continue", deliver), 3)
@@ -440,6 +452,147 @@ async def test_fresh_connection_network_errors_preserve_owned_recovery(
                 assert following.resume_session_id == "previous-session"
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize("sqlite_code", [sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_READONLY])
+async def test_sqlite_recovery_retries_only_lock_contention(reset_db, monkeypatch, sqlite_code):
+    database, conversation_id = reset_db
+    if database.engine.dialect.name != "sqlite":
+        pytest.skip("SQLite contention requires the SQLite driver")
+    async with database.session() as session:
+        accepted = await accept_run(session, conversation_id=conversation_id,
+            client_request_id=str(uuid4()), content="continue", owner_id="reset-owner")
+    real_transaction = main.policy_transaction
+    real_recover = main.fail_admission_handoff
+    attempts = []
+
+    async def uncertain_transaction(session, operation):
+        real_commit = session.commit
+
+        async def lose_ack():
+            await real_commit()
+            raise DBAPIError("COMMIT", None, ConnectionError("ack lost"))
+
+        monkeypatch.setattr(session, "commit", lose_ack)
+        return await real_transaction(session, operation)
+
+    async def contended_recovery(session, *args, **kwargs):
+        attempts.append(True)
+        if len(attempts) == 1:
+            if sqlite_code == sqlite3.SQLITE_BUSY:
+                blocker = sqlite3.connect(database.engine.url.database)
+                blocker.execute("BEGIN IMMEDIATE")
+                await session.connection()
+                await session.execute(text("PRAGMA busy_timeout=0"))
+                try:
+                    return await real_recover(session, *args, **kwargs)
+                finally:
+                    blocker.rollback()
+                    blocker.close()
+            error = sqlite3.OperationalError("table locked" if sqlite_code == sqlite3.SQLITE_LOCKED else "readonly")
+            error.sqlite_errorcode = sqlite_code
+            raise DBAPIError("BEGIN IMMEDIATE", None, error)
+        return await real_recover(session, *args, **kwargs)
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("No executor after uncertain admission")
+
+    async def deliver(event):
+        pass
+
+    monkeypatch.setattr(main, "policy_transaction", uncertain_transaction)
+    monkeypatch.setattr(main, "fail_admission_handoff", contended_recovery)
+    monkeypatch.setattr(main, "run_via_runner", forbidden)
+    state = SimpleNamespace(database=database, settings=SimpleNamespace(executor="runner"))
+    if sqlite_code == sqlite3.SQLITE_READONLY:
+        with pytest.raises(DBAPIError):
+            await main.execute_accepted_run(state, accepted, "continue", deliver)
+        assert attempts == [True]
+    else:
+        await asyncio.wait_for(main.execute_accepted_run(state, accepted, "continue", deliver), 3)
+        async with database.session() as session:
+            assert (await session.get(Run, accepted.run_id)).status == "failed"
+            assert list(await session.scalars(select(Event.type).where(
+                Event.run_id == accepted.run_id, Event.type == "run.failed"))) == ["run.failed"]
+        assert attempts == [True, True]
+
+
+@pytest.mark.parametrize("admission_applied", [True, False])
+@pytest.mark.parametrize("terminal_applied", [True, False])
+@pytest.mark.parametrize("rival_terminal", [False, True])
+async def test_recovery_commit_ack_loss_delivers_one_persisted_terminal(
+    reset_db, monkeypatch, admission_applied, terminal_applied, rival_terminal,
+):
+    database, conversation_id = reset_db
+    async with database.session() as session:
+        accepted = await accept_run(session, conversation_id=conversation_id,
+            client_request_id=str(uuid4()), content="continue", owner_id="reset-owner")
+    real_transaction = main.policy_transaction
+    real_recover = main.fail_admission_handoff
+    injected = False
+    persisted_terminal_ids = []
+    delivered = []
+
+    async def uncertain_transaction(session, operation):
+        real_commit = session.commit
+
+        async def lose_ack():
+            if admission_applied:
+                await real_commit()
+            else:
+                await session.rollback()
+            raise DBAPIError("COMMIT", None, ConnectionError("admission ack lost"))
+
+        monkeypatch.setattr(session, "commit", lose_ack)
+        return await real_transaction(session, operation)
+
+    async def uncertain_finalization(session, *args, **kwargs):
+        nonlocal injected
+        result = await real_recover(session, *args, **kwargs)
+        if not injected:
+            injected = True
+            real_commit = session.commit
+
+            async def lose_terminal_ack():
+                if terminal_applied:
+                    await real_commit()
+                else:
+                    await session.rollback()
+                    if rival_terminal:
+                        async with database.session() as rival:
+                            await finalize_run(rival, accepted.run_id, assistant_content=None,
+                                status="completed", exit_code=0, session_id="previous-session")
+                async with database.session() as fresh:
+                    terminal = await fresh.scalar(select(Event).where(
+                        Event.run_id == accepted.run_id,
+                        Event.type.in_({"run.failed", "run.completed"})))
+                    if terminal is not None:
+                        persisted_terminal_ids.append(terminal.id)
+                raise DBAPIError("COMMIT", None, ConnectionError("terminal ack lost"))
+
+            monkeypatch.setattr(session, "commit", lose_terminal_ack)
+        return result
+
+    async def deliver(event):
+        delivered.append(event.id)
+
+    async def forbidden(*args, **kwargs):
+        pytest.fail("Unknown admission must not execute")
+
+    monkeypatch.setattr(main, "policy_transaction", uncertain_transaction)
+    monkeypatch.setattr(main, "fail_admission_handoff", uncertain_finalization)
+    monkeypatch.setattr(main, "run_via_runner", forbidden)
+    await asyncio.wait_for(main.execute_accepted_run(SimpleNamespace(database=database,
+        settings=SimpleNamespace(executor="runner")), accepted, "continue", deliver), 3)
+    async with database.session() as session:
+        stored = list(await session.scalars(select(Event.id).where(
+            Event.run_id == accepted.run_id, Event.type.in_({"run.failed", "run.completed"}))))
+        if persisted_terminal_ids:
+            assert stored == persisted_terminal_ids
+        assert len(stored) == 1
+        assert delivered == stored
+        run = await session.get(Run, accepted.run_id)
+        assert run.status == ("completed" if rival_terminal and not terminal_applied else "failed")
 
 
 @pytest.mark.parametrize("phase", ["window", "backoff"])
