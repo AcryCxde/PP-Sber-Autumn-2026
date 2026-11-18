@@ -1,5 +1,94 @@
-# CI/CD: preactivation runbook
-Статус на 2026-11-12: **LOCAL evidence есть; ACTIVATION pending; FIRST DEPLOY blocked**.
+# CI/CD: эксплуатационный runbook
+Статус на 2026-11-15: **ACTIVATION выполнена; FIRST DEPLOY success**.
+
+## Текущий выпуск и порядок работы
+
+На стенде установлен `bc10c7e05d6fc6e9965b0bc01f3d8ed30ca16874`:
+- [CI 43583117140, attempt 2](https://github.com/AcryCxde/PP-Sber-Autumn-2026/actions/runs/43583117140) — все checks и publish **success**;
+- [Deploy 43695918687](https://github.com/AcryCxde/PP-Sber-Autumn-2026/actions/runs/43695918687) — **success**, один ручной dispatch, server state `succeeded`;
+- backend: `ghcr.io/acrycxde/pp-sber-autumn-2026-backend@sha256:f449aeb3a2de50bcde67fcd952cf6ad647be7052637a81418fba339229514a75`;
+- frontend: `ghcr.io/acrycxde/pp-sber-autumn-2026-frontend@sha256:aeff030a53548827e658d2e22eb94403a60ae91c71fb54a0b254e85616646c3f`.
+
+**Обычный выпуск:** PR → обязательный CI → merge в `master` → CI build/checks/publish →
+**Actions → Deploy → Run workflow**, branch `master`, inputs `release_run_id` и полный
+`release_sha` из успешного master-push CI. Deploy **необязательный и только ручной**;
+merge сам стенд не обновляет. Обе repository variables `CICD_PUBLISH_ENABLED` и
+`CICD_DEPLOY_ENABLED` сейчас `true`; это не добавляет автоматического trigger Deploy.
+
+Перед кнопкой проверить release artifact, SHA/attempt, состояние сервера и необходимость
+maintenance. Docs-only merge не создаёт release: прежний release допустим только при
+проверенной docs-only разнице до master. Устаревший/истёкший artifact не заменять rebuild
+во время deploy. Срок текущего artifact: **2026-11-21T12:59:13Z**, имя
+`release-bc10c7e05d6fc6e9965b0bc01f3d8ed30ca16874-43583117140-2`.
+
+**Следующий backend/unknown-code/schema-risk релиз не получает допуск автоматически.**
+Baseline/clearance привязаны к точному SHA, profile и target; при необходимости подготовить
+новые доказательства и maintenance. Кнопка Deploy не исполняет произвольные миграции.
+Не копировать clearance первого выпуска на другой SHA. Failure/rollback — §6.
+
+### Доказательства первого перехода
+
+- Испытанный bridge: `20261030_0013` → `20261111_0005`; количество строк всех 15 исходных
+  таблиц сохранено. Production read-only schema-probe после перехода — **PASS**.
+- Полный baseline: clean + 17 canonical revisions + deployed fork, все **19** сценариев
+  дали тот же fingerprint, что и production:
+  `pg_catalog_v1:sha256:313c225564958f76bd2eb3fe8613b01703deea9805dfb7f598f2e8c4f36ec584`.
+- Предварительные recovery tests: isolated PostgreSQL boot/schema/full dump; S3 4.50
+  List/Get всех 10 объектов и контрольные суммы; home/data archives compare — **PASS**.
+- Остановка до Ready frontend — около **5 мин 1 с**; полная приёмка — **376,8 с**.
+  Все backend/frontend/db/s3 — Ready 1/1; `/` и `/product/` — HTTP 200.
+- Synthetic register/login/me/history/logout — **PASS**, anonymous auth — 401.
+  Новые модельные ответы и создание/скачивание артефактов через UI **не проверялись**.
+  Synthetic smoke-account оставлен; это не доказательство полного модельного E2E.
+- Image pull policy/Secret references подготовлены в согласованном первом окне;
+  `EXECUTOR=cli` сохранён. Runner image на этот стенд не выкатывается.
+  Страховочный recovery timer отключён, собственные тестовые workloads убраны.
+
+### Установленная конфигурация и ротация
+
+Trusted launcher `/usr/local/sbin/coreteams-deploy` использует `/usr/bin/python3.13 -I -S -B`,
+`/opt/coreteams-deploy/runtime` и `/opt/coreteams-deploy/deps-asyncpg-0.30.0`.
+Изолированный asyncpg **0.30.0**, cp313 x86_64 wheel SHA256
+`46973045b567972128a27d40001124fbc821c87a6cade040cfcd4fa8a30bcdc4`;
+system Python packages не менялись. Direct entrypoint — `deploy_credentials.main`.
+
+Файлы `/etc/coreteams-deploy/{github-token,kubeconfig.json,schema-probe.json,
+schema-probe-credential.json,schema-baseline.json,clearance.json}` — root-owned 0600.
+Не выводить содержимое в отчёты. Namespace pull Secret — `coreteams-ghcr-pull-a3`;
+SA/Role/RoleBinding — `coreteams-cicd-a3`, только get/watch/patch backend/frontend.
+Реальным credential подтверждены запреты Secrets, exec, unrelated Deployment, PVC delete и RBAC.
+Dedicated SSH user/key restricted; значения четырёх production secrets не читаются.
+
+- Kubernetes token истекает **2027-02-12T19:35:29Z** — rotate заранее.
+- TLS server certificate истекает **2027-02-12T21:08:32Z** — rotate заранее.
+- Текущая исправленная CA истекает **2027-11-15T08:35:00Z**; CA keyUsage исправлен для
+  строгого Python 3.13, проверки CA/hostname не отключались. Материалы —
+  `/etc/coreteams-deploy/tls-a3`, server cert/key — PGDATA `tls-a3`.
+- Сроки PAT не подтверждены: оператор сверяет expiration в GitHub UI и ротирует вручную.
+  Metadata owner PAT, server verifier и GHCR pull — разные credentials; не заменять их широким token.
+- Read-only probe не имеет TEMP; database owner приложения сохранил TEMP. Исходный ACL/undo
+  сохранён в защищённом evidence. Не расширять права probe ради успешного результата.
+
+### Проверенные точки восстановления
+
+Старый rehearsal backup: `/var/backups/coreteams/maintenance-20261114T210433Z`.
+Свежая **предпереходная** cold-копия четырёх PVC и конфигурации:
+`/var/backups/coreteams/firstdeploy-20261115T084101Z` (0700), с `SHA256SUMS.json`,
+исходными Deployment specs/volume map, `PRODUCTION_BRIDGE.private.json` и `SUCCESS`.
+Это согласованная точка до migration/rollout, не непрерывный backup новых записей после выпуска.
+
+Её внешняя копия на Mac проверена **2026-11-15**:
+- `/Users/romanov/.ssh/coreteams-offhost-firstdeploy-20261115T090347Z/firstdeploy-backup.cms`;
+- **106 795 324 bytes**, CMS AES-256-GCM, SHA256 ciphertext
+  `1552d985aa2c5a4a1664e08b05a9ac93bd65056af13925a9dc3ca7521d121450`;
+- decrypt-stream SHA256 совпал с исходным архивным потоком; локальный plaintext не сохранялся;
+- recipient cert/key — защищённый каталог
+  `/Users/romanov/.ssh/coreteams-offhost-20261114T212256Z/`, private key `backup-recipient.key` 0600.
+  Private key не передавался на сервер. Ciphertext и key пока на одном Mac: отдельное хранение
+  ключа, автоматические retention/rotation и резервирование самого Mac **не настроены**.
+
+Ниже сохранён исходный checklist. Выполненные пункты отмечены; исторические результаты
+и неиспытанные сценарии не выдаются за новые проверки.
 Это Boundary-контракт Actions → GHCR → SSH → k3s → данные, не заявление production-ready.
 Ни этот документ, ни согласование дизайна не разрешают настройки, provisioning или deploy.
 Нормативный контекст: [дизайн](../plans/2026-11-11-cicd-design.md),
@@ -12,12 +101,14 @@
 - [x] **A1 / REPO — commit/push/PR**: разрешены пользователем 2026-11-12 после синхронизации с master.
   Code-review по-русски публикуется после открытия PR; **merge не разрешён**.
   Разрешение на один шаг не разрешает остальные; перед merge review обязателен.
-- [ ] **A2 / GITHUB**: protection/environment/private GHCR publish, scope §3; approval pending.
-- [ ] **A3 / VM**: restricted SSH/RBAC/pull Secret/read-only DB role/mapping, без restart;
-  approval pending. **A / ACTIVATION** требует ссылки на согласование каждого scope из §3.
-  Task 5 remote **не выполнена**; имеющиеся GitHub/SSH полномочия — только read-only.
-- [ ] **P / FIRST DEPLOY**: отдельное согласование maintenance, data changes, первого rollout (§5).
-  A не разрешает P. Наличие секретов или admin-доступа не является approval.
+- [x] **A2 / GITHUB**: protection/environment/private GHCR publish активированы после отдельных
+  согласований пользователя 2026-11-14/15; успешный publish/master CI и Deploy приведены выше.
+- [x] **A3 / VM**: restricted SSH/RBAC/pull Secret/read-only DB role/mapping установлены;
+  permissions, TLS и actual probe проверены. Историческое ограничение только read-only снято
+  отдельными разрешениями на provisioning и maintenance, не самим наличием доступа.
+- [x] **P / FIRST DEPLOY**: пользователь отдельно согласовал финальный пакет; bridge,
+  schema clearance и первый rollout выполнены 2026-11-15. Это не blanket approval следующих
+  maintenance/data changes. Наличие credentials само по себе не является разрешением.
 - [ ] Ручные security/reliability gates: соответствующие skills недоступны, не запускались.
   Security: permissions/injection/secrets/supply chain/SSH/RBAC/Pod privileges.
   Reliability: lock/races/stale release/partial rollout/schema/restore/RPO.
@@ -29,7 +120,10 @@ namespace pull Secret и RBAC. Подтвердить, что A не меняе�
 **Перед P отдельно перечислить:** остановку writers, backups/restore rehearsal, точную миграцию
 (если нужна), clearance на точный SHA/schema, изменение pull policy/Secret references,
 первый image rollout, downtime и согласованный план rollback/потери данных.
-## 2. Что доказано локально, а что нет
+## 2. Историческое evidence 2026-11-11/12 (не текущий статус)
+
+Следующие LOCAL/pending/unverified формулировки описывают состояние до активации.
+Текущие live результаты и ограничения приведены в начале документа.
 Переданные результаты локальной проверки: три `linux/amd64` final images и archives в
 `/tmp/pps-task2.4yteDY/images`; CI contracts — 244 PASS; backend с disposable PostgreSQL —
 308 PASS; runner — 437 PASS; frontend — 28 PASS; product — 45 PASS.
@@ -60,19 +154,23 @@ workload Ready 1/1; application CronJobs не обнаружены. Actual schem
 2026-10-30, off-host copy/restore не доказаны; OCI revision label пуст, provenance не установлен.
 Local ingress HTTPS 200 и TLS valid; external URL timeout с сервера не доказывает внешний outage.
 Это переданное evidence, не самостоятельно повторённые здесь probes; перед P перепроверить.
-## 3. ACTIVATION checklist — только после A, deploy остаётся off
+## 3. ACTIVATION checklist — для новой установки/reprovisioning
+
+На текущем стенде A2/A3 завершены, оба flags включены. Требования и запреты этого
+раздела сохраняются для новой установки; инструкции «оставить off» относятся к её
+подготовке, не к фактическому состоянию уже активированного стенда.
 - [ ] Перепроверить repository/master/protection/rulesets/merge methods/environments/flags.
   Согласовать PR-only master, squash-only merge, required checks и admin bypass policy.
 - [ ] На **реальном PR нового CI** проверить success/failure/docs-only/cancelled пути gate.
   Предлагаемый UI label — `CI / gate`, YAML job — `gate`; protection context взять из
   фактического check-run `name` и GitHub App ID, а не скопировать UI label наугад.
   Затем проверить effective protection и merge blocking. До этого required gate UNVERIFIED.
-- [ ] Environment `production`: selected deployment branch **только master**, не wildcard tags;
+- [x] Environment `production`: selected deployment branch **только master**, не wildcard tags;
   optional required reviewers — отдельное согласование и проверка доступности функции.
-- [ ] Secrets только environment `production`: `CICD_DEPLOY_HOST`, `CICD_DEPLOY_USER`,
+- [x] Secrets только environment `production`: `CICD_DEPLOY_HOST`, `CICD_DEPLOY_USER`,
   `CICD_DEPLOY_SSH_KEY`, `CICD_DEPLOY_KNOWN_HOSTS`. Host key сверить независимым каналом;
   не `ssh-keyscan` в workflow. Не читать/печатать существующие значения.
-- [ ] Обязательная **environment variable** `production`: `CICD_DEPLOY_PORT`.
+- [x] Обязательная **environment variable** `production`: `CICD_DEPLOY_PORT`.
   Только canonical ASCII decimal `1..65535`: без leading zeros, знака, whitespace или выражений.
   Missing/invalid → отказ до SSH и создания credential files; default `22` отсутствует.
   Например, `2297` — только пример конфигурации, не подтверждение live SSH route.
@@ -109,14 +207,26 @@ Local ingress HTTPS 200 и TLS valid; external URL timeout с сервера н�
   Диагностика: только exact package, нормализованный class и HTTP status (`none`, если нет).
   Источник owner route/read scope: [GitHub REST Packages](https://docs.github.com/en/rest/packages/packages#get-a-package-for-the-authenticated-user),
   предоставленный snapshot `REST API endpoints for packages - GitHub Docs.mhtml`, API
-  **2026-03-10**. Код намеренно сохраняет **2022-11-28**; совместимость owner route с этой
-  версией — допущение до отдельно разрешённой API/CI проверки, offline tests её не доказывают.
+  **2026-03-10**. Код сохраняет **2022-11-28**; её фактическая совместимость проверена
+  [metadata preflight 43587379730](https://github.com/AcryCxde/PP-Sber-Autumn-2026/actions/runs/43587379730)
+  и успешным publish CI attempt 2. Offline tests сами по себе этого не доказывают.
 - [ ] `.github/workflows/package-metadata-preflight.yml`: manual metadata-only,
   `permissions: {}`, master only, без checkout/artifacts/build/login/upload;
   secret bearing job не исполняет код release artifacts. Dispatch возможен после
   separately approved review/merge в default branch. **API проверки и GitHub CI/dispatch
   требуют отдельного approval**, здесь не выполнялись. Оба activation flags остаются off.
-### Private GHCR bootstrap — только процедура, НЕ выполнять сейчас
+### Private GHCR bootstrap — процедура для отсутствующих packages
+
+**Выполнено 2026-11-14:** exact packages созданы private с inert marker и source label,
+репозиторий связан, пользователь подтвердил Actions Admin для всех трёх. Фактический tag —
+`bootstrap-private-20261114T103323Z`, не release SHA. Initial-private контракт подтверждён
+предоставленным официальным MHTML «Working with the Container registry»: “When you first
+publish a package, the default visibility is private.” Старый STOP ниже снят для этого
+исполнения, не является текущим blocker. Следующую процедуру не повторять поверх packages.
+Фактически использована существующая owner `gh` авторизация через защищённый pipe и
+временный `DOCKER_CONFIG`; новый bootstrap PAT не создавался, credential не установлен в CI/VM.
+Marker включал один несекретный текстовый файл, без application bytes. Рекомендации ниже
+описывают первоначальный план, а не точный протокол уже выполненного bootstrap.
 
 1. Получить отдельное разрешение на создание **ровно трёх** packages и package settings.
    `CICD_PUBLISH_ENABLED` и `CICD_DEPLOY_ENABLED` оставить отсутствующими/не `true`.
@@ -169,7 +279,11 @@ Local ingress HTTPS 200 и TLS valid; external URL timeout с сервера н�
   фиксированный PATH, отсутствие writable import paths, arbitrary command/manifest arguments.
   Root-owned `/var/lib/coreteams-deploy` (state/lock) и `/etc/coreteams-deploy` (config);
   API credential read-only для нужных contents/actions, не в stdout и не из request JSON.
-### Production credential bootstrap — локально реализован, НЕ активирован
+### Production credential bootstrap — активирован на текущем стенде
+
+Установка credentials, isolated driver и restricted route выполнена; актуальный launcher
+и paths приведены выше. Пример ниже — исторический шаблон, не команда для замены текущей
+установки. Missing/unsafe credential по-прежнему приводит к закрытому отказу.
 
 Отдельный entrypoint `tools.cicd.deploy_credentials`; обычный
 `tools.cicd.deploy_server` сохраняет прежний default. Будущий root launcher после
@@ -240,7 +354,8 @@ credentials не печатается и не передаётся в argv. Ме
 - [ ] Pull Secret можно provision после A, но **не patch live imagePullSecrets/policy**:
   любой Pod-template patch запускает rollout. `IfNotPresent`/Secret reference — reviewed inputs
   для P вместе с image change, без activation restart. Никаких cluster restart/registries.yaml.
-- [ ] Schema adapter **реализован LOCAL**, production mapping/baseline/role не provisioned.
+- [x] Schema adapter установлен; production mapping/baseline/read-only role provisioned и
+  проверены полным catalog probe после согласованного bridge первого выпуска.
   [Probe](../../tools/cicd/schema_probe.py) подключён через server CLI, lazy под lock при schema-risk;
   обычный известный UI-only путь не читает DB config и не импортирует driver.
   Legacy bridge signature недостаточна (timezone/precision/partial indexes/missing tables):
@@ -254,7 +369,8 @@ credentials не печатается и не передаётся в argv. Ме
   и observed DB/user/version/backend address/port, signature равна offline expected canonical.
   Profile строго PG `160015`, `pg_catalog_v1`, inventory 2 (default collation), SHA256 installed `schema_catalog.sql`;
   это узкий SERIAL/heap/btree profile, не универсальный SQL proof. Standard builtin trust,
-  unsupported/external DDL → отказ. Actual production compatibility всё ещё UNVERIFIED.
+  unsupported/external DDL → отказ. Production compatibility для `bc10c7e` подтверждена
+  полным fingerprint выше; это не допуск иной будущей схемы.
 Mapping JSON shape (только placeholder-схема, не готовый production config):
 ```json
 {"schema":1,"endpoint":"<TLS DNS>","port":5432,"ca_file":"<absolute CA path>",
@@ -268,7 +384,8 @@ Baseline генерирует [offline CLI](../../tools/cicd/schema_baseline.py)
 не из dirty working tree/production DB. Он исполняет reviewed migration/bridge code этого SHA
 на собственном disposable pinned PG16.15 Docker container (cached image, loopback trust),
 сверяет clean и все поддержанные upgrade paths; это локальные DDL, не production maintenance.
-Сейчас approved deployment SHA нет: сначала отдельный commit/PR/CI/review/merge, затем baseline.
+Approved SHA первого выпуска — `bc10c7e05d6fc6e9965b0bc01f3d8ed30ca16874`;
+для другого релиза сначала отдельный commit/PR/CI/review/merge и baseline evidence.
 После такого разрешения локально: `python3 -m tools.cicd.schema_baseline --release-sha "$APPROVED_SHA" --mapping "$REVIEWED_MAPPING" --output "$NEW_BASELINE"`.
 Переменные — reviewed SHA, mapping path и новый output path; CLI не заменяет existing output.
 ## 4. Read-only команды проверки
@@ -310,7 +427,12 @@ REST reference: [checks](https://docs.github.com/en/rest/checks/runs),
 [artifacts](https://docs.github.com/en/rest/actions/artifacts).
 Повторная загрузка официальных страниц здесь заблокирована сетью; поддержку API version
 `2022-11-28` сверить перед будущими settings writes; новые settings endpoints здесь не предложены.
-## 5. FIRST DEPLOY checklist — отдельный P
+## 5. FIRST DEPLOY checklist — выполненный P и требования следующего перехода
+
+Первый P выполнен 2026-11-15, evidence/ограничения в начале документа. Checklist ниже
+сохранён как процедура будущего перехода, не как сообщение о текущей блокировке.
+Полный model/artifact UI E2E из rehearsal-пункта не заявлен выполненным: проверены recovery,
+schema и auth/history smoke. Для будущего выпуска согласовать соответствующий scope заново.
 - [ ] Read-only preflight actual CPU/platform, CLI pin **2.1.112**, effective auth/network/config,
   schema structural signature и fork history. Не запускать новый backend: startup делает migrations.
 - [ ] Сохранить `EXECUTOR=cli`, PVC/home/workspaces, Secret refs и стратегии; runner image на CLI
