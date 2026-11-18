@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { UNAUTHORIZED_EVENT } from "./api.ts";
+import { BrandMark } from "./BrandMark.tsx";
 
 export type User = { id: string; email: string; role: string; created_at: string };
 type Mode = "login" | "register";
@@ -48,7 +49,7 @@ function SignIn({ notice, onSignedIn }: { notice: string; onSignedIn: (user: Use
   return (
     <main className="auth-page">
       <form className="auth-card" onSubmit={(e) => void submit(e)}>
-        <p className="eyebrow">CoreTeams</p>
+        <div className="brand"><BrandMark /><span>coreteams</span></div>
         <h1>{login ? "Вход" : "Регистрация"}</h1>
         <p className="muted">Рабочее пространство с AI-командой для сложных задач вне одной экспертизы.</p>
         {notice ? <p className="notice" role="status">{notice}</p> : null}
