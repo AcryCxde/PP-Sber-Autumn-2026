@@ -22,7 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models import AiPolicyAudit, Conversation, Event, Run, User
 from backend.repository import (
-    TERMINAL_RUN_STATUSES, _append_event_in_transaction, _lock_run_context,
+    TERMINAL_RUN_STATUSES, ExecutionPhase, RunFinalization,
+    _append_event_in_transaction, _lock_run_context,
     apply_run_context_reset, finalize_run,
 )
 from backend.public_events import run_started_event
@@ -132,7 +133,9 @@ async def change_ai_access(session: AsyncSession, *, actor_id: str, target_id: s
     return PolicyMutationResult(response)
 
 
-async def admit_run(session: AsyncSession, run_id: str) -> AdmissionResult:
+async def admit_run(
+    session: AsyncSession, run_id: str, *, attempt_id: str | None = None,
+) -> AdmissionResult:
     context = (await session.execute(select(Run.conversation_id, Conversation.owner_id)
         .join(Conversation, Run.conversation_id == Conversation.id).where(Run.id == run_id))).one_or_none()
     if context is None:
@@ -153,6 +156,8 @@ async def admit_run(session: AsyncSession, run_id: str) -> AdmissionResult:
     if run.status in TERMINAL_RUN_STATUSES:
         return AdmissionResult(AdmissionState.TERMINAL)
     if run.admitted_at is not None:
+        if attempt_id is not None and run.admission_attempt_id == attempt_id:
+            raise AiAccessError("ai_policy_unavailable", 503, "Ответ admission потерян.")
         return AdmissionResult(AdmissionState.ALREADY_ADMITTED)
     if run.status != "pending":
         raise AiAccessError("ai_policy_unavailable", 503, "Состояние запуска требует восстановления.")
@@ -164,12 +169,49 @@ async def admit_run(session: AsyncSession, run_id: str) -> AdmissionResult:
     now = datetime.now(UTC)
     run.admitted_at = now
     run.admission_policy_version = user.ai_policy_version
+    run.admission_attempt_id = attempt_id
     run.status = "running"
     run.started_at = now
     event = await _append_event_in_transaction(session, run.id, run_started_event())
     await session.flush()
     return AdmissionResult(AdmissionState.ADMITTED, event, run.id,
                            (reset_event,) if reset_event is not None else ())
+
+
+async def fail_admission_handoff(
+    session: AsyncSession, run_id: str, attempt_id: str, *,
+    cancelled: bool = False, allow_pending: bool = False,
+    error_code: str = "ai_policy_unavailable",
+) -> RunFinalization | None:
+    """Fail closed only an unclaimed run or this attempt's untouched admission.
+
+    Re-read after acquiring the context/run locks: a failed COMMIT response says
+    nothing about its durable outcome. Neither running status nor a transaction's
+    in-memory AdmissionResult proves that this attempt owns the persisted run.
+    """
+    if session.get_bind().dialect.name == "sqlite":
+        await session.execute(text("BEGIN IMMEDIATE"))
+    locked = await _lock_run_context(session, run_id)
+    if locked is None:
+        return None
+    run, _ = locked
+    pending = allow_pending and run.status == "pending" and run.admitted_at is None
+    if not pending:
+        if (run.status != "running" or run.admitted_at is None
+                or run.admission_attempt_id != attempt_id):
+            return None
+        started_seq = await session.scalar(select(Event.seq).where(
+            Event.run_id == run.id, Event.type == "run.started")
+            .order_by(Event.seq).limit(1))
+        # Executor/concurrent activity is not a pre-executor handoff failure.
+        if started_seq is None or started_seq != run.next_event_seq:
+            return None
+    return await finalize_run(
+        session, run_id, assistant_content=None, exit_code=None,
+        status="outcome_unknown" if cancelled else "failed",
+        error_code=error_code, execution_phase=ExecutionPhase.BEFORE_EXECUTOR,
+        commit=False,
+    )
 
 
 T = TypeVar("T")
@@ -194,7 +236,12 @@ async def policy_transaction(session: AsyncSession, operation: Callable[[], Awai
             await session.commit()
             return value
         except DBAPIError as error:
-            await session.rollback()
+            try:
+                await session.rollback()
+            except DBAPIError:
+                # A dead connection can lose both COMMIT acknowledgement and
+                # rollback. Preserve the original cause for ownership recovery.
+                raise AiAccessError("ai_policy_unavailable", 503, "AI-доступ временно недоступен.") from error
             if not _retryable(error) or attempt == 2:
                 raise AiAccessError("ai_policy_unavailable", 503, "AI-доступ временно недоступен.") from error
             await asyncio.sleep(0.01 * (attempt + 1))

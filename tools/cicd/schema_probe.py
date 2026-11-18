@@ -177,7 +177,10 @@ class Profile:
         )
 
 
-MIGRATION_HEAD = "20261111_0005"
+# The bridge is a historical checkpoint, not the current Alembic release head.
+BRIDGE_CHECKPOINT = "20261111_0005"
+MIGRATION_HEAD = BRIDGE_CHECKPOINT  # Keep schema=1 legacy construction compatible.
+RELEASE_HEAD = "20261112_0001"
 CANONICAL_REVISIONS = (
     "20260929_0001",
     "20260929_0002",
@@ -198,6 +201,20 @@ CANONICAL_REVISIONS = (
     MIGRATION_HEAD,
 )
 UPGRADE_PATHS = (*CANONICAL_REVISIONS, "deployed:20261030_0013")
+# Closed reviewed chains: never infer support from filenames or a live catalog.
+RELEASE_CHAINS = (CANONICAL_REVISIONS, (*CANONICAL_REVISIONS, RELEASE_HEAD))
+
+
+def release_chain(head: object) -> tuple[str, ...]:
+    _require(type(head) is str)
+    for chain in RELEASE_CHAINS:
+        if chain[-1] == head:
+            return chain
+    raise ProbeError("unsupported release migration head")
+
+
+def upgrade_paths(head: object) -> tuple[str, ...]:
+    return (*release_chain(head), "deployed:20261030_0013")
 
 
 def _sha(raw: object) -> str:
@@ -315,7 +332,7 @@ class Baseline:
         _sha(self.release_sha)
         _require(type(self.profile) is Profile and type(self.schemas) is tuple)
         _require(_schemas(list(self.schemas)) == self.schemas)
-        _require(self.migration_head == MIGRATION_HEAD)
+        release_chain(self.migration_head)
         _require(
             type(self.expected_signature) is str
             and re.fullmatch(
@@ -338,7 +355,7 @@ class Baseline:
         )
         _require(
             tuple(pair[0] for pair in self.upgrade_signatures)
-            == tuple(sorted(UPGRADE_PATHS))
+            == tuple(sorted(upgrade_paths(self.migration_head)))
         )
         _require(
             all(pair[1] == self.expected_signature for pair in self.upgrade_signatures)
@@ -380,7 +397,9 @@ class Baseline:
                 "migration_head",
             },
         )
-        upgrades = _object(data["upgrade_signatures"], set(UPGRADE_PATHS))
+        upgrades = _object(
+            data["upgrade_signatures"], set(upgrade_paths(data["migration_head"]))
+        )
         return cls(
             **{
                 **data,

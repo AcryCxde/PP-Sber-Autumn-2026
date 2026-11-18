@@ -40,8 +40,23 @@ archive() {
 
 build() {
     local name=$1 context=$2 file=$3
-    docker build --platform linux/amd64 --tag "pps-ci:$name" --file "$file" "$context"
+    shift 3
+    docker build --platform linux/amd64 --tag "pps-ci:$name" --file "$file" "$@" "$context"
     archive "$name"
+}
+
+verify_frontend_assets() {
+    local stage_id final_id
+    stage_id=$(< "$output/frontend-checks.image-id")
+    final_id=$(< "$output/frontend.image-id")
+    # Verify the enabled Vite stage and the exact archived nginx payload, not source text.
+    owned_run --entrypoint /bin/sh "$stage_id" -ec \
+        'test "$VITE_ADMIN_SHELL_ENABLED" = true; cd /app/dist; sha256sum index.html assets/*.js assets/*.css' \
+        > "$output/frontend-checks.assets"
+    owned_run --entrypoint /bin/sh "$final_id" -ec \
+        'cd /usr/share/nginx/html; sha256sum index.html assets/*.js assets/*.css' \
+        > "$output/frontend.assets"
+    cmp "$output/frontend-checks.assets" "$output/frontend.assets"
 }
 
 smoke() {
@@ -84,6 +99,9 @@ case "$mode" in
             [[ $component == all || $component == "$name" ]] || continue
             if [[ $name == runner ]]; then
                 build runner runner runner/Dockerfile
+            elif [[ $name == frontend ]]; then
+                # Deliberate CI release path, shared by PR and master; local defaults stay off.
+                build frontend . frontend/Dockerfile --build-arg VITE_ADMIN_SHELL_ENABLED=true
             else
                 build "$name" . "$name/Dockerfile"
             fi
@@ -93,9 +111,11 @@ case "$mode" in
                     stage=${pair%%:*}
                     tag=${pair#*:}
                     docker build --platform linux/amd64 --target "$stage" \
+                        --build-arg VITE_ADMIN_SHELL_ENABLED=true \
                         --tag "pps-ci:$tag" --file frontend/Dockerfile .
                     archive "$tag"
                 done
+                verify_frontend_assets
             fi
         done ;;
     smoke)

@@ -39,7 +39,7 @@ def test_admission_failure_of_duplicate_does_not_terminate_active_executor(tmp_p
             delivered.append(event.type)
         first = asyncio.create_task(main.execute_accepted_run(state, acceptance, "test", deliver))
         await entered.wait()
-        async def unavailable(*args):
+        async def unavailable(*args, **kwargs):
             raise AiAccessError("ai_policy_unavailable", 503, "unavailable")
         monkeypatch.setattr(main, "admit_run", unavailable)
         try:

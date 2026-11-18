@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import logging
 import subprocess
@@ -12,6 +13,7 @@ from uuid import UUID, uuid4
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError, TimeoutError as PoolTimeoutError
 
 from backend import models  # noqa: F401
 from backend.api.admin import router as admin_router, v1_router as admin_v1_router
@@ -22,7 +24,10 @@ from backend.api.product import router as product_router
 from backend.api.projects import router as projects_router
 from backend.artifact_confirmations import reconcile_artifact_confirmations
 from backend.auth import CurrentUser, owns_conversation, owns_run, websocket_user_id
-from backend.ai_access import AiAccessError, AdmissionResult, AdmissionState, admit_run, policy_transaction
+from backend.ai_access import (
+    AiAccessError, AdmissionResult, AdmissionState, admit_run,
+    fail_admission_handoff, policy_transaction,
+)
 from backend.config import PROJECT_ROOT, Settings
 from backend.container_registry import ContainerRegistry
 from backend.containers import ContainerError, ContainerManager
@@ -39,7 +44,6 @@ from backend.projects import ProjectRunError, link_run, owned_project, prepare_r
 from backend.public_events import message_created_event, project_public_event_data
 from backend.repository import (
     TERMINAL_RUN_STATUSES,
-    ExecutionPhase,
     RunAcceptance,
     RunAcceptanceError,
     accept_run,
@@ -398,6 +402,8 @@ async def execute_accepted_run(
 ) -> None:
     """Commit the unique admission before any executor or workspace side effect."""
     committed_admission: AdmissionResult | None = None
+    admission_attempt_id = str(uuid4())
+    recovery_stopping = asyncio.Event()
 
     async def owned_admission() -> AdmissionResult:
         nonlocal committed_admission
@@ -405,7 +411,8 @@ async def execute_accepted_run(
         # commit may have succeeded while its caller never received AdmissionResult.
         async with asyncio.timeout(30):
             async with app_state.database.session() as session:
-                committed_admission = await policy_transaction(session, lambda: admit_run(session, acceptance.run_id))
+                committed_admission = await policy_transaction(session, lambda: admit_run(
+                    session, acceptance.run_id, attempt_id=admission_attempt_id))
                 return committed_admission
 
     OwnedResult = TypeVar("OwnedResult")
@@ -417,20 +424,67 @@ async def execute_accepted_run(
                 await asyncio.shield(task)
             except asyncio.CancelledError:
                 interrupted = True
+                recovery_stopping.set()
         return task.result(), interrupted
+
+    def transient_network_error(error: OSError) -> bool:
+        return isinstance(error, ConnectionError) or error.errno in {
+            errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ETIMEDOUT,
+        }
+
+    async def recover_handoff(
+        *, cancelled: bool = False, allow_pending: bool = False,
+        error_code: str = "ai_policy_unavailable",
+    ) -> Any:
+        # Retain this application's existing run slot and exact attempt identity
+        # until the DB returns. Never detach retries or scan another worker's runs.
+        delay = 0.25
+        failures = 0
+        while True:
+            try:
+                async with asyncio.timeout(10):
+                    async with app_state.database.session() as session:
+                        final = await fail_admission_handoff(
+                            session, acceptance.run_id, admission_attempt_id,
+                            cancelled=cancelled, allow_pending=allow_pending,
+                            error_code=error_code,
+                        )
+                        await session.commit()
+                        return final
+            except (DBAPIError, TimeoutError, PoolTimeoutError, OSError) as error:
+                if isinstance(error, OSError) and not isinstance(error, TimeoutError):
+                    if not transient_network_error(error):
+                        raise
+                if isinstance(error, DBAPIError):
+                    sqlstate = getattr(error.orig, "sqlstate", "") or ""
+                    if not (error.connection_invalidated
+                            or (isinstance(error.orig, OSError) and transient_network_error(error.orig))
+                            or sqlstate.startswith(("08", "53"))
+                            or sqlstate in {"40P01", "55P03", "57P01", "57P02", "57P03"}):
+                        raise
+                if recovery_stopping.is_set():
+                    raise asyncio.CancelledError() from error
+                failures += 1
+                if failures == 1 or failures % 12 == 0:
+                    logger.warning("Admission handoff recovery waiting for database", extra={
+                        "run_id": acceptance.run_id, "attempt_id": admission_attempt_id,
+                        "recovery_failures": failures,
+                    })
+                try:
+                    await asyncio.wait_for(recovery_stopping.wait(), delay)
+                except TimeoutError:
+                    delay = min(delay * 2, 5.0)
+                else:
+                    raise asyncio.CancelledError()
 
     async def store_publication_failure(*, cancelled: bool) -> None:
         # Admission is committed, but no executor has started. Persist an outcome
         # independently of the failing subscriber; replay can deliver it later.
         async def bounded_finalize() -> None:
-            async with asyncio.timeout(10):
-                async with app_state.database.session() as session:
-                    await finalize_run(
-                        session, acceptance.run_id, assistant_content=None, exit_code=None,
-                        status="outcome_unknown" if cancelled else "failed",
-                        error_code="heartbeat_lost" if cancelled else "claude_request_failed",
-                        execution_phase=ExecutionPhase.BEFORE_EXECUTOR,
-                    )
+            await recover_handoff(
+                cancelled=cancelled,
+                error_code="heartbeat_lost" if cancelled else "claude_request_failed",
+            )
 
         # Keep ownership until the bounded attempt finishes. shield alone would
         # detach cleanup if shutdown cancels this task a second time.
@@ -441,21 +495,24 @@ async def execute_accepted_run(
                 await asyncio.shield(finalizing)
             except asyncio.CancelledError:
                 cancelled_again = True
+                recovery_stopping.set()
         finalizing.result()
         if cancelled_again:
             raise asyncio.CancelledError()
 
     async def fail_pending() -> Any:
-        async with asyncio.timeout(10):
-            async with app_state.database.session() as session:
-                return await fail_unadmitted_run(session, acceptance.run_id)
+        return await recover_handoff(allow_pending=True)
 
     admitting = asyncio.create_task(owned_admission())
     try:
         admission, interrupted = await await_owned(admitting)
-    except (AiAccessError, TimeoutError):
-        # Session cleanup may time out after commit but before returning the result.
-        # The captured result proves ownership; never infer it from running status.
+    except (AiAccessError, TimeoutError, PoolTimeoutError, DBAPIError, OSError) as error:
+        if isinstance(error, OSError) and not isinstance(error, TimeoutError):
+            if not transient_network_error(error):
+                raise
+        # Session cleanup can fail after a known commit; the durable attempt fence
+        # is still checked before finalizing. A lost COMMIT response uses the same
+        # fence from a fresh transaction, never a guessed running-state owner.
         if committed_admission is not None and committed_admission.state == AdmissionState.ADMITTED:
             await store_publication_failure(cancelled=True)
             raise
@@ -467,6 +524,7 @@ async def execute_accepted_run(
             await deliver_event(final.terminal_event)
         return
     if interrupted:
+        recovery_stopping.set()
         if admission.state == AdmissionState.ADMITTED:
             await store_publication_failure(cancelled=True)
         raise asyncio.CancelledError()
@@ -477,6 +535,7 @@ async def execute_accepted_run(
         if admission.event is not None:
             await deliver_event(admission.event)
     except asyncio.CancelledError:
+        recovery_stopping.set()
         if admission.state == AdmissionState.ADMITTED:
             await store_publication_failure(cancelled=True)
         raise

@@ -173,6 +173,15 @@ async def test_deadline_during_post_commit_session_cleanup(reset_db, monkeypatch
             await policy_transaction(session, lambda: admit_run(session, accepted.run_id))
     real_session = database.session
     first = True
+    admission_timeout = None
+    original_timeout = asyncio.timeout
+
+    def tracked_timeout(delay):
+        nonlocal admission_timeout
+        timeout = original_timeout(delay)
+        if delay == 30:
+            admission_timeout = timeout
+        return timeout
 
     @asynccontextmanager
     async def delayed_cleanup():
@@ -182,11 +191,12 @@ async def test_deadline_during_post_commit_session_cleanup(reset_db, monkeypatch
         async with real_session() as session:
             yield session
             if delay:
+                assert admission_timeout is not None
+                admission_timeout.reschedule(asyncio.get_running_loop().time())
                 await asyncio.Event().wait()
 
-    original_timeout = asyncio.timeout
     monkeypatch.setattr(database, "session", delayed_cleanup)
-    monkeypatch.setattr(asyncio, "timeout", lambda delay: original_timeout(0.05 if delay == 30 else delay))
+    monkeypatch.setattr(asyncio, "timeout", tracked_timeout)
 
     async def executor(*args, **kwargs):
         pytest.fail("No executor after expired admission handoff")

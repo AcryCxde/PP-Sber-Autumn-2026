@@ -56,6 +56,32 @@ def test_archives_ids_and_smoke_without_rebuild(tmp_path):
     ]
     assert len(finals) == 3
     assert all("--platform linux/amd64" in line for line in finals)
+    frontend_builds = [
+        line
+        for line in calls
+        if line.startswith("build ") and "--file frontend/Dockerfile" in line
+    ]
+    assert len(frontend_builds) == 3
+    assert all(
+        "--build-arg VITE_ADMIN_SHELL_ENABLED=true" in line for line in frontend_builds
+    )
+    assert all(
+        "VITE_ADMIN_SHELL_ENABLED" not in line
+        for line in finals
+        if "--file frontend/Dockerfile" not in line
+    )
+    payload_checks = [line for line in calls if line.startswith("run ")]
+    assert len(payload_checks) == 2
+    assert all(f"sha256:{1:064d}" in line for line in payload_checks)
+    assert 'test "$VITE_ADMIN_SHELL_ENABLED" = true' in payload_checks[0]
+    assert (
+        "cd /app/dist; sha256sum index.html assets/*.js assets/*.css"
+        in payload_checks[0]
+    )
+    assert (
+        "cd /usr/share/nginx/html; sha256sum index.html assets/*.js assets/*.css"
+        in payload_checks[1]
+    )
     log.write_text("")
     subprocess.run(["bash", str(script), "smoke", str(output)], env=env, check=True)
     smoke_calls = log.read_text()
@@ -122,6 +148,62 @@ def test_smoke_cleans_only_owned_container(tmp_path, exit_code):
     )
     assert result.returncode == exit_code
     assert f"rm -f {2:064d}" in log.read_text().splitlines()
+
+
+@pytest.mark.parametrize("failure", ["disabled-stage", "different-assets"])
+def test_frontend_verification_failure_stops_build(tmp_path, failure):
+    docker = tmp_path / "docker"
+    docker.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1 $2" = "image inspect" ]; then printf "sha256:%064d\\n" 1; fi\n'
+        'if [ "$1" = "run" ]; then\n'
+        '  case "$*" in\n'
+        '    *"/app/dist"*)\n'
+        + (
+            "      exit 7\n"
+            if failure == "disabled-stage"
+            else '      printf "stage assets\\n"\n'
+        )
+        + "      ;;\n"
+        '    *"/usr/share/nginx/html"*) printf "different assets\\n" ;;\n'
+        "  esac\n"
+        "fi\n"
+    )
+    docker.chmod(0o755)
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "tools/cicd/check-images.sh"),
+            "build",
+            str(tmp_path / "images"),
+            "frontend",
+        ],
+        env={"PATH": f"{tmp_path}:/usr/bin:/bin"},
+        check=False,
+    )
+    assert result.returncode == (7 if failure == "disabled-stage" else 1)
+
+
+def test_ci_release_path_is_shared_and_local_defaults_stay_off():
+    jobs = yaml.load(
+        (ROOT / ".github/workflows/ci.yml").read_text(), Loader=StrictLoader
+    )["jobs"]
+    build_step = next(
+        step
+        for step in jobs["build"]["steps"]
+        if "check-images.sh build images" in step.get("run", "")
+    )
+    assert "if" not in build_step
+    assert "VITE_ADMIN_SHELL_ENABLED" not in build_step.get("env", {})
+    assert jobs["build"]["if"] == "needs.classify.outputs.docs_only != 'true'"
+    assert (
+        "ARG VITE_ADMIN_SHELL_ENABLED=false"
+        in (ROOT / "frontend/Dockerfile").read_text()
+    )
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
+    assert compose["services"]["frontend"]["build"]["args"] == {
+        "VITE_ADMIN_SHELL_ENABLED": "${VITE_ADMIN_SHELL_ENABLED:-false}"
+    }
 
 
 def test_product_test_sources_are_in_build_context():

@@ -102,6 +102,8 @@ jobs:
     timeout-minutes: 15
     env:
       SCHEMA_PG16_TESTS: "1"
+      # pull_request: GitHub merge candidate; push: exact post-merge master.
+      SCHEMA_CANDIDATE_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:

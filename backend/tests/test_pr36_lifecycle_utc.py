@@ -88,7 +88,7 @@ async def test_repeated_cancellation_waits_for_terminal_commit(reset_db, monkeyp
     publishing = asyncio.Event()
     finalizing = asyncio.Event()
     release = asyncio.Event()
-    real_finalize = main.finalize_run
+    real_finalize = main.fail_admission_handoff
 
     async def blocked_finalize(*args, **kwargs):
         finalizing.set()
@@ -99,7 +99,7 @@ async def test_repeated_cancellation_waits_for_terminal_commit(reset_db, monkeyp
         publishing.set()
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(main, "finalize_run", blocked_finalize)
+    monkeypatch.setattr(main, "fail_admission_handoff",blocked_finalize)
     state = SimpleNamespace(database=database, settings=SimpleNamespace(executor="runner"))
     task = asyncio.create_task(main.execute_accepted_run(state, accepted, "Start fresh", deliver))
     await asyncio.wait_for(publishing.wait(), 2)
@@ -126,9 +126,13 @@ async def test_publication_finalization_failure_is_not_silent(reset_db, monkeypa
     original_timeout = asyncio.timeout
     cleanup_finished = asyncio.Event()
 
+    calls = 0
+
     async def broken_finalize(*args, **kwargs):
+        nonlocal calls
+        calls += 1
         try:
-            if failure == "database":
+            if failure == "database" or calls > 1:
                 raise RuntimeError("database unavailable")
             await asyncio.Event().wait()
         finally:
@@ -137,11 +141,11 @@ async def test_publication_finalization_failure_is_not_silent(reset_db, monkeypa
     async def deliver(event):
         raise ConnectionError("subscriber unavailable")
 
-    monkeypatch.setattr(main, "finalize_run", broken_finalize)
+    monkeypatch.setattr(main, "fail_admission_handoff",broken_finalize)
     if failure == "deadline":
         monkeypatch.setattr(asyncio, "timeout", lambda delay: original_timeout(0.001 if delay == 10 else delay))
     state = SimpleNamespace(database=database, settings=SimpleNamespace(executor="runner"))
-    expected = RuntimeError if failure == "database" else TimeoutError
+    expected = RuntimeError
     with pytest.raises(expected) as caught:
         await main.execute_accepted_run(state, accepted, "Start fresh", deliver)
     assert cleanup_finished.is_set()

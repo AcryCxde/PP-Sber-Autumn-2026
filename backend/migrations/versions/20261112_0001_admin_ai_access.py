@@ -20,6 +20,7 @@ def upgrade() -> None:
         batch.create_check_constraint("ck_users_ai_policy_version", "ai_policy_version >= 0")
     op.add_column("runs", sa.Column("admitted_at", sa.DateTime(timezone=True), nullable=True))
     op.add_column("runs", sa.Column("admission_policy_version", sa.Integer(), nullable=True))
+    op.add_column("runs", sa.Column("admission_attempt_id", sa.String(36), nullable=True))
     op.add_column("runs", sa.Column("harness_estimate", sa.JSON(), nullable=True))
     op.create_index("ix_runs_started_id", "runs", ["started_at", "id"])
     op.create_table(
@@ -56,6 +57,7 @@ def downgrade() -> None:
     op.drop_table("ai_policy_audits")
     op.drop_index("ix_runs_started_id", table_name="runs")
     op.drop_column("runs", "harness_estimate")
+    op.drop_column("runs", "admission_attempt_id")
     op.drop_column("runs", "admission_policy_version")
     op.drop_column("runs", "admitted_at")
     with op.batch_alter_table("users") as batch:

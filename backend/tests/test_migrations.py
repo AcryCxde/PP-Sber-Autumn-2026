@@ -392,8 +392,8 @@ def test_admin_ai_access_additive_upgrade_preserves_history(tmp_path) -> None:
         ).fetchone() == (0, 0)
         assert connection.execute(
             "SELECT status,started_at,cost_usd,admitted_at,admission_policy_version,"
-            "harness_estimate FROM runs WHERE id='historical'"
-        ).fetchone() == ("completed", None, None, None, None, None)
+            "harness_estimate,admission_attempt_id FROM runs WHERE id='historical'"
+        ).fetchone() == ("completed", None, None, None, None, None, None)
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='ai_policy_audits'"
         ).fetchone() == ("ai_policy_audits",)

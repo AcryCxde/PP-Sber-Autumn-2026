@@ -6,6 +6,7 @@ no extracted project directory enters sys.path and no application startup import
 """
 
 import argparse
+import ast
 import asyncio
 import hashlib
 import io
@@ -21,9 +22,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from tools.cicd.schema_probe import (
-    CANONICAL_REVISIONS,
-    MIGRATION_HEAD,
-    UPGRADE_PATHS,
+    BRIDGE_CHECKPOINT,
+    RELEASE_CHAINS,
     Baseline,
     CatalogConnection,
     ProbeError,
@@ -34,6 +34,7 @@ from tools.cicd.schema_probe import (
     canonical_signature,
     installed_catalog_profile,
     read_catalog,
+    upgrade_paths,
 )
 
 IMAGE = (
@@ -87,6 +88,56 @@ def _git(repo: Path, *args: str) -> bytes:
         raise ProbeError("release source unavailable") from error
 
 
+def source_chain(source: Path) -> tuple[str, ...]:
+    """Read literal revision metadata without executing candidate Python."""
+    revisions = {}
+    try:
+        for path in (source / "backend/migrations/versions").iterdir():
+            _require(path.is_file() and not path.is_symlink() and path.suffix == ".py")
+            _require(path.stat().st_size <= 262144)
+            metadata = {}
+            for node in ast.parse(path.read_bytes()).body:
+                targets = (
+                    node.targets
+                    if isinstance(node, ast.Assign)
+                    else ([node.target] if isinstance(node, ast.AnnAssign) else [])
+                )
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id in {
+                        "revision",
+                        "down_revision",
+                        "branch_labels",
+                        "depends_on",
+                    }:
+                        _require(target.id not in metadata)
+                        metadata[target.id] = ast.literal_eval(node.value)
+            _require(
+                set(metadata)
+                == {"revision", "down_revision", "branch_labels", "depends_on"}
+            )
+            revision = metadata["revision"]
+            _require(type(revision) is str and revision not in revisions)
+            _require(path.name.startswith(revision + "_"))
+            _require(
+                metadata["branch_labels"] is None and metadata["depends_on"] is None
+            )
+            revisions[revision] = metadata["down_revision"]
+        for chain in RELEASE_CHAINS:
+            if set(revisions) == set(chain):
+                _require(
+                    all(
+                        revisions[revision] == parent
+                        for revision, parent in zip(
+                            chain, (None, *chain[:-1]), strict=True
+                        )
+                    )
+                )
+                return chain
+    except (OSError, SyntaxError, ValueError, TypeError, RecursionError) as error:
+        raise ProbeError("release migration chain refused") from error
+    raise ProbeError("unsupported release migration chain")
+
+
 @contextmanager
 def release_source(repo: Path, release_sha: str) -> Iterator[Path]:
     """Filter exact locally present commit to regular migration-authority files.
@@ -102,7 +153,7 @@ def release_source(repo: Path, release_sha: str) -> Iterator[Path]:
     tree = _git(
         repo,
         "ls-tree",
-        "-rz",
+        "-rlz",
         release_sha,
         "--",
         "backend/migrations/versions",
@@ -113,7 +164,8 @@ def release_source(repo: Path, release_sha: str) -> Iterator[Path]:
         if not record:
             continue
         metadata, name = record.split(b"\t", 1)
-        mode, kind, oid = metadata.decode().split()
+        mode, kind, oid, size = metadata.decode().split()
+        _require(size.isdecimal() and int(size) <= 262144)
         path = name.decode("utf-8")
         _require(mode == "100644" and kind == "blob")
         _require(
@@ -124,7 +176,8 @@ def release_source(repo: Path, release_sha: str) -> Iterator[Path]:
             )
         )
         expected[path] = oid
-    _require("backend/migration_bridge.py" in expected and len(expected) == 18)
+    _require("backend/migration_bridge.py" in expected)
+    _require(len(expected) in {len(chain) + 1 for chain in RELEASE_CHAINS})
     archive = _git(
         repo, "archive", "--format=tar", release_sha, "--", *sorted(expected)
     )
@@ -138,6 +191,7 @@ def release_source(repo: Path, release_sha: str) -> Iterator[Path]:
                         continue
                     _require(
                         member.isfile()
+                        and member.size <= 262144
                         and member.name in expected
                         and member.name not in seen
                     )
@@ -154,6 +208,7 @@ def release_source(repo: Path, release_sha: str) -> Iterator[Path]:
             _require(seen == set(expected))
         except (OSError, tarfile.TarError, UnicodeError, ValueError) as error:
             raise ProbeError("release source refused") from error
+        source_chain(root)
         yield root
 
 
@@ -173,7 +228,10 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import create_async_engine
-source, authority, port, database, scenario = sys.argv[1:]
+source, authority, port, database, scenario, chain_json = sys.argv[1:]
+import json
+expected = tuple(json.loads(chain_json))
+head = expected[-1]
 spec = importlib.util.spec_from_file_location("release_bridge", pathlib.Path(source)/"backend/migration_bridge.py")
 bridge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bridge)
@@ -181,9 +239,11 @@ config = Config()
 config.set_main_option("script_location", authority)
 config.set_main_option("version_locations", str(pathlib.Path(source)/"backend/migrations/versions"))
 script = ScriptDirectory.from_config(config)
-expected = @VALUE@
-revisions = tuple(r.revision for r in reversed(list(script.walk_revisions())))
-if revisions != expected or script.get_heads() != [@VALUE@] or bridge.HEAD != @VALUE@:
+revisions = tuple(reversed(list(script.walk_revisions())))
+if (tuple(r.revision for r in revisions) != expected or script.get_heads() != [head]
+    or bridge.HEAD != @CHECKPOINT@
+    or any(r.down_revision != parent or r.dependencies is not None or r.branch_labels
+           for r, parent in zip(revisions, (None, *expected[:-1]), strict=True))):
     raise RuntimeError("unsupported release migration chain")
 async def run():
     engine = create_async_engine("postgresql+asyncpg://migrator@127.0.0.1:"+port+"/"+database,
@@ -196,29 +256,32 @@ async def run():
                     bridge._apply(conn, bridge._paths("deployed", "20261030_0013"))
                     command.ensure_version(config)
                     conn.execute(sa.text("INSERT INTO alembic_version VALUES ('20261030_0013')"))
-                    bridge.bridge(conn, apply=True, backup_verified=True)
+                    evidence = bridge.bridge(conn, apply=True, backup_verified=True)
+                    if evidence["target_revision"] != @CHECKPOINT@ or list(conn.execute(
+                        sa.text("SELECT version_num FROM alembic_version")).scalars()) != [@CHECKPOINT@]:
+                        raise RuntimeError("unexpected bridge checkpoint")
+                    command.upgrade(config, head)
                 else:
                     if scenario != "clean":
                         if scenario not in expected:
                             raise RuntimeError("unsupported historical revision")
                         command.upgrade(config, scenario)
                         bridge.preflight_canonical(conn)
-                    command.upgrade(config, @VALUE@)
-                if list(conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalars()) != [@VALUE@]:
+                    command.upgrade(config, head)
+                if list(conn.execute(sa.text("SELECT version_num FROM alembic_version")).scalars()) != [head]:
                     raise RuntimeError("unexpected migration head")
             await connection.run_sync(migrate)
     finally:
         await engine.dispose()
 asyncio.run(run())
-""".replace("@VALUE@", repr(CANONICAL_REVISIONS), 1).replace(
-    "@VALUE@", repr(MIGRATION_HEAD)
-)
+""".replace("@CHECKPOINT@", repr(BRIDGE_CHECKPOINT))
 
 
 def migrate_release(source: Path, port: int, database: str, scenario: str) -> None:
     _require(type(port) is int and 1 <= port <= 65535)
     _require(database.startswith("baseline_") and database[9:].isalnum())
-    _require(scenario in ("clean", *UPGRADE_PATHS))
+    chain = source_chain(source)
+    _require(scenario in ("clean", *upgrade_paths(chain[-1])))
     with tempfile.TemporaryDirectory(prefix="schema-runner-") as directory:
         authority = Path(directory)
         (authority / "env.py").write_text(ENV)
@@ -241,6 +304,7 @@ def migrate_release(source: Path, port: int, database: str, scenario: str) -> No
                     str(port),
                     database,
                     scenario,
+                    json.dumps(chain),
                 ],
                 cwd=authority,
                 env=env,
@@ -325,8 +389,10 @@ def collect_baseline(
 ) -> Baseline:
     """No mapping endpoint/credential is ever passed to a connection."""
     _require(mapping.profile == installed_catalog_profile())
+    _sha(release_sha)
+    chain = source_chain(source)
     signatures = {}
-    for scenario in ("clean", *UPGRADE_PATHS):
+    for scenario in ("clean", *upgrade_paths(chain[-1])):
         database = "baseline_" + uuid.uuid4().hex
         _psql(container, f"CREATE DATABASE {database} OWNER migrator")
         try:
@@ -364,6 +430,7 @@ def collect_baseline(
         tuple(
             sorted((key, value) for key, value in signatures.items() if key != "clean")
         ),
+        migration_head=chain[-1],
     )
 
 

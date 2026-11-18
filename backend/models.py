@@ -206,6 +206,7 @@ class Run(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     admitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     admission_policy_version: Mapped[int | None] = mapped_column(Integer)
+    admission_attempt_id: Mapped[str | None] = mapped_column(String(36))
     harness_estimate: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
