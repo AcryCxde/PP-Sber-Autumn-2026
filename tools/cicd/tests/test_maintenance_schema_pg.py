@@ -6,8 +6,6 @@ import subprocess
 import time
 
 import pytest
-from alembic import command
-from alembic.config import Config
 
 from tools.cicd import maintenance_schema as module
 from tools.cicd.schema_probe import (
@@ -25,6 +23,10 @@ pg16 = pg16_fixture
 
 
 def migrate(pg, revision):
+    # The classify job deliberately installs only workflow-test dependencies.
+    from alembic import command
+    from alembic.config import Config
+
     config = Config()
     config.set_main_option("script_location", str(ROOT / "backend/migrations"))
     config.attributes["database_url"] = (
