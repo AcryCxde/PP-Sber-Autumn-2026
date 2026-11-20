@@ -16,10 +16,13 @@ import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Protocol
+from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
+
+if TYPE_CHECKING:
+    from tools.cicd.maintenance import HostSteps, MaintenancePlan, MaintenanceState
 
 from tools.cicd.classify import _is_doc
 from tools.cicd.release import REPOSITORY, SHA, Release, _json, _object, _require
@@ -30,6 +33,8 @@ NAMES = ("backend", "frontend")
 PREFIX = f"/repos/{REPOSITORY}"
 STATE = Path("/var/lib/coreteams-deploy")
 CONFIG = Path("/etc/coreteams-deploy/clearance.json")
+MAINTENANCE_CONFIG = Path("/etc/coreteams-deploy/maintenance.json")
+MAINTENANCE_JOURNAL = "maintenance-state.json"
 
 
 class API(Protocol):
@@ -102,12 +107,76 @@ class Clearance:
         )
 
 
-def parse_request(raw: bytes) -> Release:
+@dataclass(frozen=True)
+class MaintenanceRequest:
+    release: Release
+
+    def __post_init__(self) -> None:
+        _require(isinstance(self.release, Release), "invalid maintenance release")
+
+
+@dataclass(frozen=True)
+class MaintenanceConfiguration:
+    provider: str
+
+    def __post_init__(self) -> None:
+        import re
+
+        _require(
+            isinstance(self.provider, str)
+            and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", self.provider) is not None,
+            "invalid installed provider identity",
+        )
+
+    @classmethod
+    def parse(cls, text: str) -> "MaintenanceConfiguration":
+        data = _object(_json(text), {"schema", "provider"})
+        _require(
+            type(data["schema"]) is int and data["schema"] == 1, "invalid config schema"
+        )
+        return cls(data["provider"])
+
+
+@dataclass(frozen=True)
+class PreparedMaintenance:
+    plan: "MaintenancePlan"
+    host: "HostSteps"
+
+    def __post_init__(self) -> None:
+        from tools.cicd.maintenance import MaintenancePlan
+
+        _require(isinstance(self.plan, MaintenancePlan), "invalid installed plan")
+
+
+class MaintenanceProvider(Protocol):
+    """Injected installed policy, never imported or selected by the request.
+
+    prepare is read-only and bounded; it resolves exact approvals/target/procedure
+    from protected host policy. HostSteps is separately reviewed and provisioned.
+    No production implementation or backup destination is supplied by this seam.
+    """
+
+    provider_id: str
+
+    def prepare(
+        self, release: Release, *, timeout_seconds: int
+    ) -> PreparedMaintenance: ...
+
+
+def parse_request(raw: bytes) -> Release | MaintenanceRequest:
     _require(0 < len(raw) <= LIMIT, "request exceeds bound or is empty")
-    return Release.parse(raw.decode("utf-8"))
+    text = raw.decode("utf-8")
+    data = _json(text)
+    if isinstance(data, dict) and set(data) == {"schema", "release"}:
+        _require(
+            type(data["schema"]) is int and data["schema"] == 2,
+            "invalid handoff schema",
+        )
+        return MaintenanceRequest(Release.parse(json.dumps(data["release"])))
+    return Release.parse(text)
 
 
-def read_request(stream: BinaryIO) -> Release:
+def read_request(stream: BinaryIO) -> Release | MaintenanceRequest:
     # Bound reading time as well as bytes; slow/no-EOF senders cannot hold forever.
     def expired(signum: int, frame: object) -> None:
         raise TimeoutError("stdin deadline exceeded")
@@ -134,7 +203,7 @@ def deployment_lock(directory: Path) -> Iterator[None]:
         os.close(fd)
 
 
-def atomic_state(directory: Path, data: dict) -> None:
+def atomic_state(directory: Path, data: dict, *, filename: str = "state.json") -> None:
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -144,7 +213,7 @@ def atomic_state(directory: Path, data: dict) -> None:
             json.dump(data, stream, sort_keys=True)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, directory / "state.json")
+        os.replace(temporary, directory / filename)
         fd = os.open(directory, os.O_RDONLY)
         try:
             os.fsync(fd)
@@ -199,6 +268,222 @@ def read_state(directory: Path) -> dict | None:
     if data["status"] == "succeeded":
         _require(data["deployed_sha"] == data["requested"]["sha"], "state SHA mismatch")
     return data
+
+
+def maintenance_state_data(state: "MaintenanceState") -> dict:
+    # All fields are trusted typed evidence, never adapter output or credentials.
+    data = asdict(state)
+    data["plan"]["release"] = state.plan.release.to_dict()
+    data["updated_at"] = state.updated_at.isoformat()
+    return {"schema": 1, "state": data}
+
+
+def read_maintenance_state(directory: Path) -> "MaintenanceState | None":
+    from tools.cicd.maintenance import (
+        DDLBounds,
+        Evidence,
+        Images,
+        MaintenancePlan,
+        MaintenanceState,
+        Phase,
+        Reason,
+        Snapshot,
+        Status,
+    )
+
+    path = directory / MAINTENANCE_JOURNAL
+    if not os.path.lexists(path):
+        return None
+    _require(
+        not path.is_symlink() and path.stat().st_size <= 65536,
+        "invalid maintenance journal",
+    )
+    envelope = _object(_json(path.read_text()), {"schema", "state"})
+    _require(
+        type(envelope["schema"]) is int and envelope["schema"] == 1,
+        "invalid journal schema",
+    )
+    data = _object(
+        envelope["state"],
+        {
+            "plan",
+            "phase",
+            "status",
+            "old",
+            "evidence",
+            "disruption_possible",
+            "ddl_possible",
+            "reason",
+            "failure_phase",
+            "availability_recovered",
+            "updated_at",
+        },
+    )
+    plan = _object(
+        data["plan"],
+        {
+            "release",
+            "target",
+            "old_schema",
+            "new_schema",
+            "procedure",
+            "procedure_digest",
+            "ddl",
+        },
+    )
+    ddl = _object(plan["ddl"], {"lock_seconds", "statement_seconds", "process_seconds"})
+    parsed_plan = MaintenancePlan(
+        Release.parse(json.dumps(plan["release"])),
+        plan["target"],
+        plan["old_schema"],
+        plan["new_schema"],
+        plan["procedure"],
+        plan["procedure_digest"],
+        DDLBounds(**ddl),
+    )
+    old = None
+    if data["old"] is not None:
+        snapshot = _object(data["old"], {"target", "schema", "images", "replicas"})
+        images = _object(snapshot["images"], {"backend", "frontend"})
+        _require(isinstance(snapshot["replicas"], list), "invalid replicas")
+        old = Snapshot(
+            snapshot["target"],
+            snapshot["schema"],
+            Images(**images),
+            tuple(snapshot["replicas"]),
+        )
+    _require(isinstance(data["evidence"], list), "invalid evidence")
+    evidence = tuple(
+        Evidence(**_object(item, {"kind", "manifest", "report"}))
+        for item in data["evidence"]
+    )
+    _require(isinstance(data["updated_at"], str), "invalid journal timestamp")
+    state = MaintenanceState(
+        parsed_plan,
+        Phase(data["phase"]),
+        Status(data["status"]),
+        old,
+        evidence,
+        data["disruption_possible"],
+        data["ddl_possible"],
+        Reason(data["reason"]),
+        Phase(data["failure_phase"]) if data["failure_phase"] is not None else None,
+        data["availability_recovered"],
+        datetime.fromisoformat(data["updated_at"]),
+    )
+    if state.status == Status.SUCCEEDED:
+        _require(
+            state.phase == Phase.COMPLETE
+            and state.old is not None
+            and state.reason == Reason.NONE
+            and state.failure_phase is None
+            and state.disruption_possible
+            and state.ddl_possible
+            and not state.availability_recovered
+            and tuple(e.kind for e in state.evidence)
+            == ("backup", "validated_backup", "backup_readback", "restore_check")
+            and len({e.manifest for e in state.evidence}) == 1,
+            "invalid maintenance success record",
+        )
+    return state
+
+
+class _VerifiedHost:
+    """Delegate host effects, but own both strict GitHub race gates."""
+
+    def __init__(self, host: "HostSteps", verifier: Verifier) -> None:
+        self.host, self.verifier = host, verifier
+
+    def reverify_current_release(
+        self, release: Release, *, timeout_seconds: int
+    ) -> bool:
+        return self.verifier(release) == release
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.host, name)
+
+
+def deploy_maintenance(
+    request: MaintenanceRequest,
+    *,
+    state_dir: Path,
+    verifier: Verifier,
+    configuration: MaintenanceConfiguration | None,
+    provider: MaintenanceProvider | None,
+) -> str:
+    from tools.cicd.maintenance import (
+        Phase,
+        Status,
+        recover_old_availability,
+        run_maintenance,
+    )
+
+    _require(
+        configuration is not None and provider is not None,
+        "installed maintenance provider required",
+    )
+    _require(
+        provider.provider_id == configuration.provider, "installed provider mismatch"
+    )
+    with deployment_lock(state_dir):
+        previous = read_maintenance_state(state_dir)
+        _require(
+            previous is None
+            or (
+                previous.status == Status.SUCCEEDED
+                and previous.plan.release.context.sha != request.release.context.sha
+            ),
+            "manual maintenance reconciliation required",
+        )
+        legacy = read_state(state_dir)
+        _require(
+            legacy is None or legacy["status"] == "succeeded",
+            "manual legacy reconciliation required",
+        )
+        _require(
+            verifier(request.release) == request.release, "GitHub release mismatch"
+        )
+        prepared = provider.prepare(request.release, timeout_seconds=60)
+        _require(
+            isinstance(prepared, PreparedMaintenance)
+            and prepared.plan.release == request.release,
+            "installed plan release mismatch",
+        )
+        _require(
+            verifier(request.release) == request.release, "GitHub release mismatch"
+        )
+
+        def persist(state: "MaintenanceState") -> None:
+            atomic_state(
+                state_dir, maintenance_state_data(state), filename=MAINTENANCE_JOURNAL
+            )
+
+        host = cast("HostSteps", _VerifiedHost(prepared.host, verifier))
+        result = run_maintenance(
+            prepared.plan, host=host, persist=persist, previous=previous
+        )
+        if (
+            result.status == Status.FAILED
+            and result.disruption_possible
+            and not result.ddl_possible
+        ):
+            failed_phase = result.phase.value
+            result = recover_old_availability(result, host=host, persist=persist)
+            if result.availability_recovered:
+                print(
+                    f"Deploy failed in {failed_phase}; previous release is available.",
+                    file=sys.stderr,
+                )
+        if result.status == Status.FAILED:
+            print(
+                f"Deploy stopped in {result.phase.value}; inspect trusted journal.",
+                file=sys.stderr,
+            )
+        _require(
+            result.status == Status.SUCCEEDED and result.phase == Phase.COMPLETE,
+            "maintenance did not complete; inspect durable phase",
+        )
+        return "succeeded"
 
 
 def migration_risk(api: API, baseline: str, candidate: str) -> bool:
@@ -284,6 +569,11 @@ def deploy(
     schema_probe: Callable[[], SchemaEvidence] | None = None,
 ) -> str:
     with deployment_lock(state_dir):
+        _require(
+            not os.path.lexists(MAINTENANCE_CONFIG)
+            and not os.path.lexists(state_dir / MAINTENANCE_JOURNAL),
+            "legacy deployment disabled by maintenance activation",
+        )
         old = read_state(state_dir)
         _require(
             old is None or old["status"] == "succeeded",
@@ -407,11 +697,16 @@ def trusted_path(path: Path, *, directory: bool = False) -> None:
     )
 
 
-def main(*, api: API | None = None, command: Command | None = None) -> int:
+def main(
+    *,
+    api: API | None = None,
+    command: Command | None = None,
+    maintenance_provider: MaintenanceProvider | None = None,
+) -> int:
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
     def terminate(signum: int, frame: object) -> None:
-        raise InterruptedError("deployment terminated")
+        raise KeyboardInterrupt("deployment terminated")
 
     signal.signal(signal.SIGTERM, terminate)
     try:
@@ -420,7 +715,44 @@ def main(*, api: API | None = None, command: Command | None = None) -> int:
         trusted_path(Path(__file__))
         trusted_path(STATE.parent, directory=True)
         trusted_path(STATE, directory=True)
-        release = read_request(sys.stdin.buffer)
+        request = read_request(sys.stdin.buffer)
+        configuration = None
+        if os.path.lexists(MAINTENANCE_CONFIG):
+            from tools.cicd.schema_probe import protected_read
+
+            configuration = MaintenanceConfiguration.parse(
+                protected_read(MAINTENANCE_CONFIG, LIMIT).decode("utf-8")
+            )
+        if isinstance(request, MaintenanceRequest):
+            _require(
+                configuration is not None and maintenance_provider is not None,
+                "installed maintenance provider required",
+            )
+            from tools.cicd.verify_release import GitHubAPI, verify_release
+
+            api = api if api is not None else GitHubAPI()
+
+            def verify_maintenance(release: Release) -> Release:
+                return verify_release(
+                    str(release.context.workflow_run_id),
+                    release.context.sha,
+                    api=api,
+                    require_current_master=True,
+                )
+
+            deploy_maintenance(
+                request,
+                state_dir=STATE,
+                verifier=verify_maintenance,
+                configuration=configuration,
+                provider=maintenance_provider,
+            )
+            return 0
+        _require(
+            configuration is None,
+            "legacy deployment disabled by maintenance activation",
+        )
+        release = request
         clearance = None
         if CONFIG.exists():
             from tools.cicd.schema_probe import protected_read
@@ -450,7 +782,15 @@ def main(*, api: API | None = None, command: Command | None = None) -> int:
             clearance=clearance,
             schema_probe=schema_probe,
         )
-    except (ValueError, OSError, KeyError, TypeError, UnicodeError):
+    except (
+        ValueError,
+        OSError,
+        KeyError,
+        TypeError,
+        UnicodeError,
+        RuntimeError,
+        KeyboardInterrupt,
+    ):
         # Never echo tokens, kubectl stderr or caller-supplied payloads.
         print(
             "deployment refused; inspect trusted state and reconcile with operator",

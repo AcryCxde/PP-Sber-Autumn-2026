@@ -169,10 +169,16 @@ def test_deploy_is_manual_disabled_trusted_and_credential_isolated():
     text = (ROOT / ".github/workflows/deploy.yml").read_text()
     workflow = yaml.load(text, Loader=StrictLoader)
     assert set(workflow["on"]) == {"workflow_dispatch"}
-    assert set(workflow["on"]["workflow_dispatch"]["inputs"]) == {
-        "release_run_id",
-        "release_sha",
+    assert workflow["on"]["workflow_dispatch"] is None
+    assert "inputs." not in text
+    verify_step = next(
+        s for s in workflow["jobs"]["verify"]["steps"] if s.get("id") == "verify"
+    )
+    assert verify_step["env"] == {
+        "GH_TOKEN": "${{ github.token }}",
+        "CICD_DEPLOY_ENABLED": "${{ vars.CICD_DEPLOY_ENABLED }}",
     }
+    assert "python -m tools.cicd.verify_release" in verify_step["run"]
     assert workflow["permissions"] == {"contents": "read", "actions": "read"}
     assert workflow["concurrency"] == {
         "group": "production-deploy",
@@ -202,7 +208,7 @@ def test_deploy_is_manual_disabled_trusted_and_credential_isolated():
         "UserKnownHostsFile=",
         "BatchMode=yes",
         "/usr/local/sbin/coreteams-deploy",
-        "16383",
+        "16360",
         "ssh -F /dev/null -T",
     ):
         assert required in command
@@ -325,7 +331,10 @@ def test_deploy_port_valid(deploy_shell, port):
         "deploy_user@deploy.example.invalid",
         "/usr/local/sbin/coreteams-deploy",
     ]
-    assert captured["stdin"] == payload + "\n"
+    assert json.loads(captured["stdin"]) == {
+        "schema": 2,
+        "release": json.loads(payload),
+    }
     assert step["env"]["DEPLOY_PORT"] == "${{ vars.CICD_DEPLOY_PORT }}"
 
 

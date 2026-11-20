@@ -274,6 +274,48 @@ def test_protected_credential_files(monkeypatch, case):
     assert opened
 
 
+def test_activated_bootstrap_without_provider_refuses_before_credentials(
+    monkeypatch, tmp_path, protected
+):
+    config = tmp_path / "maintenance.json"
+    config.write_text('{"schema":1,"provider":"reviewed-host"}')
+    monkeypatch.setattr(deploy_server, "MAINTENANCE_CONFIG", config)
+    monkeypatch.setattr(
+        credentials, "GitHubAPI", lambda **kw: pytest.fail("API reached")
+    )
+    monkeypatch.setattr(
+        deploy_server, "main", lambda **kw: pytest.fail("server reached")
+    )
+    assert credentials.main() == 1
+    assert protected[1] == []
+
+
+def test_activated_bootstrap_never_supplies_image_patch_credentials(
+    monkeypatch, tmp_path, protected
+):
+    config = tmp_path / "maintenance.json"
+    config.write_text('{"schema":1,"provider":"reviewed-host"}')
+    monkeypatch.setattr(deploy_server, "MAINTENANCE_CONFIG", config)
+    protected[0].pop(credentials.KUBECONFIG)
+    provider = SimpleNamespace(provider_id="reviewed-host")
+    monkeypatch.setattr(credentials, "GitHubAPI", lambda *, token: "api")
+    calls = []
+    monkeypatch.setattr(deploy_server, "main", lambda **kw: calls.append(kw) or 0)
+    assert credentials.main(maintenance_provider=provider) == 0
+    assert protected[1] == [credentials.TOKEN]
+    assert calls == [{"api": "api", "maintenance_provider": provider}]
+
+
+def test_provider_without_protected_activation_cannot_enable_route(
+    monkeypatch, tmp_path, protected
+):
+    monkeypatch.setattr(deploy_server, "MAINTENANCE_CONFIG", tmp_path / "absent")
+    monkeypatch.setattr(
+        deploy_server, "main", lambda **kw: pytest.fail("server reached")
+    )
+    assert credentials.main(maintenance_provider=SimpleNamespace()) == 1
+
+
 @pytest.mark.parametrize("mode", [0o400, 0o600])
 def test_protected_credential_accepts_exact_modes(monkeypatch, mode):
     import io
