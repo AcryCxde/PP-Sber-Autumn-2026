@@ -2,15 +2,6 @@ name: Deploy
 
 on:
   workflow_dispatch:
-    inputs:
-      release_run_id:
-        description: Successful master push CI run ID
-        required: true
-        type: string
-      release_sha:
-        description: Exact 40-character release commit SHA
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -54,8 +45,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CICD_DEPLOY_ENABLED: ${{ vars.CICD_DEPLOY_ENABLED }}
-          RELEASE_RUN_ID: ${{ inputs.release_run_id }}
-          RELEASE_SHA: ${{ inputs.release_sha }}
+          # GITHUB_SHA is the immutable master SHA captured by dispatch.
+          # No older SHA/attempt fallback if CI publish was skipped or is not ready.
         run: |
           set -euo pipefail
           request=$(python -m tools.cicd.verify_release)
@@ -65,7 +56,7 @@ jobs:
     needs: verify
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master' && vars.CICD_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 120
     environment: production
     steps:
       # No checkout or executable artifact in the credential-bearing job.
@@ -88,14 +79,14 @@ jobs:
           [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || exit 1
           [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || exit 1
           [[ -n "$DEPLOY_KEY" && -n "$DEPLOY_KNOWN_HOSTS" ]]
-          [[ -n "$RELEASE_JSON" && ${#RELEASE_JSON} -le 16383 ]]
+          [[ -n "$RELEASE_JSON" && ${#RELEASE_JSON} -le 16360 ]]
           directory=$(mktemp -d)
           trap 'rm -rf "$directory"' EXIT
           umask 077
           printf '%s\n' "$DEPLOY_KEY" > "$directory/key"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$directory/known_hosts"
           unset DEPLOY_KEY DEPLOY_KNOWN_HOSTS
-          printf '%s\n' "$RELEASE_JSON" | ssh -F /dev/null -T -p "$DEPLOY_PORT" \
+          printf '{"schema":2,"release":%s}\n' "$RELEASE_JSON" | ssh -F /dev/null -T -p "$DEPLOY_PORT" \
             -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -o UserKnownHostsFile="$directory/known_hosts" -o GlobalKnownHostsFile=/dev/null \
             -o ConnectTimeout=15 -o ConnectionAttempts=1 \

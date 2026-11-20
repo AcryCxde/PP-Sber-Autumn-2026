@@ -76,13 +76,31 @@ def scoped_kubectl(args: Sequence[str]) -> str:
     )
 
 
-def main() -> int:
+def main(
+    *,
+    maintenance_provider: deploy_server.MaintenanceProvider | None = None,
+) -> int:
     try:
+        maintenance = os.path.lexists(deploy_server.MAINTENANCE_CONFIG)
+        if maintenance:
+            # The image-patch identity cannot do backup/DDL. Never broaden it or
+            # turn it into a maintenance adapter. Installation injects a separately
+            # reviewed host provider; the ordinary CLI remains fail-closed.
+            _require(
+                maintenance_provider is not None, "installed host provider required"
+            )
         token = _token(protected_credential_read(TOKEN, exact_mode=True))
-        _validate_kubeconfig(protected_credential_read(KUBECONFIG, exact_mode=True))
+        if not maintenance:
+            _validate_kubeconfig(protected_credential_read(KUBECONFIG, exact_mode=True))
         # The supported launcher is already env -i. Also discard inherited proxy,
         # CA and credential variables if this entrypoint is invoked directly.
         os.environ.clear()
+        if maintenance:
+            return deploy_server.main(
+                api=GitHubAPI(token=token),
+                maintenance_provider=maintenance_provider,
+            )
+        _require(maintenance_provider is None, "maintenance activation required")
         return deploy_server.main(api=GitHubAPI(token=token), command=scoped_kubectl)
     except (
         ValueError,

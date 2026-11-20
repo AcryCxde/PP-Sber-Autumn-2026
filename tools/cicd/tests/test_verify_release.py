@@ -10,6 +10,7 @@ from email.message import Message
 
 import pytest
 
+from tools.cicd import verify_release as verifier
 from tools.cicd.release import CHECKS, IMAGE_REPOSITORIES, REPOSITORY
 from tools.cicd.verify_release import (
     GitHubAPI,
@@ -105,6 +106,213 @@ class FakeAPI:
     def download(self, artifact_id):
         assert artifact_id == 456
         return self.payload
+
+
+DISCOVERY_PATH = (
+    PREFIX + "/actions/workflows/ci.yml/runs"
+    f"?branch=master&event=push&head_sha={SHA}&per_page=100"
+)
+
+
+class DiscoveryAPI(FakeAPI):
+    def __init__(self):
+        super().__init__()
+        self.listing = {"total_count": 1, "workflow_runs": [deepcopy(self.run)]}
+        self.downloads = []
+
+    def get(self, path):
+        if path == DISCOVERY_PATH:
+            self.calls.append(path)
+            return deepcopy(self.listing)
+        return super().get(path)
+
+    def download(self, artifact_id):
+        self.downloads.append(artifact_id)
+        return super().download(artifact_id)
+
+
+def test_dispatch_discovers_exact_master_push_release():
+    api = DiscoveryAPI()
+    assert verifier.discover_release(SHA, api=api).to_dict() == manifest()
+    assert DISCOVERY_PATH in api.calls
+    assert not any("/compare/" in path or "/attempts/" in path for path in api.calls)
+
+
+@pytest.mark.parametrize(
+    "sha", ["", "a" * 39, "0" * 40, "a" * 40 + "&event=pull_request"]
+)
+def test_discovery_invalid_dispatch_sha_has_no_api_effect(sha):
+    api = DiscoveryAPI()
+    with pytest.raises(ValueError):
+        verifier.discover_release(sha, api=api)
+    assert api.calls == []
+
+
+def test_discovery_stale_dispatch_does_not_select_current_or_previous_release():
+    api = DiscoveryAPI()
+    api.master = MASTER
+    # Even a harmless docs-only master advance does not permit an old dispatch.
+    api.trees[MASTER] = [
+        {"path": "README.md", "mode": "100644", "type": "blob", "sha": "c" * 40}
+    ]
+    with pytest.raises(ValueError, match="not current master"):
+        verifier.discover_release(SHA, api=api)
+    assert DISCOVERY_PATH not in api.calls
+    assert api.downloads == []
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        {},
+        {"total_count": 0, "workflow_runs": []},
+        {"total_count": 1, "workflow_runs": []},
+        {"total_count": 2, "workflow_runs": []},
+        {"total_count": True, "workflow_runs": [{}]},
+        {"total_count": "1", "workflow_runs": [{}]},
+        {"total_count": 1, "workflow_runs": {}},
+        {"total_count": 1, "workflow_runs": None},
+        {"total_count": 1, "workflow_runs": [None]},
+        {"total_count": 1, "workflow_runs": [{}]},
+        {"total_count": 101, "workflow_runs": [{}]},
+    ],
+)
+def test_discovery_missing_or_malformed_listing_fails_closed(listing):
+    api = DiscoveryAPI()
+    api.listing = listing
+    with pytest.raises(ValueError):
+        verifier.discover_release(SHA, api=api)
+    assert api.downloads == []
+
+
+@pytest.mark.parametrize("status", ["success", "failure", "in_progress"])
+def test_discovery_ambiguous_run_is_not_resolved_by_status_or_order(status):
+    api = DiscoveryAPI()
+    other = deepcopy(api.run)
+    other.update(
+        id=124,
+        status="in_progress" if status == "in_progress" else "completed",
+        conclusion=None if status == "in_progress" else status,
+    )
+    api.listing = {"total_count": 2, "workflow_runs": [other, api.run]}
+    with pytest.raises(ValueError, match="ambiguous"):
+        verifier.discover_release(SHA, api=api)
+    assert api.downloads == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "in_progress"),
+        ("status", "queued"),
+        ("conclusion", "failure"),
+        ("conclusion", None),
+        ("event", "workflow_dispatch"),
+        ("event", "pull_request"),
+        ("head_branch", "feature"),
+        ("head_sha", MASTER),
+        ("id", True),
+        ("run_attempt", 0),
+        ("run_attempt", True),
+        ("workflow_id", 43),
+        ("path", ".github/workflows/other.yml"),
+        ("repository", {"full_name": "foreign/repo"}),
+        ("head_repository", {"full_name": "foreign/repo"}),
+        ("pull_requests", [{}]),
+    ],
+)
+def test_discovery_revalidates_listing_provenance(field, value):
+    api = DiscoveryAPI()
+    api.listing["workflow_runs"][0][field] = value
+    with pytest.raises(ValueError):
+        verifier.discover_release(SHA, api=api)
+    assert api.downloads == []
+
+
+@pytest.mark.parametrize("published", ["missing", "previous-attempt", "expired"])
+def test_discovery_requires_publish_for_selected_attempt(published):
+    class UnpublishedAPI(DiscoveryAPI):
+        def get(self, path):
+            if published == "missing" and "/artifacts?" in path:
+                self.calls.append(path)
+                return {"total_count": 0, "artifacts": []}
+            return super().get(path)
+
+    api = UnpublishedAPI()
+    if published == "previous-attempt":
+        api.artifact["name"] = f"release-{SHA}-123-1"
+    if published == "expired":
+        api.artifact["expired"] = True
+    with pytest.raises(ValueError):
+        verifier.discover_release(SHA, api=api)
+    assert api.downloads == []
+    assert not any("/compare/" in path or "/attempts/" in path for path in api.calls)
+
+
+@pytest.mark.parametrize("race", ["master-before-verify", "master-at-final", "attempt"])
+def test_discovery_races_do_not_substitute_new_master_or_attempt(race):
+    class RacingAPI(DiscoveryAPI):
+        def get(self, path):
+            result = super().get(path)
+            if path == DISCOVERY_PATH:
+                if race == "master-before-verify":
+                    self.master = MASTER
+                if race == "attempt":
+                    self.listing["workflow_runs"][0]["run_attempt"] = 1
+                    result["workflow_runs"][0]["run_attempt"] = 1
+            if race == "master-at-final" and "/artifacts?" in path:
+                self.master = MASTER
+            return result
+
+    with pytest.raises(ValueError):
+        verifier.discover_release(SHA, api=RacingAPI())
+
+
+def test_server_strict_master_option_rejects_even_docs_only_advance():
+    api = FakeAPI()
+    api.master = MASTER
+    api.trees[MASTER] = [
+        {"path": "README.md", "mode": "100644", "type": "blob", "sha": "c" * 40}
+    ]
+    assert verify_release("123", SHA, api=api).context.sha == SHA
+    with pytest.raises(ValueError, match="not current master"):
+        verify_release("123", SHA, api=api, require_current_master=True)
+
+
+def dispatch_env(monkeypatch):
+    for key, value in {
+        "CICD_DEPLOY_ENABLED": "true",
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_REF": "refs/heads/master",
+        "GITHUB_REPOSITORY": REPOSITORY,
+        "GITHUB_WORKFLOW_REF": f"{REPOSITORY}/.github/workflows/deploy.yml@refs/heads/master",
+        "GITHUB_SHA": SHA,
+        # Legacy/manual inputs cannot override dispatch selection.
+        "RELEASE_RUN_ID": "999",
+        "RELEASE_SHA": MASTER,
+    }.items():
+        monkeypatch.setenv(key, value)
+
+
+def test_dispatch_main_emits_only_existing_verified_wire(monkeypatch, capsys):
+    dispatch_env(monkeypatch)
+    monkeypatch.setattr(verifier, "GitHubAPI", DiscoveryAPI)
+    assert verifier.main() == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == manifest()
+    assert len(captured.out.splitlines()) == 1
+    assert captured.err == ""
+
+
+def test_dispatch_main_sanitizes_external_failure(monkeypatch, capsys):
+    class UnavailableAPI(DiscoveryAPI):
+        def get(self, path):
+            raise ValueError("secret-token signed-url untrusted-body")
+
+    dispatch_env(monkeypatch)
+    monkeypatch.setattr(verifier, "GitHubAPI", UnavailableAPI)
+    assert verifier.main() == 1
+    assert capsys.readouterr() == ("", "release verification refused: ValueError\n")
 
 
 def test_verified_release_uses_exact_run_and_artifact():
