@@ -259,6 +259,7 @@ def composed(tmp_path, monkeypatch):
         def database_identity(self, *, endpoint, port, pgdata, timeout_seconds):
             from tools.cicd.rollout_host import DatabaseIdentity
 
+            assert 0 < timeout_seconds <= 60
             events.append("identity")
             drift = state["restarted"] and state["failure"]
             return DatabaseIdentity(
@@ -295,6 +296,17 @@ def composed(tmp_path, monkeypatch):
         def restart_database(self):
             events.append("restart_db")
             state["restarted"] = True
+            if state["failure"] == "restart":
+                raise ValueError("restart readiness failed")
+
+        def restore_database_only_if_original(self):
+            assert not state["applied"]
+            events.append("original_db")
+
+        def restore_original_applications(self, expected, *, source_probe):
+            assert not state["applied"]
+            assert source_probe() == expected.source_signature
+            events.extend(("original_backend", "original_frontend"))
 
         def run(self, procedure, *, timeout_seconds):
             assert procedure == PROCEDURE and timeout_seconds == 60
@@ -314,7 +326,11 @@ def composed(tmp_path, monkeypatch):
 
         def ready_images(self, *, timeout_seconds):
             events.append("observed_images")
-            return Images.from_release(target)
+            return Images.from_release(
+                target
+                if state["applied"]
+                else release(rollout_provider.SOURCE_SHA, "d")
+            )
 
     monkeypatch.setattr(installed, "K3sHost", Host)
 
@@ -362,15 +378,50 @@ def composed(tmp_path, monkeypatch):
     monkeypatch.setattr(installed, "_get", smoke_get)
     provider = installed.build_provider(config)
 
-    def run():
+    def run(*, recover=False):
+        from tools.cicd.maintenance import recover_old_availability
+
         prepared = provider.prepare(target, timeout_seconds=60)
-        return run_maintenance(
+        host = _VerifiedHost(prepared.host, lambda requested: requested)
+        result = run_maintenance(
             prepared.plan,
-            host=_VerifiedHost(prepared.host, lambda requested: requested),
+            host=host,
             persist=lambda value: None,
+        )
+        return (
+            recover_old_availability(result, host=host, persist=lambda value: None)
+            if recover
+            else result
         )
 
     return run, events, state, config
+
+
+@pytest.mark.parametrize("budget", [60, 180, 600])
+def test_identity_observation_keeps_host_budget_with_larger_outer_deadline(
+    composed, budget
+):
+    _, events, _, config = composed
+    provider = installed.build_provider(config)
+    provider._inspect(timeout_seconds=budget)
+    assert events[-3:] == ["identity", "catalog_source", "identity"]
+
+
+def test_pre_ddl_restart_failure_can_recover_original_availability(composed):
+    from tools.cicd.maintenance import Status
+
+    run, events, state, _ = composed
+    state["failure"] = "restart"
+    result = run(recover=True)
+    assert result.status == Status.FAILED
+    assert result.availability_recovered
+    assert not result.ddl_possible
+    assert "ddl" not in events
+    assert (
+        events.index("original_backend")
+        < events.index("original_frontend")
+        < events.index("observed_images")
+    )
 
 
 def test_actual_closures_compose_existing_provider_and_migration(composed):

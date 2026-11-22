@@ -36,6 +36,13 @@ Actions, конфигурацию runtime, argv, env или логи. Довер
 увеличение лимита требует отдельной проверки декодера. Это не резервирование
 памяти от других процессов узла.
 
+Maintenance identity требует `get/list/watch` именованных Deployment
+`backend`, `frontend`, `db` для ожидания готовности после масштабирования;
+`list/watch` с ограничением `resourceNames` проверяются с field selector
+`metadata.name`. Права изменения образов нужны только backend/frontend,
+масштабирования — backend/frontend/db. Readiness не должна зависеть от
+cluster-admin или расширения старой image-patch identity.
+
 ## Первый выпуск: историческая конфигурация и процедура
 
 На стенде установлен `bc10c7e05d6fc6e9965b0bc01f3d8ed30ca16874`:
