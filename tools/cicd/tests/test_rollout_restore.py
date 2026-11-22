@@ -10,6 +10,10 @@ from pathlib import Path
 import pytest
 
 from tools.cicd import rollout_restore as restore
+from tools.cicd.tests.schema_pg_fixture import docker
+from tools.cicd.tests.schema_pg_fixture import pg16 as pg16_fixture
+
+pg16 = pg16_fixture
 
 
 def evidence():
@@ -18,6 +22,11 @@ def evidence():
         "server_version_num": 160015,
         "revisions": ["20261111_0005"],
         "counts": {table: 4 for table in restore.COUNT_TABLES},
+        "fingerprints": {
+            "catalog": "a" * 64,
+            "data": {table: "b" * 64 for table in restore.COUNT_TABLES},
+            "sequences": "c" * 64,
+        },
         "collation": {
             "encoding": "UTF8",
             "provider": "c",
@@ -44,6 +53,20 @@ def test_evidence_is_canonical_and_rejects_raw_rows():
     assert "PRIVATE-ROW" not in str(failure.value)
 
 
+@pytest.mark.parametrize("section", ["catalog", "data", "sequences"])
+def test_same_count_fingerprint_drift_is_not_canonicalized_away(section):
+    source = evidence()
+    scratch = copy.deepcopy(source)
+    if section == "data":
+        scratch["fingerprints"][section]["users"] = "d" * 64
+    else:
+        scratch["fingerprints"][section] = "d" * 64
+    assert source["counts"] == scratch["counts"]
+    assert restore.sanitize_evidence(json.dumps(source)) != restore.sanitize_evidence(
+        json.dumps(scratch)
+    )
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -55,6 +78,14 @@ def test_evidence_is_canonical_and_rejects_raw_rows():
         lambda value: value["counts"].pop("runs"),
         lambda value: value["collation"].update(version="153", actual_version="154"),
         lambda value: value["collation"].update(collate="PRIVATE\nROW"),
+        lambda value: value.pop("fingerprints"),
+        lambda value: value["fingerprints"].update(catalog=None),
+        lambda value: value["fingerprints"].update(sequences="A" * 64),
+        lambda value: value["fingerprints"].update(sequences="PRIVATE-ROW"),
+        lambda value: value["fingerprints"]["data"].pop("messages"),
+        lambda value: value["fingerprints"]["data"].update(users="1" * 63),
+        lambda value: value["fingerprints"]["data"].update(extra="a" * 64),
+        lambda value: value["fingerprints"].update(rows=["PRIVATE-ROW"]),
     ],
 )
 def test_evidence_fails_closed(change):
@@ -306,6 +337,98 @@ def test_unsafe_pgdata_rejected_before_runtime(scratch, tmp_path, unsafe):
     with pytest.raises(restore.RestoreError):
         restore.RestoreVerifier(root, command=runtime).verify_restore(pgdata)
     assert runtime.calls == []
+
+
+@pytest.fixture
+def evidence_pg(pg16):
+    """Only the opt-in, owned PG16.15 container; never host database settings."""
+    pg16.execute(
+        "CREATE TABLE public.alembic_version(version_num text PRIMARY KEY); "
+        "INSERT INTO public.alembic_version VALUES ('20261111_0005'); "
+        + " ".join(
+            f"CREATE TABLE public.{table} (id integer PRIMARY KEY, payload jsonb, "
+            "created_at timestamptz);"
+            for table in restore.COUNT_TABLES
+            if table not in ("events", "artifacts")
+        )
+        + "CREATE TABLE public.events (id serial PRIMARY KEY, payload jsonb, created_at timestamptz); "
+        "CREATE TABLE public.artifacts (id serial PRIMARY KEY, payload jsonb, created_at timestamptz); "
+        "INSERT INTO public.users VALUES (1, '{\"email\":\"PRIVATE-ROW@example.invalid\",\"nested\":{\"b\":2,\"a\":1}}', '2026-01-01T00:00:00Z'); "
+        "INSERT INTO public.events (payload) VALUES ('{\"content\":\"PRIVATE-EVENT\"}');"
+    )
+    return pg16
+
+
+def read_pg_evidence(pg, timezone="UTC"):
+    # Execute exactly the installed statement and scratch read-only PGOPTIONS.
+    # The session timezone intentionally varies to test source/scratch equivalence.
+    raw = docker(
+        "exec", "-e", "PGOPTIONS=" + restore.PGOPTIONS + " -c timezone=" + timezone,
+        pg.container, "psql", "-X", "-At", "-v", "ON_ERROR_STOP=1",
+        "-U", "postgres", "-d", "probe_test", "-c", restore.EVIDENCE_SQL,
+    )
+    return restore.sanitize_evidence(raw)
+
+
+def test_pg16_fixed_read_only_evidence_is_deterministic_and_minimized(evidence_pg):
+    first = read_pg_evidence(evidence_pg)
+    assert first == read_pg_evidence(evidence_pg, "America/New_York")
+    value = json.loads(first)
+    assert len(first) < 8192
+    assert "PRIVATE" not in first and "email" not in first and "created_at" not in first
+    assert len(value["fingerprints"]["catalog"]) == 64
+    assert value["counts"]["conversations"] == 0
+    assert value["fingerprints"]["data"]["conversations"] == (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+    # Heap/insertion order and jsonb key order must not change the evidence.
+    evidence_pg.execute(
+        "INSERT INTO public.messages VALUES (2,'{\"b\":2,\"a\":1}',NULL), (1,NULL,NULL)"
+    )
+    ordered = read_pg_evidence(evidence_pg)
+    evidence_pg.execute(
+        "DELETE FROM public.messages; "
+        "INSERT INTO public.messages VALUES (1,NULL,NULL),(2,'{\"a\":1,\"b\":2}',NULL)"
+    )
+    assert read_pg_evidence(evidence_pg) == ordered
+
+
+@pytest.mark.parametrize(
+    ("sql", "section"),
+    [
+        ("UPDATE public.users SET payload='{\"email\":\"OTHER-PRIVATE\"}' WHERE id=1", "data"),
+        ("CREATE INDEX fixture_payload_idx ON public.users ((payload->>'email'))", "catalog"),
+        ("ALTER TABLE public.users ALTER COLUMN payload SET DEFAULT '{}'::jsonb", "catalog"),
+        ("ALTER TABLE public.users ADD CONSTRAINT fixture_check CHECK (id>0)", "catalog"),
+        ("ALTER SEQUENCE public.events_id_seq INCREMENT BY 2", "catalog"),
+        ("SELECT pg_catalog.setval('public.events_id_seq',91,true)", "sequences"),
+        ("SELECT pg_catalog.setval('public.events_id_seq',1,false)", "sequences"),
+        ("SELECT pg_catalog.setval('public.artifacts_id_seq',91,false)", "sequences"),
+    ],
+)
+def test_pg16_same_count_drift_changes_evidence(evidence_pg, sql, section):
+    before = json.loads(read_pg_evidence(evidence_pg))
+    evidence_pg.execute(sql)
+    after = json.loads(read_pg_evidence(evidence_pg))
+    assert before["counts"] == after["counts"]
+    assert before["system_identifier"] == after["system_identifier"]
+    assert before["revisions"] == after["revisions"]
+    assert before["fingerprints"][section] != after["fingerprints"][section]
+    assert before != after
+
+
+def test_pg16_fingerprint_limit_fails_closed(evidence_pg):
+    evidence_pg.execute(
+        "INSERT INTO public.messages (id) SELECT pg_catalog.generate_series(1,100001)"
+    )
+    with pytest.raises(restore.RestoreError, match="invalid restore evidence"):
+        read_pg_evidence(evidence_pg)
+
+
+def test_pg16_missing_sequence_fails_closed(evidence_pg):
+    evidence_pg.execute("DROP SEQUENCE public.artifacts_id_seq CASCADE")
+    with pytest.raises(subprocess.CalledProcessError):
+        read_pg_evidence(evidence_pg)
 
 
 def test_wrong_platform_rejected_without_commands(tmp_path):

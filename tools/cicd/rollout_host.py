@@ -279,8 +279,58 @@ def _identity_digest(value: object) -> str:
     ).hexdigest()
 
 
+def _mounted_volume(
+    spec: dict, container_name: str, mount_path: str
+) -> tuple[dict, dict]:
+    """Select one whole writable PVC; overlapping mounts cannot mask its bytes."""
+    containers = spec["containers"]
+    _require(
+        len(containers) == 1
+        and containers[0]["name"] == container_name
+        and not spec.get("ephemeralContainers"),
+        "storage container drift",
+    )
+    root = Path(mount_path)
+    mounts = [
+        mount
+        for mount in containers[0].get("volumeMounts", [])
+        if Path(mount["mountPath"]).is_relative_to(root)
+        or root.is_relative_to(Path(mount["mountPath"]))
+    ]
+    _require(
+        len(mounts) == 1
+        and mounts[0]["mountPath"] == mount_path
+        and not mounts[0].get("subPath")
+        and not mounts[0].get("subPathExpr")
+        and not mounts[0].get("readOnly"),
+        "storage mount drift",
+    )
+    volumes = [v for v in spec["volumes"] if v["name"] == mounts[0]["name"]]
+    _require(
+        len(volumes) == 1
+        and set(volumes[0]) == {"name", "persistentVolumeClaim"}
+        and not volumes[0]["persistentVolumeClaim"].get("readOnly"),
+        "storage volume drift",
+    )
+    return mounts[0], volumes[0]
+
+
 class K3sHost:
-    def __init__(self, config: HostConfig, *, runner: Runner = bounded_run) -> None:
+    def __init__(
+        self,
+        config: HostConfig,
+        *,
+        backup_paths: Mapping[str, Path],
+        runner: Runner = bounded_run,
+    ) -> None:
+        _require(
+            set(backup_paths) == {"home", "data", "s3_pvc"}, "backup roots required"
+        )
+        for path in backup_paths.values():
+            _require(isinstance(path, Path), "backup root must be a path")
+            _absolute(str(path))
+        self._backup_paths = dict(backup_paths)
+        self._storage_binding: str | None = None
         self.config = config
         self._runner = runner
         self._stage = "new"
@@ -440,6 +490,148 @@ class K3sHost:
             self._psql(sql.encode(), timeout=timeout_seconds).decode("utf-8")
         )
 
+    def _local_volume(self, claim: str, path: Path) -> tuple[dict, dict]:
+        """GET only the mounted claim and its named, same-node local PV."""
+        pvc = self._get("pvc", claim)
+        _require(
+            pvc["metadata"]["namespace"] == NAMESPACE
+            and pvc["metadata"]["name"] == claim
+            and isinstance(pvc["metadata"]["uid"], str)
+            and bool(pvc["metadata"]["uid"])
+            and not pvc["metadata"].get("deletionTimestamp")
+            and pvc["status"]["phase"] == "Bound"
+            and pvc["spec"].get("volumeMode", "Filesystem") == "Filesystem",
+            "PVC binding drift",
+        )
+        pv = self._get("pv", pvc["spec"]["volumeName"])
+        spec = pv["spec"]
+        ref = spec["claimRef"]
+        _require(
+            ref["namespace"] == NAMESPACE
+            and ref["name"] == claim
+            and ref["uid"] == pvc["metadata"]["uid"]
+            and pv["metadata"]["name"] == pvc["spec"]["volumeName"]
+            and isinstance(pv["metadata"]["uid"], str)
+            and bool(pv["metadata"]["uid"])
+            and pv["status"]["phase"] == "Bound"
+            and not pv["metadata"].get("deletionTimestamp")
+            and spec.get("volumeMode", "Filesystem") == "Filesystem",
+            "PV binding drift",
+        )
+        sources = set(spec) - {
+            "capacity",
+            "accessModes",
+            "claimRef",
+            "nodeAffinity",
+            "volumeMode",
+            "persistentVolumeReclaimPolicy",
+            "storageClassName",
+            "mountOptions",
+        }
+        _require(sources in ({"hostPath"}, {"local"}), "local PV required")
+        local = spec[next(iter(sources))]
+        _require(
+            type(local) is dict and local.get("path") == str(path),
+            "backup path drift",
+        )
+        _require(
+            spec["nodeAffinity"]["required"]["nodeSelectorTerms"]
+            == [
+                {
+                    "matchExpressions": [
+                        {
+                            "key": "kubernetes.io/hostname",
+                            "operator": "In",
+                            "values": [self._node],
+                        }
+                    ]
+                }
+            ],
+            "PV node drift",
+        )
+        return pvc, pv
+
+    def _measure_storage_binding(self, *, backend_replicas: int) -> str:
+        bindings = []
+        for name, replicas, roots in (
+            (
+                "backend",
+                backend_replicas,
+                (
+                    ("home", "/home/node", "coreteams-home"),
+                    ("data", "/app/backend/data", "coreteams-data"),
+                ),
+            ),
+            ("s3", 1, (("s3_pvc", "/data", "s3-data"),)),
+        ):
+            deployment = self._deployment(name, replicas)
+            template = deployment["spec"]["template"]
+            pod = self._pod(name) if replicas else None
+            allowed_init = ["fix-perms", "wait-db"] if name == "backend" else []
+            init = template["spec"].get("initContainers", [])
+            names = [c["name"] for c in init]
+            _require(
+                names in ([], allowed_init)
+                and all(not c.get("restartPolicy") for c in init),
+                "unexpected storage init container",
+            )
+            if pod is not None:
+                _require(
+                    [c["name"] for c in pod["spec"].get("initContainers", [])] == names
+                    and all(
+                        not c.get("restartPolicy")
+                        for c in pod["spec"].get("initContainers", [])
+                    )
+                    and [
+                        s["name"]
+                        for s in pod["status"].get("initContainerStatuses", [])
+                    ]
+                    == names
+                    and all(
+                        s["state"].get("terminated", {}).get("exitCode") == 0
+                        for s in pod["status"].get("initContainerStatuses", [])
+                    ),
+                    "storage init container has not exited cleanly",
+                )
+            for key, mount_path, claim in roots:
+                mount, volume = _mounted_volume(
+                    template["spec"], CONTAINERS[name], mount_path
+                )
+                _require(
+                    volume["persistentVolumeClaim"]["claimName"] == claim,
+                    "storage claim drift",
+                )
+                if pod is not None:
+                    _require(
+                        _mounted_volume(pod["spec"], CONTAINERS[name], mount_path)
+                        == (mount, volume),
+                        "Pod storage differs from deployment",
+                    )
+                pvc, pv = self._local_volume(claim, self._backup_paths[key])
+                bindings.append(
+                    {
+                        "root": key,
+                        "deployment_uid": deployment["metadata"]["uid"],
+                        "template": template,
+                        "mount": mount,
+                        "volume": volume,
+                        "pvc_uid": pvc["metadata"]["uid"],
+                        "pvc_spec": pvc["spec"],
+                        "pv_uid": pv["metadata"]["uid"],
+                        "pv_spec": pv["spec"],
+                        "node": self._node,
+                    }
+                )
+        return _identity_digest(bindings)
+
+    def _assert_storage_binding(self, *, backend_replicas: int) -> None:
+        _require(self._storage_binding is not None, "storage preflight required")
+        _require(
+            self._measure_storage_binding(backend_replicas=backend_replicas)
+            == self._storage_binding,
+            "backup storage binding changed",
+        )
+
     def _database_binding(
         self, endpoint: str, port: int, pgdata: Path
     ) -> tuple[str, str, str]:
@@ -510,46 +702,8 @@ class K3sHost:
             "DB volume drift",
         )
         claim = volumes[0]["persistentVolumeClaim"]["claimName"]
-        pvc = self._get("pvc", claim)
-        _require(
-            pvc["metadata"]["namespace"] == NAMESPACE
-            and pvc["metadata"]["name"] == claim
-            and not pvc["metadata"].get("deletionTimestamp")
-            and pvc["status"]["phase"] == "Bound",
-            "DB PVC drift",
-        )
-        pv = self._get("pv", pvc["spec"]["volumeName"])
-        ref = pv["spec"]["claimRef"]
-        _require(
-            ref["namespace"] == NAMESPACE
-            and ref["name"] == claim
-            and ref["uid"] == pvc["metadata"]["uid"]
-            and pv["metadata"]["name"] == pvc["spec"]["volumeName"]
-            and pv["status"]["phase"] == "Bound"
-            and not pv["metadata"].get("deletionTimestamp"),
-            "DB PV binding drift",
-        )
-        local = pv["spec"].get("hostPath", pv["spec"].get("local"))
-        _require(
-            type(local) is dict and pgdata == Path(local["path"]) / "pgdata",
-            "DB backup path drift",
-        )
-        terms = pv["spec"]["nodeAffinity"]["required"]["nodeSelectorTerms"]
-        _require(
-            terms
-            == [
-                {
-                    "matchExpressions": [
-                        {
-                            "key": "kubernetes.io/hostname",
-                            "operator": "In",
-                            "values": [pod["spec"]["nodeName"]],
-                        }
-                    ]
-                }
-            ],
-            "DB PV node drift",
-        )
+        _require(pgdata.name == "pgdata", "DB backup path drift")
+        pvc, pv = self._local_volume(claim, pgdata.parent)
         runtime = pod["status"]["containerStatuses"][0]
         image = runtime["imageID"].split("://")[-1].split("@")[-1]
         _require(DIGEST.fullmatch(image) is not None, "DB runtime digest required")
@@ -684,6 +838,7 @@ COMMIT;
                     and actual.split("://")[-1].split("@")[-1] == pin.runtime_digest,
                     "current runtime digest drift",
                 )
+        storage_binding = self._measure_storage_binding(backend_replicas=1)
         # Prove that CRI inspection is on the workload node, not an empty remote node.
         local_ids = {c["id"] for c in self._cri()}
         for name in CONTAINERS:
@@ -700,6 +855,11 @@ COMMIT;
             source_probe() == expected.source_signature, "actual source signature drift"
         )
         self._no_active_runs()
+        _require(
+            self._measure_storage_binding(backend_replicas=1) == storage_binding,
+            "backup storage changed during preflight",
+        )
+        self._storage_binding = storage_binding
         self._original = expected
         self._original_images = original_images
         self._stage = "preflight"
@@ -777,12 +937,14 @@ COMMIT;
     def gate_ingress(self) -> None:
         """Frontend zero is the ingress hold; no Service/Ingress rewiring."""
         self._at("preflight")
+        self._assert_storage_binding(backend_replicas=1)
         self._no_active_runs()
         self._scale("frontend", 1, 0)
         self._stage = "gated"
 
     def stop_applications(self) -> None:
         self._at("gated")
+        self._assert_storage_binding(backend_replicas=1)
         self._assert_absent(["frontend"])
         self._no_active_runs()
         self._scale("backend", 1, 0)
@@ -792,6 +954,7 @@ COMMIT;
 
     def stop_database_for_cold_copy(self) -> None:
         self._at("apps_stopped")
+        self._assert_storage_binding(backend_replicas=0)
         self._assert_absent(["frontend", "backend"])
         self._no_active_runs()
         self._pod("s3")  # S3 stays running to store the physical backup.
@@ -802,6 +965,7 @@ COMMIT;
     def assert_quiescent(self) -> None:
         """Backup boundary: DB and applications cold; storage remains available."""
         self._at("db_stopped")
+        self._assert_storage_binding(backend_replicas=0)
         for name in ("frontend", "backend", "db"):
             self._deployment(name, 0)
         self._assert_absent(["frontend", "backend", "db"])
@@ -946,6 +1110,7 @@ COMMIT;
             "invalid DDL timeout",
         )
         self._assert_absent(["frontend", "backend"])
+        self._assert_storage_binding(backend_replicas=0)
         self._ddl_attempted = True
         self._psql(procedure, timeout=timeout_seconds)
         self._stage = "ddl_applied"

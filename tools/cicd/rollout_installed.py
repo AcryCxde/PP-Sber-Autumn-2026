@@ -14,8 +14,19 @@ The maintenance activation config must exist: this entrypoint NEVER falls back
 to legacy image patching. Source/target proof is real catalog+target comparison;
 revision reads bracket the catalog read on the fixed host (not one transaction).
 The operator must hold external schema writers as well as application writers.
-HTTP GET checks prove route availability/auth denial only; authenticated user
-and admin authorization smoke remains explicitly deferred, not fabricated.
+Private smoke requires operator-provisioned, existing admin and ordinary-user
+sessions: smoke.sessions names a root:root 0600 JSON file with exactly
+{"admin_session":"<token>","user_session":"<token>"}. Obtain/rotate existing
+sessions out of band; never place them in Actions, argv, env, logs or this config.
+Tokens are 43-character URL-safe coreteams_session cookies, not password/API keys.
+No account/session creation or login is performed here. All smoke requests are GET;
+normal auth activity bookkeeping (or expiry cleanup) can still update metadata.
+smoke.private_http_trusted must be true ONLY after the operator reviews the fixed
+private HTTP backend path/network as trusted for bearer cookies; private IP alone
+is NOT transport authentication. Never use this on an untrusted ClusterIP network.
+Public HTTPS smoke sends no cookies; private smoke never bypasses TLS to public.
+The v1 overview uses distant fixed pages to read aggregates without user/run rows;
+nonempty rows fail closed. No response bodies/headers are logged or persisted.
 Do not activate without an operator-owned restore rehearsal and config review.
 """
 
@@ -24,10 +35,12 @@ import hashlib
 import ipaddress
 import math
 import os
+import re
 import ssl
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -35,7 +48,7 @@ from tools.cicd import deploy_credentials, deploy_server, schema_probe
 from tools.cicd.maintenance import Readiness
 from tools.cicd.maintenance_schema import LiveSchema, PhysicalContinuity, verify_source
 from tools.cicd.release import _json, _object, _require
-from tools.cicd.rollout_backup import BackupConfig
+from tools.cicd.rollout_backup import BackupConfig, available_memory, preflight_backup
 from tools.cicd.rollout_host import HostConfig, K3sHost, bounded_run
 from tools.cicd.rollout_provider import APPROVAL_LIMIT, Approval, RolloutProvider
 from tools.cicd.rollout_restore import RestoreVerifier, sanitize_evidence
@@ -102,9 +115,16 @@ class InstalledConfig:
     s3_credential: Path
     private_origin: str
     public_origin: str
+    smoke_sessions: Path
+    private_http_trusted: bool
 
     def __post_init__(self) -> None:
-        for path in (self.host_config, self.approval, self.s3_credential):
+        for path in (
+            self.host_config,
+            self.approval,
+            self.s3_credential,
+            self.smoke_sessions,
+        ):
             _require(type(path) is type(Path()), "invalid installed path")
             _path(str(path))
         _require(type(self.backup) is tuple, "invalid backup paths")
@@ -119,6 +139,7 @@ class InstalledConfig:
         _local_origin(self.s3_endpoint)
         _local_origin(self.private_origin)
         _require(self.public_origin == PUBLIC_ORIGIN, "unapproved public origin")
+        _require(self.private_http_trusted is True, "private HTTP smoke trust required")
 
     @classmethod
     def parse(cls, raw: bytes) -> "InstalledConfig":
@@ -137,7 +158,10 @@ class InstalledConfig:
         _require(type(data["schema"]) is int and data["schema"] == 1, "config schema")
         backup = _object(data["backup"], BACKUP_PATHS)
         s3 = _object(data["s3"], {"endpoint", "credential"})
-        smoke = _object(data["smoke"], {"private_origin", "public_origin"})
+        smoke = _object(
+            data["smoke"],
+            {"private_origin", "public_origin", "sessions", "private_http_trusted"},
+        )
         return cls(
             _path(data["host_config"]),
             _path(data["approval"]),
@@ -146,6 +170,8 @@ class InstalledConfig:
             _path(s3["credential"]),
             smoke["private_origin"],
             smoke["public_origin"],
+            _path(smoke["sessions"]),
+            smoke["private_http_trusted"],
         )
 
     @classmethod
@@ -167,10 +193,64 @@ def _remaining(deadline: float) -> int:
     return math.floor(remaining)
 
 
-def _get(origin: str, path: str, expected: int, *, deadline: float) -> None:
+@dataclass(frozen=True, repr=False)
+class _SmokeSessions:
+    admin_session: str
+    user_session: str
+
+    def __post_init__(self) -> None:
+        for token in (self.admin_session, self.user_session):
+            _require(
+                type(token) is str
+                and re.fullmatch(r"[A-Za-z0-9_-]{43}", token) is not None,
+                "invalid smoke session",
+            )
+        _require(
+            self.admin_session != self.user_session, "distinct smoke sessions required"
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "_SmokeSessions":
+        raw = protected_credential_read(path, exact_mode=True)
+        try:
+            data = _object(
+                _json(raw.decode("utf-8")), {"admin_session", "user_session"}
+            )
+        except (ValueError, UnicodeError, RecursionError):
+            raise ValueError("invalid smoke sessions") from None
+        return cls(data["admin_session"], data["user_session"])
+
+
+# Keep OFFSET within PostgreSQL bigint while making real user/run rows unreachable
+# for the reviewed installation. Unexpected nonempty pages are rejected, never logged.
+_SMOKE_PAGE = 2147483647
+_ADMIN_SMOKE_PATH = (
+    f"/api/admin/v1/overview?active_page={_SMOKE_PAGE}"
+    f"&attention_page={_SMOKE_PAGE}&page_size=1"
+)
+
+
+def _get(
+    origin: str,
+    path: str,
+    expected: int,
+    *,
+    deadline: float,
+    session: str | None = None,
+) -> bytes:
     """Fixed GET only; bounded child also covers DNS stalls and oversized output."""
     budget = min(200, _remaining(deadline))
     scheme = urlsplit(origin).scheme
+    secret = b""
+    if session is not None:
+        _local_origin(origin)
+        _require(
+            re.fullmatch(r"[A-Za-z0-9_-]{43}", session) is not None,
+            "invalid smoke session",
+        )
+        # A pipe, not argv/env or a temporary cookie/header file. The strict token
+        # alphabet cannot escape curl's config quoting or inject another option.
+        secret = f'cookie = "coreteams_session={session}"\n'.encode("ascii")
     output = bounded_run(
         [
             "/usr/bin/curl",
@@ -194,26 +274,191 @@ def _get(origin: str, path: str, expected: int, *, deadline: float) -> None:
             "--max-filesize",
             str(HTTP_LIMIT),
             "--output",
-            "/dev/null",
+            "-" if session is not None else "/dev/null",
             "--write-out",
-            "%{http_code}",
+            "\\n%{http_code}" if session is not None else "%{http_code}",
             "--url",
             origin + path,
-        ],
-        stdin=b"",
+        ]
+        + (["--config", "-"] if session is not None else []),
+        stdin=secret,
         timeout=budget,
         env={"PATH": "/usr/bin:/bin", "HOME": "/var/empty"},
     )
-    _require(output == str(expected).encode("ascii"), "HTTP smoke refused")
+    body, status = (
+        output.rsplit(b"\n", 1)
+        if session is not None and b"\n" in output
+        else (b"", output)
+    )
+    _require(status == str(expected).encode("ascii"), "HTTP smoke refused")
+    _require(len(body) <= HTTP_LIMIT, "HTTP smoke response bound")
     _remaining(deadline)
+    return body
+
+
+def _smoke_json(raw: bytes) -> object:
+    try:
+        return _json(raw.decode("utf-8"))
+    except (ValueError, UnicodeError, RecursionError):
+        raise ValueError("invalid smoke response") from None
+
+
+def _admin_shape(raw: bytes) -> None:
+    body = _object(
+        _smoke_json(raw),
+        {
+            "as_of",
+            "period",
+            "completeness",
+            "totals",
+            "without_started_at",
+            "active",
+            "attention",
+        },
+    )
+
+    def timestamp(value: object) -> datetime:
+        _require(type(value) is str and len(value) <= 40, "admin timestamp shape")
+        try:
+            moment = datetime.fromisoformat(value)
+        except ValueError:
+            raise ValueError("admin timestamp shape") from None
+        _require(moment.tzinfo is not None, "admin timestamp timezone")
+        return moment
+
+    timestamp(body["as_of"])
+    _require(body["completeness"] == "complete", "admin smoke shape")
+
+    def period(value: object) -> None:
+        data = _object(value, {"start", "end"})
+        _require(
+            timestamp(data["start"]) < timestamp(data["end"]), "admin period shape"
+        )
+
+    period(body["period"])
+    totals = _object(body["totals"], {"runs", "failed", "outcome_unknown", "running"})
+    _require(
+        all(
+            type(v) is int and v >= 0
+            for v in (*totals.values(), body["without_started_at"])
+        ),
+        "admin totals shape",
+    )
+    for name in ("active", "attention"):
+        page = _object(
+            body[name],
+            {"items", "total", "page", "page_size"}
+            | ({"period", "no_start"} if name == "attention" else set()),
+        )
+        _require(
+            page["items"] == []
+            and type(page["total"]) is int
+            and page["total"] >= 0
+            and type(page["page"]) is int
+            and page["page"] == _SMOKE_PAGE
+            and type(page["page_size"]) is int
+            and page["page_size"] == 1,
+            "admin smoke must contain no user/run rows",
+        )
+        if name == "attention":
+            period(page["period"])
+            _require(page["no_start"] is False, "admin attention shape")
+
+
+def _user_shape(raw: bytes) -> None:
+    body = _object(
+        _smoke_json(raw),
+        {"team_suggestion", "scenarios", "marketer", "promotion_answer"},
+    )
+    _require(
+        all(
+            type(body[name]) is str and bool(body[name])
+            for name in ("team_suggestion", "promotion_answer")
+        ),
+        "user smoke shape",
+    )
+
+    def text_object(value: object, fields: set[str]) -> None:
+        data = _object(value, fields)
+        _require(all(type(v) is str for v in data.values()), "scenario text shape")
+
+    text_object(body["marketer"], {"name", "why", "result", "origin"})
+    scenarios = body["scenarios"]
+    _require(type(scenarios) is list and len(scenarios) == 4, "scenario smoke shape")
+    for item, key in zip(
+        scenarios, ("course", "book", "business", "other"), strict=True
+    ):
+        row = _object(
+            item, {"key", "label", "roles", "questions", "stages", "suggestions"}
+        )
+        _require(
+            row["key"] == key and type(row["label"]) is str, "scenario smoke shape"
+        )
+        for name in ("roles", "questions", "stages", "suggestions"):
+            _require(
+                type(row[name]) is list and len(row[name]) == 3, "scenario smoke shape"
+            )
+        _require(
+            all(type(v) is str for v in row["suggestions"]),
+            "scenario suggestions shape",
+        )
+        for role in row["roles"]:
+            text_object(role, {"name", "why", "result", "origin"})
+        for stage in row["stages"]:
+            text_object(stage, {"short", "title", "result", "next", "time"})
+        for question in row["questions"]:
+            data = _object(question, {"title", "help", "options", "guide", "copy"})
+            _require(
+                type(data["options"]) is list
+                and all(type(v) is str for v in data["options"]),
+                "scenario options shape",
+            )
+            _require(
+                all(type(data[k]) is str for k in ("title", "help", "guide", "copy")),
+                "scenario question shape",
+            )
 
 
 def _http_smoke(config: InstalledConfig, *, public: bool, timeout_seconds: int) -> bool:
     deadline = _deadline(timeout_seconds)
+    # Re-read protected sessions to allow out-of-band rotation and fail closed.
+    sessions = None if public else _SmokeSessions.load(config.smoke_sessions)
     origin = config.public_origin if public else config.private_origin
     paths = (("/", 200), ("/product/", 200)) if public else ()
     for path, status in (*paths, ("/api/auth/me", 401), ("/api/admin/v1/users", 401)):
         _get(origin, path, status, deadline=deadline)
+    if sessions is not None:
+        _get(origin, "/api/scenarios", 401, deadline=deadline)
+        _get(origin, _ADMIN_SMOKE_PATH, 401, deadline=deadline)
+        denied = _get(
+            origin,
+            _ADMIN_SMOKE_PATH,
+            403,
+            deadline=deadline,
+            session=sessions.user_session,
+        )
+        _require(
+            _smoke_json(denied) == {"detail": "Admin role required"},
+            "admin denial shape",
+        )
+        _user_shape(
+            _get(
+                origin,
+                "/api/scenarios",
+                200,
+                deadline=deadline,
+                session=sessions.user_session,
+            )
+        )
+        _admin_shape(
+            _get(
+                origin,
+                _ADMIN_SMOKE_PATH,
+                200,
+                deadline=deadline,
+                session=sessions.admin_session,
+            )
+        )
     return True
 
 
@@ -269,7 +514,13 @@ class _BackupHost:
 
 def build_provider(config: InstalledConfig) -> RolloutProvider:
     """Compose existing owners; no second maintenance policy or incoming inputs."""
-    host = K3sHost(HostConfig.load(config.host_config))
+    # Provisioning errors must fail before ingress gating or application disruption.
+    _SmokeSessions.load(config.smoke_sessions)
+    paths = dict(config.backup)
+    host = K3sHost(
+        HostConfig.load(config.host_config),
+        backup_paths={name: paths[name] for name in ("home", "data", "s3_pvc")},
+    )
     approval = Approval.parse(protected_read(config.approval, APPROVAL_LIMIT))
     mapping = schema_probe.TargetMapping.parse(
         _json(protected_read(schema_probe.CONFIG_PATH, 65536).decode("utf-8"))
@@ -318,7 +569,6 @@ def build_provider(config: InstalledConfig) -> RolloutProvider:
         mapping.ca_file,
         tls,
     )
-    paths = dict(config.backup)
     for name in ("recipient_cert", "private_key"):
         protected_credential_read(paths[name], exact_mode=True)
 
@@ -377,6 +627,14 @@ def build_provider(config: InstalledConfig) -> RolloutProvider:
         )
         return observed
 
+    def backup_preflight() -> None:
+        preflight_backup(
+            paths["pgdata"],
+            paths["home"],
+            paths["data"],
+            available_memory_bytes=available_memory(),
+        )
+
     def backup_config(observed: str) -> BackupConfig:
         # Called while quiescent; never replace actual evidence with approval data.
         for name in ("recipient_cert", "private_key"):
@@ -402,6 +660,7 @@ def build_provider(config: InstalledConfig) -> RolloutProvider:
         host=host,
         inspect=inspect,
         database_evidence=evidence,
+        backup_preflight=backup_preflight,
         backup_config=backup_config,
         backup_host=_BackupHost(host, RestoreVerifier(paths["scratch_root"])),
         s3=_s3(config),

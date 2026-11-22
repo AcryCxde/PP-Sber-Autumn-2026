@@ -10,6 +10,30 @@ import pytest
 from tools.cicd import rollout_installed as installed
 
 
+def smoke_body(path, status):
+    if status == 403:
+        return b'{"detail":"Admin role required"}'
+    if status != 200:
+        return b""
+    if path == "/api/scenarios":
+        from backend.scenarios import catalog
+
+        return json.dumps(catalog()).encode()
+    period = {"start": "2026-11-01T00:00:00+00:00", "end": "2026-11-20T00:00:00+00:00"}
+    page = {"items": [], "total": 4, "page": installed._SMOKE_PAGE, "page_size": 1}
+    return json.dumps(
+        {
+            "as_of": "2026-11-20T12:00:00+00:00",
+            "period": period,
+            "completeness": "complete",
+            "totals": {"runs": 4, "failed": 1, "outcome_unknown": 0, "running": 3},
+            "without_started_at": 0,
+            "active": page,
+            "attention": {**page, "period": period, "no_start": False},
+        }
+    ).encode()
+
+
 def config_data():
     return {
         "schema": 1,
@@ -37,6 +61,8 @@ def config_data():
         "smoke": {
             "private_origin": "http://127.0.0.1:8000",
             "public_origin": "https://coreteams.2026.tochka-urfu.tech",
+            "sessions": "/etc/coreteams-deploy/smoke-sessions.json",
+            "private_http_trusted": True,
         },
     }
 
@@ -54,6 +80,12 @@ def config_data():
         lambda d: d["smoke"].update(public_origin="https://u:p@host"),
         lambda d: d["smoke"].update(public_origin="https://host/path"),
         lambda d: d["smoke"].update(public_origin="http://host"),
+        lambda d: d["smoke"].pop("sessions"),
+        lambda d: d["smoke"].update(sessions="relative"),
+        lambda d: d["smoke"].update(private_http_trusted=False),
+        lambda d: d["smoke"].update(private_http_trusted=1),
+        lambda d: d["smoke"].pop("private_http_trusted"),
+        lambda d: d["smoke"].update(admin_session="must-not-inline"),
     ],
 )
 def test_config_rejects_unreviewed_shape_and_routes(alter):
@@ -61,6 +93,16 @@ def test_config_rejects_unreviewed_shape_and_routes(alter):
     alter(data)
     with pytest.raises(ValueError):
         installed.InstalledConfig.parse(json.dumps(data).encode())
+
+
+def test_private_smoke_requires_both_sessions_before_http(monkeypatch):
+    config = installed.InstalledConfig.parse(json.dumps(config_data()).encode())
+    monkeypatch.setattr(installed, "protected_credential_read", lambda *a, **kw: b"{}")
+    monkeypatch.setattr(
+        installed, "_get", lambda *a, **kw: pytest.fail("HTTP before auth validation")
+    )
+    with pytest.raises(ValueError):
+        installed._http_smoke(config, public=False, timeout_seconds=30)
 
 
 def test_duplicate_config_keys_refused():
@@ -188,6 +230,10 @@ def composed(tmp_path, monkeypatch):
         lambda p, **kw: (
             json.dumps({"username": "probe", "password": "never print"}).encode()
             if p == installed.schema_probe.CREDENTIAL_PATH
+            else json.dumps(
+                {"admin_session": "A" * 43, "user_session": "U" * 43}
+            ).encode()
+            if p == config.smoke_sessions
             else b"protected key"
         ),
     )
@@ -200,9 +246,15 @@ def composed(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(installed.HostConfig, "load", lambda p: p)
 
+    monkeypatch.setattr(installed, "available_memory", lambda: 2 * 1024**3)
+    monkeypatch.setattr(installed, "preflight_backup", lambda *args, **kwargs: 1)
+
     class Host:
-        def __init__(self, config):
-            pass
+        def __init__(self, host_config, *, backup_paths):
+            assert host_config == config.host_config
+            assert backup_paths == {
+                name: dict(config.backup)[name] for name in ("home", "data", "s3_pvc")
+            }
 
         def database_identity(self, *, endpoint, port, pgdata, timeout_seconds):
             from tools.cicd.rollout_host import DatabaseIdentity
@@ -300,11 +352,14 @@ def composed(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr(rollout_provider, "create_backup", backup)
-    monkeypatch.setattr(
-        installed,
-        "_get",
-        lambda origin, path, expected, **kw: events.append((origin, path, expected)),
-    )
+
+    def smoke_get(origin, path, expected, **kwargs):
+        events.append((origin, path, expected))
+        if state.get("smoke") and kwargs.get("session"):
+            raise ValueError("smoke refused")
+        return smoke_body(path, expected)
+
+    monkeypatch.setattr(installed, "_get", smoke_get)
     provider = installed.build_provider(config)
 
     def run():
@@ -339,10 +394,16 @@ def test_actual_closures_compose_existing_provider_and_migration(composed):
         < events.index("observed_images")
     )
     assert (config.private_origin, "/api/admin/v1/users", 401) in events
+    assert events.index(
+        (config.private_origin, installed._ADMIN_SMOKE_PATH, 200)
+    ) < events.index("frontend")
+    assert events.index((config.private_origin, "/api/scenarios", 200)) < events.index(
+        "frontend"
+    )
     assert (config.public_origin, "/product/", 200) in events
 
 
-@pytest.mark.parametrize("failure", ["drift", "ready_fail"])
+@pytest.mark.parametrize("failure", ["drift", "ready_fail", "smoke"])
 def test_actual_observation_failure_never_releases_frontend(composed, failure):
     from tools.cicd.maintenance import Status
 
@@ -471,3 +532,296 @@ def test_backup_identity_must_match_actually_verified_db(composed):
     result = run()
     assert result.status != Status.SUCCEEDED
     assert "stop_db" not in events and "ddl" not in events
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"{}",
+        b"null",
+        b"not json",
+        b"\xff",
+        b'{"admin_session": "A", "user_session": "B"}',
+        json.dumps({"admin_session": "A" * 43, "user_session": "A" * 43}).encode(),
+        json.dumps(
+            {"admin_session": "A" * 42 + "\n", "user_session": "U" * 43}
+        ).encode(),
+        json.dumps(
+            {"admin_session": "A" * 43, "user_session": "U" * 43, "extra": True}
+        ).encode(),
+        json.dumps({"admin_session": True, "user_session": "U" * 43}).encode(),
+        b'{"admin_session":"first","admin_session":"second","user_session":"third"}',
+    ],
+)
+def test_sessions_fail_closed_without_values_in_error(monkeypatch, raw):
+    monkeypatch.setattr(installed, "protected_credential_read", lambda *a, **kw: raw)
+    with pytest.raises(ValueError) as caught:
+        installed._SmokeSessions.load(Path("/etc/coreteams-deploy/smoke-sessions.json"))
+    assert str(caught.value) in {
+        "invalid smoke sessions",
+        "invalid smoke session",
+        "distinct smoke sessions required",
+    }
+
+
+def test_sessions_protected_read_and_redacted_repr(monkeypatch):
+    calls = []
+
+    def read(path, *, exact_mode):
+        calls.append((path, exact_mode))
+        return json.dumps(
+            {"admin_session": "A" * 43, "user_session": "U" * 43}
+        ).encode()
+
+    monkeypatch.setattr(installed, "protected_credential_read", read)
+    path = Path("/etc/coreteams-deploy/smoke-sessions.json")
+    sessions = installed._SmokeSessions.load(path)
+    assert calls == [(path, True)]
+    assert "A" * 43 not in repr(sessions) and "U" * 43 not in repr(sessions)
+
+
+@pytest.mark.parametrize("status", [b"200", b"302", b"401", b"500"])
+def test_authenticated_cookie_only_on_pipe_no_response_leak(
+    monkeypatch, capsys, status
+):
+    calls = []
+    token = "A" * 43
+
+    def run(argv, *, stdin, timeout, env):
+        calls.append((argv, stdin, env))
+        return b'{"secret":"must not print"}\n' + status
+
+    monkeypatch.setattr(installed, "bounded_run", run)
+    if status == b"200":
+        assert (
+            installed._get(
+                "http://127.0.0.1:8000",
+                "/api/scenarios",
+                200,
+                deadline=installed._deadline(30),
+                session=token,
+            )
+            == b'{"secret":"must not print"}'
+        )
+    else:
+        with pytest.raises(ValueError, match="^HTTP smoke refused$"):
+            installed._get(
+                "http://127.0.0.1:8000",
+                "/api/scenarios",
+                200,
+                deadline=installed._deadline(30),
+                session=token,
+            )
+    argv, stdin, env = calls[0]
+    assert token not in repr(argv) and token not in repr(env)
+    assert stdin == f'cookie = "coreteams_session={token}"\n'.encode()
+    assert argv[-2:] == ["--config", "-"]
+    assert argv[argv.index("--request") + 1] == "GET"
+    assert argv[argv.index("--output") + 1] == "-"
+    assert "--location" not in argv and "--insecure" not in argv
+    assert env == {"PATH": "/usr/bin:/bin", "HOME": "/var/empty"}
+    assert capsys.readouterr() == ("", "")
+
+
+def test_authenticated_cookie_never_sent_to_public(monkeypatch):
+    monkeypatch.setattr(
+        installed, "bounded_run", lambda *a, **kw: pytest.fail("secret request started")
+    )
+    with pytest.raises(ValueError):
+        installed._get(
+            installed.PUBLIC_ORIGIN,
+            "/api/scenarios",
+            200,
+            deadline=installed._deadline(30),
+            session="A" * 43,
+        )
+
+
+def test_public_smoke_does_not_read_or_send_sessions(monkeypatch):
+    config = installed.InstalledConfig.parse(json.dumps(config_data()).encode())
+    monkeypatch.setattr(
+        installed,
+        "protected_credential_read",
+        lambda *a, **kw: pytest.fail("public secret read"),
+    )
+    calls = []
+
+    def get(origin, path, expected, **kwargs):
+        assert "session" not in kwargs
+        calls.append((path, expected))
+
+    monkeypatch.setattr(installed, "_get", get)
+    assert installed._http_smoke(config, public=True, timeout_seconds=30)
+    assert calls == [
+        ("/", 200),
+        ("/product/", 200),
+        ("/api/auth/me", 401),
+        ("/api/admin/v1/users", 401),
+    ]
+
+
+@pytest.mark.parametrize(
+    "alter",
+    [
+        lambda d: d.update(email="private@example.test"),
+        lambda d: d["totals"].update(runs=True),
+        lambda d: d["active"].update(items=[{"email": "private@example.test"}]),
+        lambda d: d["attention"].update(items=[{"id": "private-id"}]),
+        lambda d: d.update(completeness="partial"),
+        lambda d: d.update(totals={}),
+    ],
+)
+def test_admin_smoke_rejects_unsafe_or_malformed_shape(alter):
+    body = json.loads(smoke_body(installed._ADMIN_SMOKE_PATH, 200))
+    alter(body)
+    with pytest.raises(ValueError):
+        installed._admin_shape(json.dumps(body).encode())
+
+
+def test_user_smoke_rejects_nested_unexpected_pii():
+    body = json.loads(smoke_body("/api/scenarios", 200))
+    body["scenarios"][0]["roles"][0]["email"] = "private@example.test"
+    with pytest.raises(ValueError):
+        installed._user_shape(json.dumps(body).encode())
+
+
+@pytest.mark.parametrize("route_failure", ["user", "admin", "denial", "swapped"])
+def test_private_smoke_failures_refuse_success(monkeypatch, route_failure):
+    config = installed.InstalledConfig.parse(json.dumps(config_data()).encode())
+    monkeypatch.setattr(
+        installed,
+        "protected_credential_read",
+        lambda *a, **kw: json.dumps(
+            {"admin_session": "A" * 43, "user_session": "U" * 43}
+        ).encode(),
+    )
+
+    def get(origin, path, status, **kwargs):
+        if (
+            route_failure == "swapped"
+            and status == 403
+            or route_failure == "user"
+            and path == "/api/scenarios"
+            and status == 200
+            or route_failure == "admin"
+            and path == installed._ADMIN_SMOKE_PATH
+            and status == 200
+        ):
+            raise ValueError("HTTP smoke refused")
+        if route_failure == "denial" and status == 403:
+            return b'{"detail":"wrong"}'
+        return smoke_body(path, status)
+
+    monkeypatch.setattr(installed, "_get", get)
+    with pytest.raises(ValueError):
+        installed._http_smoke(config, public=False, timeout_seconds=30)
+
+
+@pytest.mark.filterwarnings(
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated"
+)
+def test_current_app_cookie_routes_and_shapes_without_pii(tmp_path, monkeypatch):
+    pytest.importorskip(
+        "fastapi", reason="application fixtures are not installed in the classify job"
+    )
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    import backend.main as main_module
+    from backend.config import Settings
+    from backend.db import Database
+    from backend.models import Conversation, Run, User
+    from backend.tests.auth_helpers import sign_in
+
+    app = main_module.create_app(
+        Database(f"sqlite+aiosqlite:///{tmp_path / 'database' / 'smoke.db'}"),
+        Settings(workspace_root=tmp_path / "workspaces"),
+    )
+    with TestClient(app) as client:
+        ordinary = sign_in(client, "smoke-user@example.test")
+        user_session = client.cookies.get("coreteams_session")
+        client.cookies.clear()
+        administrator = sign_in(client, "smoke-admin@example.test")
+        admin_session = client.cookies.get("coreteams_session")
+
+        async def grant_test_role():
+            async with app.state.database.session() as session:
+                admin = await session.get(User, administrator["id"])
+                admin.role = "admin"
+                conversation = Conversation(
+                    owner_id=ordinary["id"], title="private fixture title"
+                )
+                session.add(conversation)
+                await session.flush()
+                session.add_all(
+                    [
+                        Run(
+                            conversation_id=conversation.id,
+                            status="running",
+                            client_request_id="smoke-running",
+                            started_at=datetime.now(UTC),
+                        ),
+                        Run(
+                            conversation_id=conversation.id,
+                            status="failed",
+                            client_request_id="smoke-failed",
+                            started_at=datetime.now(UTC),
+                        ),
+                    ]
+                )
+                await session.commit()
+
+        client.portal.call(grant_test_role)
+        client.cookies.clear()
+        monkeypatch.setattr(
+            installed,
+            "protected_credential_read",
+            lambda *a, **kw: json.dumps(
+                {"admin_session": admin_session, "user_session": user_session}
+            ).encode(),
+        )
+        calls = []
+
+        # Only replace process/network transport: real router/auth/session/SQL
+        # and smoke status/body parsers execute together against the current app.
+        def command(argv, *, stdin, timeout, env):
+            path = argv[argv.index("--url") + 1].removeprefix("http://127.0.0.1:8000")
+            token = None
+            if stdin:
+                token = (
+                    stdin.decode().split("coreteams_session=", 1)[1].split('"', 1)[0]
+                )
+            headers = {} if token is None else {"Cookie": "coreteams_session=" + token}
+            response = client.get(path, headers=headers, follow_redirects=False)
+            calls.append((path, response.status_code))
+            if token == admin_session and path == installed._ADMIN_SMOKE_PATH:
+                body = response.json()
+                assert body["active"]["total"] == 1 and body["attention"]["total"] == 1
+                assert body["active"]["items"] == body["attention"]["items"] == []
+                assert b"smoke-user@example.test" not in response.content
+                assert b"private fixture title" not in response.content
+            status = str(response.status_code).encode()
+            return response.content + b"\n" + status if stdin else status
+
+        monkeypatch.setattr(installed, "bounded_run", command)
+        config = installed.InstalledConfig.parse(json.dumps(config_data()).encode())
+        assert installed._http_smoke(config, public=False, timeout_seconds=30)
+        assert (installed._ADMIN_SMOKE_PATH, 403) in calls
+        assert (installed._ADMIN_SMOKE_PATH, 200) in calls
+        assert ("/api/scenarios", 200) in calls
+        assert ordinary["role"] == "user"
+
+
+def test_missing_smoke_sessions_refused_before_host_construction(monkeypatch):
+    config = installed.InstalledConfig.parse(json.dumps(config_data()).encode())
+
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("missing")
+
+    monkeypatch.setattr(installed, "protected_credential_read", missing)
+    monkeypatch.setattr(
+        installed.HostConfig, "load", lambda *a: pytest.fail("host constructed")
+    )
+    with pytest.raises(FileNotFoundError):
+        installed.build_provider(config)

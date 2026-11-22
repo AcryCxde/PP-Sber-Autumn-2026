@@ -10,7 +10,100 @@ from pathlib import Path
 
 import pytest
 
-from tools.cicd.rollout_backup import BackupConfig, create_backup
+from tools.cicd.rollout_backup import BackupConfig, create_backup, preflight_backup
+
+
+def test_preflight_refuses_total_archive_before_cold_state(layout):
+    from dataclasses import replace
+
+    # Each file is below the cap; their combined tar (including headers) is not.
+    (layout.pgdata / "postmaster.pid").write_text("running")
+    for root in (layout.home, layout.data):
+        (root / "large").write_bytes(b"x" * 20000)
+    config = replace(layout, max_archive_bytes=32768)
+    with pytest.raises(ValueError, match="archive.*bound"):
+        preflight_backup(
+            config.pgdata,
+            config.home,
+            config.data,
+            available_memory_bytes=2 * 1024**3,
+            max_archive_bytes=config.max_archive_bytes,
+        )
+    assert not list(layout.local_root.iterdir())
+    assert not list(layout.scratch_root.iterdir())
+
+
+def test_preflight_requires_available_memory_not_total(layout):
+    with pytest.raises(ValueError, match="available memory"):
+        preflight_backup(
+            layout.pgdata,
+            layout.home,
+            layout.data,
+            available_memory_bytes=2 * 1024**3 - 1,
+        )
+
+
+def test_preflight_accounts_for_pax_headers_padding_and_empty_dirs(layout):
+    from tools.cicd.rollout_backup import _archive
+
+    (layout.home / ("long-" + "x" * 120)).mkdir()
+    (layout.data / "odd-sized").write_bytes(b"x" * 513)
+    size = preflight_backup(
+        layout.pgdata, layout.home, layout.data, available_memory_bytes=2 * 1024**3
+    )
+    archive = layout.scratch_root / "comparison.tar"
+    _archive(layout, archive)
+    assert size == archive.stat().st_size
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("MemTotal: 999999999 kB\nMemAvailable: 2097152 kB\n", 2 * 1024**3),
+        ("MemTotal: 999999999 kB\nMemFree: 2097152 kB\n", None),
+        ("MemAvailable: 2097152 MB\n", None),
+        ("MemAvailable: -1 kB\n", None),
+    ],
+)
+def test_available_memory_uses_only_valid_linux_memavailable(
+    monkeypatch, content, expected
+):
+    from tools.cicd.rollout_backup import available_memory
+
+    monkeypatch.setattr(Path, "read_text", lambda path: content)
+    if expected is None:
+        with pytest.raises(ValueError, match="MemAvailable"):
+            available_memory()
+    else:
+        assert available_memory() == expected
+
+
+def test_cold_growth_refuses_before_encryption_or_upload(layout):
+    from dataclasses import replace
+
+    config = replace(layout, max_archive_bytes=32768)
+    preflight_backup(
+        config.pgdata,
+        config.home,
+        config.data,
+        available_memory_bytes=2 * 1024**3,
+        max_archive_bytes=config.max_archive_bytes,
+    )
+    (layout.data / "grew").write_bytes(b"x" * 32768)
+    objects = LocalObjects()
+    with pytest.raises(ValueError, match="archive.*bound"):
+        create_backup(config, FixtureHost(), objects)
+    assert objects.objects == {}
+    assert not list(layout.local_root.iterdir())
+
+
+@pytest.mark.parametrize("bound", [True, 0, -1, 192 * 1024**2 + 1])
+def test_archive_bound_cannot_bypass_verified_ceiling(layout, bound):
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="archive.*bound"):
+        replace(layout, max_archive_bytes=bound)
+
 
 OPENSSL = os.environ.get(
     "BACKUP_TEST_OPENSSL",
@@ -54,7 +147,15 @@ def layout(tmp_path):
     key, cert = tmp_path / "key.pem", tmp_path / "cert.pem"
     subprocess.run([OPENSSL, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key), "-out", str(cert), "-subj", "/CN=local-fixture", "-days", "1"], check=True, capture_output=True, timeout=30)
     key.chmod(0o600)
-    return BackupConfig(**roots, recipient_cert=cert, private_key=key, expected_database_evidence="fixture-evidence", migration_preserves_s3=True, openssl=OPENSSL)
+    return BackupConfig(
+        **roots,
+        recipient_cert=cert,
+        private_key=key,
+        expected_database_evidence="fixture-evidence",
+        migration_preserves_s3=True,
+        openssl=OPENSSL,
+        memory_available=lambda: 2 * 1024**3,
+    )
 
 
 class FixtureHost:
@@ -81,10 +182,88 @@ def test_verified_encrypted_exact_bytes_retained_locally(layout):
     stored = objects.objects["coreteams-deploy-backups", receipt.object_key]
     assert stored == receipt.local_path.read_bytes()
     assert b"synthetic transcript" not in stored
+    # Indefinite-length BER is the actual -stream output despite -outform DER.
+    assert stored[:2] == b"\x30\x80"
+    cms = subprocess.run(
+        [
+            OPENSSL,
+            "cms",
+            "-cmsout",
+            "-print",
+            "-inform",
+            "DER",
+            "-in",
+            str(receipt.local_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    ).stdout
+    assert "id-smime-ct-authEnvelopedData" in cms
+    assert "aes-256-gcm" in cms
     assert receipt.sha256 == hashlib.sha256(stored).hexdigest()
     assert receipt.local_path.stat().st_mode & 0o777 == 0o600
     assert host.checks >= 2
     assert list(layout.scratch_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("damage", ["tag", "truncated"])
+def test_authenticated_decryption_refuses_before_restore(layout, damage):
+    # Corrupt BOTH local + transport after PUT so exact-byte readback still passes;
+    # only the real OpenSSL decoder/authentication check can catch this damage.
+    class DamagedObjects(LocalObjects):
+        def put_object(self, *, Bucket, Key, Body):
+            super().put_object(Bucket=Bucket, Key=Key, Body=Body)
+            encoded = bytearray(self.objects[Bucket, Key])
+            assert encoded[-24:-22] == b"\x04\x10"  # GCM MAC OCTET STRING
+            if damage == "tag":
+                encoded[-8] ^= 1
+            else:
+                del encoded[-12:]
+            self.objects[Bucket, Key] = bytes(encoded)
+            Path(Body.name).write_bytes(encoded)
+
+    class NeverRestore(FixtureHost):
+        def verify_restore(self, pgdata):
+            pytest.fail("unauthenticated plaintext reached restore")
+
+    with pytest.raises(subprocess.CalledProcessError):
+        create_backup(layout, NeverRestore(), DamagedObjects())
+    assert len(list(layout.local_root.glob("*.enc"))) == 1
+    assert not list(layout.local_root.glob("*.verified.json"))
+    assert not list(layout.scratch_root.iterdir())
+
+
+def test_memory_drop_before_decoder_refuses_without_restore(layout):
+    from dataclasses import replace
+
+    readings = iter((2 * 1024**3, 2 * 1024**3 - 1))
+    config = replace(layout, memory_available=lambda: next(readings))
+    objects = LocalObjects()
+    with pytest.raises(ValueError, match="available memory"):
+        create_backup(config, FixtureHost(), objects)
+    assert objects.objects  # PUT + exact readback are not permission to migrate.
+    assert not list(layout.local_root.glob("*.verified.json"))
+    assert not list(layout.scratch_root.iterdir())
+
+
+def test_actual_tar_size_rechecked_before_crypto(layout, monkeypatch):
+    from tools.cicd import rollout_backup
+
+    archive = rollout_backup._archive
+
+    def grown_archive(config, target):
+        archive(config, target)
+        with target.open("ab") as output:
+            output.truncate(config.max_archive_bytes + 1)
+
+    monkeypatch.setattr(rollout_backup, "_archive", grown_archive)
+    objects = LocalObjects()
+    with pytest.raises(ValueError, match="actual backup archive"):
+        create_backup(layout, FixtureHost(), objects)
+    assert not objects.objects
+    assert not list(layout.local_root.iterdir())
 
 
 def test_corrupt_readback_fails_and_preserves_local_copy(layout):

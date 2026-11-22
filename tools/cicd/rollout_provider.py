@@ -187,6 +187,7 @@ class RolloutProvider:
         host: K3sHost,
         inspect: Observation[LiveSchema],
         database_evidence: Observation[str],
+        backup_preflight: Callable[[], None],
         backup_config: Callable[[str], BackupConfig],
         backup_host: BackupHost,
         s3: S3,
@@ -200,6 +201,7 @@ class RolloutProvider:
         )
         self._path, self._host, self._inspect = approval_path, host, inspect
         self._database_evidence, self._backup_config = database_evidence, backup_config
+        self._backup_preflight = backup_preflight
         self._backup_host, self._s3 = backup_host, s3
         self._private_readiness, self._readiness = private_readiness, readiness
         self._functional_smoke, self._public_smoke = functional_smoke, public_smoke
@@ -251,6 +253,8 @@ class _HostSteps:
                 ).signature
             ),
         )
+        with _backup_deadline(timeout_seconds):
+            self._provider._backup_preflight()
         snapshot = Snapshot(plan.target, plan.old_schema, old, (1, 1))
         self._snapshot = snapshot
         return snapshot

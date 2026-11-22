@@ -1,6 +1,7 @@
 """Unactivated, same-node pre-DDL backup adapter; no rollout policy or credentials.
 
 Binding contract (installed host shim, NOT release input): hold rollout lock;
+call preflight_backup with Linux MemAvailable BEFORE stopping admission/apps/DB;
 stop admission/apps/runners and all home/data writers; record actual database
 schema/collation AND application data evidence; cleanly stop PostgreSQL; call
 create_backup; only its successful receipt permits DDL. Keep writers stopped
@@ -24,10 +25,15 @@ server-only unencrypted private key for scratch verification. Deploy credentials
 stay in the installed server S3 client. Client must set bounded connect/read
 and retry budgets (e.g. botocore Config(connect_timeout=5, read_timeout=30,
 retries={'total_max_attempts': 2})); this adapter does not create that client.
-Single PUT only, encrypted size <5 GiB. Provisioning/activation is separate.
+Single PUT only, encrypted size <5 GiB. Full uncompressed tar is capped at
+192 MiB with >=2 GiB MemAvailable: OpenSSL CMS -stream bounds encryption, NOT
+ASN.1 decoding during decryption (3.6.4 measured up to ~6.4x input RSS). Larger inputs
+require a separately verified decoder, not a higher cap. Provisioning/activation
+is separate; headroom checks cannot reserve RAM against unrelated host processes.
 """
 
 import hashlib
+import io
 import json
 import os
 import stat
@@ -35,7 +41,7 @@ import subprocess
 import tarfile
 import tempfile
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO, Protocol
@@ -43,6 +49,38 @@ from typing import BinaryIO, Protocol
 BUCKET = "coreteams-deploy-backups"
 MAX_OBJECT = 5 * 1024**3 - 1
 CHUNK = 1024**2
+MAX_ARCHIVE_BYTES = 192 * 1024**2
+MIN_AVAILABLE_MEMORY = 2 * 1024**3
+# Streaming BER adds per-chunk headers plus the small RSA recipient envelope.
+MAX_CMS_BYTES = MAX_ARCHIVE_BYTES + 1024**2
+
+
+def available_memory() -> int:
+    """Read Linux MemAvailable, not total/free RAM; fail closed elsewhere."""
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        fields = line.split()
+        if fields and fields[0] == "MemAvailable:":
+            _require(
+                len(fields) == 3 and fields[1].isdigit() and fields[2] == "kB",
+                "invalid MemAvailable",
+            )
+            return int(fields[1]) * 1024
+    raise ValueError("missing MemAvailable")
+
+
+def _memory_bound(available_memory_bytes: int) -> None:
+    _require(
+        type(available_memory_bytes) is int
+        and available_memory_bytes >= MIN_AVAILABLE_MEMORY,
+        "backup requires at least 2 GiB available memory",
+    )
+
+
+def _archive_bound(max_archive_bytes: int) -> None:
+    _require(
+        type(max_archive_bytes) is int and 0 < max_archive_bytes <= MAX_ARCHIVE_BYTES,
+        "invalid archive memory bound",
+    )
 
 
 class Host(Protocol):
@@ -91,8 +129,12 @@ class BackupConfig:
     migration_preserves_s3: bool
     timeout: int = 600
     openssl: str = "openssl"
+    max_archive_bytes: int = MAX_ARCHIVE_BYTES
+    memory_available: Callable[[], int] = available_memory
 
     def __post_init__(self) -> None:
+        _archive_bound(self.max_archive_bytes)
+        _require(callable(self.memory_available), "missing available-memory reader")
         _require(self.migration_preserves_s3 is True, "S3 exclusion needs migration-preserves-S3 contract")
         _require(isinstance(self.expected_database_evidence, str) and bool(self.expected_database_evidence.strip()), "missing observed database evidence")
         _require(type(self.timeout) is int and self.timeout > 0, "invalid timeout")
@@ -143,13 +185,82 @@ def _check_tree(root: Path) -> None:
             _require(not path.is_mount(), "nested mounts require separate backup binding")
 
 
+def preflight_backup(
+    pgdata: Path,
+    home: Path,
+    data: Path,
+    *,
+    available_memory_bytes: int,
+    max_archive_bytes: int = MAX_ARCHIVE_BYTES,
+) -> int:
+    """Bound the TOTAL uncompressed PAX tar before any downtime, without copying.
+
+    PG may still be running. This is a point-in-time size check, not a recovery
+    point or a reservation: create_backup repeats it after writers stop. Count
+    independent hardlink payloads, extended headers, padding and end records.
+    The installed caller supplies real Linux MemAvailable, never total RAM.
+    """
+    _archive_bound(max_archive_bytes)
+    _memory_bound(available_memory_bytes)
+    total = 2 * tarfile.BLOCKSIZE
+    # gettarinfo/tobuf must use the same format and dereference policy as _archive.
+    with tarfile.open(
+        fileobj=io.BytesIO(), mode="w", dereference=True, format=tarfile.PAX_FORMAT
+    ) as archive:
+        for name, root in (("pgdata", pgdata), ("home", home), ("data", data)):
+            _require(
+                root.is_absolute() and root.is_dir() and root.resolve() == root,
+                "roots must be existing canonical absolute directories",
+            )
+            pending = [root]
+            while pending:
+                path = pending.pop()
+                mode = path.lstat().st_mode
+                _require(
+                    not stat.S_ISLNK(mode), "symlink not supported in backup source"
+                )
+                _require(
+                    stat.S_ISDIR(mode) or stat.S_ISREG(mode),
+                    "special file not supported in backup source",
+                )
+                _require(
+                    path == root or not path.is_mount(),
+                    "nested mounts require separate backup binding",
+                )
+                member = archive.gettarinfo(
+                    path, arcname=str(Path(name) / path.relative_to(root))
+                )
+                _require(
+                    member.isfile() or member.isdir(),
+                    "backup link/special member refused",
+                )
+                total += len(
+                    member.tobuf(archive.format, archive.encoding, archive.errors)
+                )
+                total += (
+                    (member.size + tarfile.BLOCKSIZE - 1) // tarfile.BLOCKSIZE
+                ) * tarfile.BLOCKSIZE
+                size = (
+                    (total + tarfile.RECORDSIZE - 1) // tarfile.RECORDSIZE
+                ) * tarfile.RECORDSIZE
+                _require(
+                    size <= max_archive_bytes,
+                    "total backup archive exceeds memory bound",
+                )
+                if member.isdir():
+                    pending.extend(path.iterdir())
+    return size
+
+
 def _archive(config: BackupConfig, target: Path) -> None:
     _require((config.pgdata / "PG_VERSION").is_file() and not (config.pgdata / "postmaster.pid").exists(), "PGDATA must be cold")
     for root in (config.pgdata, config.home, config.data):
         _check_tree(root)
     # dereference=True writes independent bytes for hardlinked files. Symlinks
     # have already refused; host quiescence must prevent changes during this pass.
-    with tarfile.open(target, "w", dereference=True) as archive:
+    with tarfile.open(
+        target, "w", dereference=True, format=tarfile.PAX_FORMAT
+    ) as archive:
         for name in ("pgdata", "home", "data"):
             archive.add(getattr(config, name), arcname=name)
 
@@ -192,6 +303,13 @@ def create_backup(config: BackupConfig, host: Host, s3: S3) -> BackupReceipt:
     """
     # Recheck filesystem protection at use, not merely config construction.
     config.__post_init__()
+    preflight_backup(
+        config.pgdata,
+        config.home,
+        config.data,
+        available_memory_bytes=config.memory_available(),
+        max_archive_bytes=config.max_archive_bytes,
+    )
     host.assert_quiescent()
     identifier = uuid.uuid4().hex
     key = f"pre-ddl/{identifier}.cms.enc"
@@ -201,19 +319,49 @@ def create_backup(config: BackupConfig, host: Host, s3: S3) -> BackupReceipt:
         archive = scratch / "recovery.tar"
         _archive(config, archive)
         host.assert_quiescent()
-        # AuthEnvelopedData is authenticated GCM, unlike legacy CMS CBC.
+        _require(
+            0 < archive.stat().st_size <= config.max_archive_bytes,
+            "actual backup archive exceeds memory bound",
+        )
+        # AuthEnvelopedData is authenticated GCM. -stream bounds encryption;
+        # OpenSSL's ASN.1 decoder still buffers, hence the pre-stop tar/RAM cap.
         with local.open("xb") as output:
             local.chmod(0o600)
-            _run([config.openssl, "cms", "-encrypt", "-binary", "-aes-256-gcm", "-outform", "DER", "-in", str(archive), str(config.recipient_cert)], config.timeout, stdout=output)
+            _run(
+                [
+                    config.openssl,
+                    "cms",
+                    "-encrypt",
+                    "-stream",
+                    "-binary",
+                    "-aes-256-gcm",
+                    "-outform",
+                    "DER",
+                    "-in",
+                    str(archive),
+                    str(config.recipient_cert),
+                ],
+                config.timeout,
+                stdout=output,
+            )
             output.flush()
             os.fsync(output.fileno())
         _fsync(config.local_root)
         _require(0 < local.stat().st_size <= MAX_OBJECT, "backup exceeds single-PUT limit")
+        _require(
+            local.stat().st_size <= MAX_CMS_BYTES,
+            "encrypted backup exceeds decoder memory bound",
+        )
         with local.open("rb") as stream:
             s3.put_object(Bucket=BUCKET, Key=key, Body=stream)
         readback = scratch / "readback.cms"
         digest = _readback(s3, key, local, readback)
         decrypted = scratch / "restored.tar"
+        _require(
+            readback.stat().st_size <= MAX_CMS_BYTES,
+            "readback exceeds decoder memory bound",
+        )
+        _memory_bound(config.memory_available())
         _run([config.openssl, "cms", "-decrypt", "-binary", "-inform", "DER", "-in", str(readback), "-inkey", str(config.private_key), "-out", str(decrypted)], config.timeout)
         restored = scratch / "restored"
         restored.mkdir(mode=0o700)

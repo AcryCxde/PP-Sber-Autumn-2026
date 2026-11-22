@@ -241,6 +241,7 @@ def setup(tmp_path, monkeypatch):
         host=FakeHost(),
         inspect=inspect,
         database_evidence=evidence,
+        backup_preflight=lambda: events.append("backup_preflight"),
         backup_config=config,
         backup_host=object(),
         s3=object(),
@@ -276,6 +277,7 @@ def test_full_consumer_composes_real_boundaries_in_safety_order(setup):
     ]
     assert all(e.kind != "off_host" for e in result.evidence)
     ordered = [
+        "backup_preflight",
         "gate",
         "stop_apps",
         "database_evidence",
@@ -293,6 +295,19 @@ def test_full_consumer_composes_real_boundaries_in_safety_order(setup):
     assert [event for event in events if event in ordered] == ordered
     assert events[events.index("ddl") - 1] == "inspect_source"
     assert any(item.ddl_possible for item in persisted)
+
+
+def test_backup_preflight_failure_never_stops_traffic(setup, monkeypatch):
+    installed, _, _, _, events = setup
+
+    def oversized():
+        raise ValueError("backup exceeds safe limit")
+
+    monkeypatch.setattr(installed, "_backup_preflight", oversized)
+    result, _, _ = consume(setup)
+    assert result.status is Status.FAILED
+    assert not result.disruption_possible and not result.ddl_possible
+    assert "gate" not in events and "stop_db" not in events
 
 
 @pytest.mark.parametrize(

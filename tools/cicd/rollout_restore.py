@@ -34,12 +34,101 @@ SCRATCH_ROOT = Path("/var/lib/coreteams-deploy/scratch")
 PGDATA = "/var/lib/postgresql/data/pgdata"
 RUNTIME = "/restore-runtime"
 COUNT_TABLES = ("users", "conversations", "runs", "messages", "events", "artifacts")
-# One fixed statement: no row contents, dynamic SQL, psql interpolation or caller SQL.
-# Operational source connections must use the same read-only PGOPTIONS as scratch.
-EVIDENCE_SQL = """SELECT pg_catalog.jsonb_build_object(
+# Same physical cluster only: catalog OIDs/node trees are intentionally retained.
+# Exclude pg_class storage/statistics changed by a clean restart, not schema flags.
+# Hash complete critical rows inside PostgreSQL, never return row/column contents.
+# Sorted fixed-length SHA256 row hashes preserve duplicates without order/PII leaks.
+# Cap each section at 100000 rows (6.4 MB hash input); overflow returns NULL and
+# fails closed. The installed 30s statement/5s lock deadlines also bound work.
+# Literal relation list only: no dynamic SQL, psql interpolation or caller SQL.
+EVIDENCE_SQL = """WITH catalog_rows AS (
+ SELECT 'pg_namespace' AS relation, pg_catalog.to_jsonb(t) AS value FROM pg_catalog.pg_namespace t
+ UNION ALL SELECT 'pg_class', pg_catalog.to_jsonb(t) - ARRAY['relfilenode','relpages','reltuples','relallvisible','relfrozenxid','relminmxid'] FROM pg_catalog.pg_class t
+ UNION ALL SELECT 'pg_attribute', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_attribute t
+ UNION ALL SELECT 'pg_attrdef', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_attrdef t
+ UNION ALL SELECT 'pg_constraint', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_constraint t
+ UNION ALL SELECT 'pg_index', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_index t
+ UNION ALL SELECT 'pg_sequence', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_sequence t
+ UNION ALL SELECT 'pg_type', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_type t
+ UNION ALL SELECT 'pg_enum', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_enum t
+ UNION ALL SELECT 'pg_range', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_range t
+ UNION ALL SELECT 'pg_proc', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_proc t
+ UNION ALL SELECT 'pg_language', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_language t
+ UNION ALL SELECT 'pg_trigger', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_trigger t
+ UNION ALL SELECT 'pg_event_trigger', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_event_trigger t
+ UNION ALL SELECT 'pg_rewrite', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_rewrite t
+ UNION ALL SELECT 'pg_policy', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_policy t
+ UNION ALL SELECT 'pg_depend', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_depend t
+ UNION ALL SELECT 'pg_extension', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_extension t
+ UNION ALL SELECT 'pg_collation', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_collation t
+ UNION ALL SELECT 'pg_conversion', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_conversion t
+ UNION ALL SELECT 'pg_cast', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_cast t
+ UNION ALL SELECT 'pg_operator', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_operator t
+ UNION ALL SELECT 'pg_aggregate', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_aggregate t
+ UNION ALL SELECT 'pg_statistic_ext', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_statistic_ext t
+ UNION ALL SELECT 'pg_ts_config', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_ts_config t
+ UNION ALL SELECT 'pg_ts_config_map', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_ts_config_map t
+ UNION ALL SELECT 'pg_ts_dict', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_ts_dict t
+ UNION ALL SELECT 'pg_ts_parser', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_ts_parser t
+ UNION ALL SELECT 'pg_ts_template', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_ts_template t
+ UNION ALL SELECT 'pg_opclass', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_opclass t
+ UNION ALL SELECT 'pg_opfamily', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_opfamily t
+ UNION ALL SELECT 'pg_am', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_am t
+ UNION ALL SELECT 'pg_amop', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_amop t
+ UNION ALL SELECT 'pg_amproc', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_amproc t
+ UNION ALL SELECT 'pg_inherits', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_inherits t
+ UNION ALL SELECT 'pg_partitioned_table', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_partitioned_table t
+ UNION ALL SELECT 'pg_init_privs', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_init_privs t
+ UNION ALL SELECT 'pg_default_acl', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_default_acl t
+ UNION ALL SELECT 'pg_transform', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_transform t
+ UNION ALL SELECT 'pg_foreign_data_wrapper', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_foreign_data_wrapper t
+ UNION ALL SELECT 'pg_foreign_server', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_foreign_server t
+ UNION ALL SELECT 'pg_foreign_table', pg_catalog.to_jsonb(t) FROM pg_catalog.pg_foreign_table t
+), data_rows AS (
+ SELECT 'users' AS relation, pg_catalog.to_jsonb(t) AS value FROM public.users t
+ UNION ALL SELECT 'conversations', pg_catalog.to_jsonb(t) FROM public.conversations t
+ UNION ALL SELECT 'runs', pg_catalog.to_jsonb(t) FROM public.runs t
+ UNION ALL SELECT 'messages', pg_catalog.to_jsonb(t) FROM public.messages t
+ UNION ALL SELECT 'events', pg_catalog.to_jsonb(t) FROM public.events t
+ UNION ALL SELECT 'artifacts', pg_catalog.to_jsonb(t) FROM public.artifacts t
+), normalized_data AS (
+ -- jsonb orders object keys. Normalize timestamptz to epoch so session timezone
+ -- (source vs scratch) cannot change the fingerprint of an identical row.
+ SELECT d.relation, (SELECT pg_catalog.jsonb_object_agg(k.key,
+   CASE WHEN a.atttypid='pg_catalog.timestamptz'::pg_catalog.regtype AND k.value<>'null'::jsonb
+    THEN pg_catalog.to_jsonb(EXTRACT(EPOCH FROM (k.value #>> '{}')::timestamptz))
+    ELSE k.value END)
+  FROM pg_catalog.jsonb_each(d.value) k
+  JOIN pg_catalog.pg_attribute a ON a.attrelid=pg_catalog.to_regclass('public.' || d.relation)
+   AND a.attname=k.key AND a.attnum>0 AND NOT a.attisdropped) AS value
+ FROM data_rows d
+), sequence_rows AS (
+ -- Direct state includes is_called, unlike pg_sequences.last_value (NULL before
+ -- first use). These are the two serial sequences of the installed app schema.
+ SELECT 'events_id_seq' AS relation, pg_catalog.jsonb_build_object('last_value',last_value,'is_called',is_called) AS value FROM public.events_id_seq
+ UNION ALL SELECT 'artifacts_id_seq', pg_catalog.jsonb_build_object('last_value',last_value,'is_called',is_called) FROM public.artifacts_id_seq
+), hashes AS (
+ SELECT 'catalog' AS section, pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+  pg_catalog.jsonb_build_array(relation,value)::text,'UTF8')),'hex') AS hash FROM catalog_rows
+ UNION ALL SELECT relation, pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(value::text,'UTF8')),'hex') FROM normalized_data
+ UNION ALL SELECT 'sequences', pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+  pg_catalog.jsonb_build_array(relation,value)::text,'UTF8')),'hex') FROM sequence_rows
+), ranked AS (
+ SELECT section,hash,pg_catalog.row_number() OVER (PARTITION BY section ORDER BY hash COLLATE "C") AS position FROM hashes
+), fingerprints AS (
+ SELECT sections.section, CASE WHEN count(r.hash)<=100000 THEN pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+  COALESCE(pg_catalog.string_agg(r.hash,'' ORDER BY r.hash COLLATE "C") FILTER (WHERE r.position<=100000),''),'UTF8')),'hex') END AS hash
+ FROM (VALUES ('catalog'),('users'),('conversations'),('runs'),('messages'),('events'),('artifacts'),('sequences')) sections(section)
+ LEFT JOIN ranked r ON r.section=sections.section GROUP BY sections.section
+)
+SELECT pg_catalog.jsonb_build_object(
  'system_identifier',(SELECT system_identifier::text FROM pg_catalog.pg_control_system()),
  'server_version_num',pg_catalog.current_setting('server_version_num')::integer,
  'revisions',(SELECT pg_catalog.jsonb_agg(version_num ORDER BY version_num) FROM public.alembic_version),
+ 'fingerprints',pg_catalog.jsonb_build_object(
+ 'catalog',(SELECT hash FROM fingerprints WHERE section='catalog'),
+ 'data',(SELECT pg_catalog.jsonb_object_agg(section,hash) FROM fingerprints WHERE section IN ('users','conversations','runs','messages','events','artifacts')),
+ 'sequences',(SELECT hash FROM fingerprints WHERE section='sequences')),
  'counts',pg_catalog.jsonb_build_object(
  'users',(SELECT count(*) FROM public.users),
  'conversations',(SELECT count(*) FROM public.conversations),
@@ -88,6 +177,7 @@ def sanitize_evidence(text: str) -> str:
             "server_version_num",
             "revisions",
             "counts",
+            "fingerprints",
             "collation",
         }
     )
@@ -113,6 +203,19 @@ def sanitize_evidence(text: str) -> str:
     counts = value["counts"]
     _require(type(counts) is dict and set(counts) == set(COUNT_TABLES))
     _require(all(type(item) is int and 0 <= item < 2**63 for item in counts.values()))
+    fingerprints = value["fingerprints"]
+    _require(
+        type(fingerprints) is dict
+        and set(fingerprints) == {"catalog", "data", "sequences"}
+    )
+    data = fingerprints["data"]
+    _require(type(data) is dict and set(data) == set(COUNT_TABLES))
+    _require(
+        all(
+            type(item) is str and re.fullmatch(r"[0-9a-f]{64}", item) is not None
+            for item in (fingerprints["catalog"], fingerprints["sequences"], *data.values())
+        )
+    )
     collation = value["collation"]
     _require(
         type(collation) is dict

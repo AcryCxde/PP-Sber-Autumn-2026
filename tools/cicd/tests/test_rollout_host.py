@@ -4,10 +4,26 @@ import hashlib
 import json
 import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
 from tools.cicd import rollout_host as host
+
+BACKUP_PATHS = {
+    "home": Path("/reviewed/home"),
+    "data": Path("/reviewed/data"),
+    "s3_pvc": Path("/reviewed/s3"),
+}
+
+# Reviewed deployment mount topology; directories/identities are test-only.
+STORAGE_MOUNTS = {
+    "backend": [
+        ("home", "/home/node", "coreteams-home"),
+        ("data", "/app/backend/data", "coreteams-data"),
+    ],
+    "s3": [("s3_pvc", "/data", "s3-data")],
+}
 
 
 @pytest.fixture
@@ -59,6 +75,65 @@ class Cluster:
         self.unknown = False
         self.fail_ddl = False
         self.ddl = []
+        self.pod_specs = {}
+        self.deployment_specs = {}
+        self.objects = {}
+        for name in host.CONTAINERS:
+            spec = {
+                "containers": [
+                    {
+                        "name": host.CONTAINERS[name],
+                        "image": self.images[name],
+                        "volumeMounts": [],
+                    }
+                ],
+                "volumes": [],
+            }
+            for key, mount, claim in STORAGE_MOUNTS.get(name, []):
+                spec["containers"][0]["volumeMounts"].append(
+                    {"name": key, "mountPath": mount}
+                )
+                spec["volumes"].append(
+                    {"name": key, "persistentVolumeClaim": {"claimName": claim}}
+                )
+                self.objects[("pvc", claim)] = {
+                    "metadata": {
+                        "name": claim,
+                        "namespace": host.NAMESPACE,
+                        "uid": claim + "-uid",
+                    },
+                    "spec": {"volumeName": "pv-" + key},
+                    "status": {"phase": "Bound"},
+                }
+                self.objects[("pv", "pv-" + key)] = {
+                    "metadata": {"name": "pv-" + key, "uid": key + "-pv-uid"},
+                    "spec": {
+                        "claimRef": {
+                            "namespace": host.NAMESPACE,
+                            "name": claim,
+                            "uid": claim + "-uid",
+                        },
+                        "hostPath": {"path": str(BACKUP_PATHS[key])},
+                        "nodeAffinity": {
+                            "required": {
+                                "nodeSelectorTerms": [
+                                    {
+                                        "matchExpressions": [
+                                            {
+                                                "key": "kubernetes.io/hostname",
+                                                "operator": "In",
+                                                "values": ["reviewed-node"],
+                                            }
+                                        ]
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                    "status": {"phase": "Bound"},
+                }
+            self.deployment_specs[name] = spec
+            self.pod_specs[name] = json.loads(json.dumps(spec))
 
     def pod(self, name):
         return {
@@ -68,8 +143,15 @@ class Cluster:
                 "labels": {"app": name},
             },
             "spec": {
+                **self.pod_specs[name],
                 "nodeName": "reviewed-node",
-                "containers": [{"image": self.images[name]}],
+                "containers": [
+                    {
+                        **self.pod_specs[name]["containers"][0],
+                        "image": self.images[name],
+                    },
+                    *self.pod_specs[name]["containers"][1:],
+                ],
             },
             "status": {
                 "phase": "Running",
@@ -135,6 +217,8 @@ class Cluster:
                 pod["metadata"]["labels"]["app"] = "other-writer"
                 pods.append(pod)
             return json.dumps({"items": pods}).encode()
+        if args[0] == "get" and tuple(args[1:3]) in self.objects:
+            return json.dumps(self.objects[tuple(args[1:3])]).encode()
         if args[:2] == ["get", "deployment"]:
             name = args[2]
             return json.dumps(
@@ -142,6 +226,7 @@ class Cluster:
                     "metadata": {
                         "name": name,
                         "namespace": "coreteams",
+                        "uid": name + "-deployment-uid",
                         "resourceVersion": "1",
                     },
                     "spec": {
@@ -150,12 +235,13 @@ class Cluster:
                         "template": {
                             "metadata": {"labels": {"app": name}},
                             "spec": {
+                                **self.deployment_specs[name],
                                 "containers": [
                                     {
-                                        "name": host.CONTAINERS[name],
+                                        **self.deployment_specs[name]["containers"][0],
                                         "image": self.images[name],
                                     }
-                                ]
+                                ],
                             },
                         },
                     },
@@ -212,7 +298,7 @@ class Cluster:
 @pytest.fixture
 def rig(config, release):
     cluster = Cluster(config, release)
-    adapter = host.K3sHost(config, runner=cluster)
+    adapter = host.K3sHost(config, backup_paths=BACKUP_PATHS, runner=cluster)
     return adapter, cluster, release
 
 
@@ -395,6 +481,252 @@ def test_preflight_drift_fails_before_mutations(rig, drift):
     assert not any("scale" in argv for argv, _, _, _ in cluster.calls)
 
 
+@pytest.mark.parametrize("key", BACKUP_PATHS)
+def test_wrong_backup_root_blocks_preflight_before_mutations(config, release, key):
+    cluster = Cluster(config, release)
+    paths = {**BACKUP_PATHS, key: Path("/wrong/" + key)}
+    adapter = host.K3sHost(config, backup_paths=paths, runner=cluster)
+    with pytest.raises(ValueError, match="backup path drift"):
+        adapter.preflight(release, source_probe=lambda: release.source_signature)
+    assert not any("scale" in argv for argv, _, _, _ in cluster.calls)
+    assert not cluster.ddl
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        None,
+        "unknown",
+        "template_sidecar",
+        "pod_sidecar",
+        "missing_status",
+        "running",
+        "failed",
+        "pod_order",
+    ],
+)
+def test_storage_accepts_completed_installed_init_containers_only(
+    rig, monkeypatch, drift
+):
+    adapter, cluster, _ = rig
+    init = [{"name": "fix-perms"}, {"name": "wait-db"}]
+    if drift == "unknown":
+        init[0]["name"] = "other-writer"
+    if drift == "template_sidecar":
+        init[0]["restartPolicy"] = "Always"
+    cluster.deployment_specs["backend"]["initContainers"] = init
+    cluster.pod_specs["backend"]["initContainers"] = json.loads(json.dumps(init))
+    if drift == "pod_sidecar":
+        cluster.pod_specs["backend"]["initContainers"][0]["restartPolicy"] = "Always"
+    if drift == "pod_order":
+        cluster.pod_specs["backend"]["initContainers"].reverse()
+    statuses = [
+        {"name": item["name"], "state": {"terminated": {"exitCode": 0}}}
+        for item in init
+    ]
+    if drift == "missing_status":
+        statuses.pop()
+    elif drift == "running":
+        statuses[0]["state"] = {"running": {}}
+    elif drift == "failed":
+        statuses[0]["state"]["terminated"]["exitCode"] = 1
+    original_pod = cluster.pod
+
+    def pod(name):
+        value = original_pod(name)
+        if name == "backend":
+            value["status"]["initContainerStatuses"] = statuses
+        return value
+
+    monkeypatch.setattr(cluster, "pod", pod)
+    if drift is None:
+        preflight(rig)
+        adapter.gate_ingress()
+        adapter.stop_applications()
+        adapter.stop_database_for_cold_copy()
+        adapter.assert_quiescent()
+    else:
+        with pytest.raises(ValueError, match="storage init container"):
+            preflight(rig)
+        assert not any("scale" in argv for argv, _, _, _ in cluster.calls)
+        assert not cluster.ddl
+
+
+STORAGE_DRIFTS = [
+    "pod_mount",
+    "pod_claim",
+    "template_mount",
+    "template_claim",
+    "subpath",
+    "subpath_expr",
+    "readonly",
+    "volume_readonly",
+    "nested_mount",
+    "sidecar",
+    "pvc_uid",
+    "pv_uid",
+    "claim_uid",
+    "pv_path",
+    "pv_node",
+    "pv_source",
+    "pvc_pending",
+    "pv_pending",
+    "pvc_deleted",
+    "pv_deleted",
+    "pvc_rebound",
+    "pv_name",
+    "pvc_name",
+    "pvc_namespace",
+    "volume_mode",
+]
+
+
+def drift_storage(cluster, key, drift):
+    name = "s3" if key == "s3_pvc" else "backend"
+    index = 1 if key == "data" else 0
+    claim = STORAGE_MOUNTS[name][index][2]
+    pvc = cluster.objects[("pvc", claim)]
+    pv = cluster.objects[("pv", "pv-" + key)]
+    spec = cluster.deployment_specs[name]
+    mount = spec["containers"][0]["volumeMounts"][index]
+    pod_spec = cluster.pod_specs[name]
+    if drift == "pod_mount":
+        pod_spec["containers"][0]["volumeMounts"][index]["mountPath"] += "-wrong"
+    elif drift == "pod_claim":
+        pod_spec["volumes"][index]["persistentVolumeClaim"]["claimName"] = "other"
+    elif drift == "template_mount":
+        mount["mountPath"] += "-wrong"
+    elif drift == "template_claim":
+        spec["volumes"][index]["persistentVolumeClaim"]["claimName"] = "other"
+    elif drift in {"subpath", "subpath_expr", "readonly"}:
+        mount[
+            {
+                "subpath": "subPath",
+                "subpath_expr": "subPathExpr",
+                "readonly": "readOnly",
+            }[drift]
+        ] = True if drift == "readonly" else "other"
+    elif drift == "volume_readonly":
+        spec["volumes"][index]["persistentVolumeClaim"]["readOnly"] = True
+    elif drift == "nested_mount":
+        spec["containers"][0]["volumeMounts"].append(
+            {"name": "other", "mountPath": mount["mountPath"] + "/masked"}
+        )
+    elif drift == "sidecar":
+        pod_spec["containers"].append({"name": "other", "volumeMounts": []})
+    elif drift == "pvc_uid":
+        pvc["metadata"]["uid"] = "replaced"
+        pv["spec"]["claimRef"]["uid"] = "replaced"
+    elif drift == "pv_uid":
+        pv["metadata"]["uid"] = "replaced"
+    elif drift == "claim_uid":
+        pv["spec"]["claimRef"]["uid"] = "other"
+    elif drift == "pv_path":
+        pv["spec"]["hostPath"]["path"] = "/other"
+    elif drift == "pv_node":
+        pv["spec"]["nodeAffinity"]["required"]["nodeSelectorTerms"][0][
+            "matchExpressions"
+        ][0]["values"] = ["other-node"]
+    elif drift == "pv_source":
+        pv["spec"]["nfs"] = {"path": str(BACKUP_PATHS[key]), "server": "remote"}
+    elif drift in {"pvc_pending", "pv_pending"}:
+        (pvc if drift == "pvc_pending" else pv)["status"]["phase"] = "Pending"
+    elif drift in {"pvc_deleted", "pv_deleted"}:
+        (pvc if drift == "pvc_deleted" else pv)["metadata"]["deletionTimestamp"] = "now"
+    elif drift == "pvc_rebound":
+        pvc["spec"]["volumeName"] = "pv-replacement"
+        pv["metadata"]["name"] = "pv-replacement"
+        cluster.objects[("pv", "pv-replacement")] = pv
+    elif drift == "pv_name":
+        pv["metadata"]["name"] = "other"
+    elif drift == "pvc_name":
+        pvc["metadata"]["name"] = "other"
+    elif drift == "pvc_namespace":
+        pvc["metadata"]["namespace"] = "other"
+    elif drift == "volume_mode":
+        pv["spec"]["volumeMode"] = "Block"
+    else:
+        raise AssertionError(drift)
+
+
+@pytest.mark.parametrize("key", BACKUP_PATHS)
+@pytest.mark.parametrize(
+    "drift",
+    [d for d in STORAGE_DRIFTS if d not in {"pvc_uid", "pv_uid", "pvc_rebound"}],
+)
+def test_invalid_storage_topology_blocks_preflight(rig, key, drift):
+    adapter, cluster, release = rig
+    drift_storage(cluster, key, drift)
+    with pytest.raises(ValueError):
+        adapter.preflight(release, source_probe=lambda: release.source_signature)
+    assert not any("scale" in argv for argv, _, _, _ in cluster.calls)
+    assert not cluster.ddl
+
+
+@pytest.mark.parametrize("key", BACKUP_PATHS)
+@pytest.mark.parametrize("drift", STORAGE_DRIFTS)
+def test_storage_drift_after_preflight_cannot_stop_writers(rig, key, drift):
+    adapter = preflight(rig)
+    cluster = rig[1]
+    drift_storage(cluster, key, drift)
+    with pytest.raises(ValueError):
+        adapter.gate_ingress()
+    assert all(cluster.replicas.values())
+    assert not cluster.ddl
+
+
+@pytest.mark.parametrize("key", BACKUP_PATHS)
+@pytest.mark.parametrize(
+    "drift", [d for d in STORAGE_DRIFTS if not d.startswith("pod_") and d != "sidecar"]
+)
+def test_storage_drift_after_pods_stopped_blocks_backup(rig, key, drift):
+    adapter = preflight(rig)
+    adapter.gate_ingress()
+    adapter.stop_applications()
+    adapter.stop_database_for_cold_copy()
+    cluster = rig[1]
+    drift_storage(cluster, key, drift)
+    with pytest.raises(ValueError):
+        adapter.assert_quiescent()
+    assert cluster.replicas == {"frontend": 0, "backend": 0, "db": 0, "s3": 1}
+    assert not cluster.ddl
+
+
+@pytest.mark.parametrize("key", BACKUP_PATHS)
+def test_storage_replacement_after_backup_blocks_ddl(rig, monkeypatch, key):
+    adapter = cold_restart(rig)
+    procedure = b"approved-test-procedure"
+    monkeypatch.setattr(host, "PROCEDURE_SHA256", hashlib.sha256(procedure).hexdigest())
+    drift_storage(rig[1], key, "pv_uid")
+    with pytest.raises(ValueError, match="binding changed"):
+        adapter.run(procedure, timeout_seconds=60)
+    assert not rig[1].ddl
+    assert rig[1].replicas["frontend"] == rig[1].replicas["backend"] == 0
+
+
+@pytest.mark.parametrize("source", ["hostPath", "local"])
+def test_correct_topology_binds_exact_named_local_volumes(rig, source):
+    adapter, cluster, _ = rig
+    for (kind, _), value in cluster.objects.items():
+        if kind == "pv":
+            value["spec"][source] = value["spec"].pop("hostPath")
+    preflight(rig)
+    adapter.gate_ingress()
+    adapter.stop_applications()
+    adapter.stop_database_for_cold_copy()
+    adapter.assert_quiescent()
+    gets = [
+        argv[6:]
+        for argv, _, _, _ in cluster.calls
+        if argv[0] == cluster.config.kubectl
+        and argv[6] == "get"
+        and argv[7] in {"pvc", "pv"}
+    ]
+    assert {tuple(args[1:3]) for args in gets} == set(cluster.objects)
+    assert all(len(args) == 5 and args[-2:] == ["-o", "json"] for args in gets)
+    assert not cluster.ddl
+
+
 def test_active_run_after_preflight_does_not_gate(rig):
     adapter = preflight(rig)
     rig[1].active = b"1\n"
@@ -543,7 +875,7 @@ def identity_rig(config, release):
     from pathlib import Path
 
     cluster = Cluster(config, release)
-    adapter = host.K3sHost(config, runner=cluster)
+    adapter = host.K3sHost(config, backup_paths=BACKUP_PATHS, runner=cluster)
     original_pod = cluster.pod
     objects = {
         ("service", "db"): {
