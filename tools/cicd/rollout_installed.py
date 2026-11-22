@@ -583,7 +583,7 @@ def build_provider(config: InstalledConfig) -> RolloutProvider:
             endpoint=mapping.endpoint,
             port=mapping.port,
             pgdata=paths["pgdata"],
-            timeout_seconds=_remaining(deadline),
+            timeout_seconds=min(60, _remaining(deadline)),
         )
 
     def inspect(*, timeout_seconds: int) -> LiveSchema:
