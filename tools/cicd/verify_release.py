@@ -279,15 +279,7 @@ def parse_archive(payload: bytes) -> Release:
         raise ValueError("invalid release archive") from error
 
 
-def verify_release(run_id: str, sha: str, *, api: API | None = None) -> Release:
-    require(
-        isinstance(run_id, str)
-        and re.fullmatch(r"[1-9][0-9]{0,18}", run_id) is not None,
-        "invalid release run ID",
-    )
-    commit_sha(sha)
-    require(positive(int(run_id)), "invalid release run ID")
-    api = api if api is not None else GitHubAPI()
+def ci_workflow_id(api: API) -> int:
     workflow = api.get(PREFIX + "/actions/workflows/ci.yml")
     workflow_id = workflow.get("id")
     require(
@@ -296,12 +288,63 @@ def verify_release(run_id: str, sha: str, *, api: API | None = None) -> Release:
         and workflow.get("state") == "active",
         "foreign/inactive CI workflow",
     )
+    return workflow_id
+
+
+def discover_release(sha: str, *, api: API | None = None) -> Release:
+    """Select one exact dispatch-SHA master push, never a prior run or attempt."""
+    commit_sha(sha)
+    api = api if api is not None else GitHubAPI()
+    require(master_sha(api) == sha, "dispatch SHA is not current master")
+    workflow_id = ci_workflow_id(api)
+    # Do not filter status: a failed/in-progress run must not hide ambiguity.
+    listing = api.get(
+        PREFIX + "/actions/workflows/ci.yml/runs"
+        f"?branch=master&event=push&head_sha={sha}&per_page=100"
+    )
+    runs = listing.get("workflow_runs")
+    require(
+        type(listing.get("total_count")) is int
+        and listing["total_count"] == 1
+        and isinstance(runs, list)
+        and len(runs) == 1,
+        "missing/ambiguous/incomplete CI run listing",
+    )
+    run = obj(runs[0])
+    context = Context(sha, run.get("id"), run.get("run_attempt"))
+    verify_run(run, context, workflow_id)
+    release = verify_release(
+        str(context.workflow_run_id), sha, api=api, require_current_master=True
+    )
+    release.bind(context)  # A rerun since selection must not substitute its attempt.
+    return release
+
+
+def verify_release(
+    run_id: str,
+    sha: str,
+    *,
+    api: API | None = None,
+    require_current_master: bool = False,
+) -> Release:
+    require(
+        isinstance(run_id, str)
+        and re.fullmatch(r"[1-9][0-9]{0,18}", run_id) is not None,
+        "invalid release run ID",
+    )
+    commit_sha(sha)
+    require(positive(int(run_id)), "invalid release run ID")
+    api = api if api is not None else GitHubAPI()
+    workflow_id = ci_workflow_id(api)
     run_path = f"{PREFIX}/actions/runs/{run_id}"
     run = api.get(run_path)
     context = Context(sha, int(run_id), run.get("run_attempt"))
     verify_run(run, context, workflow_id)
     master = master_sha(api)
-    verify_freshness(api, sha, master)
+    if require_current_master:
+        require(master == sha, "release SHA is not current master")
+    else:
+        verify_freshness(api, sha, master)
     listing = api.get(run_path + "/artifacts?per_page=100")
     artifacts = listing.get("artifacts")
     count = listing.get("total_count")
@@ -374,9 +417,7 @@ def trusted_dispatch(env: Mapping[str, str]) -> None:
 def main() -> int:
     try:
         trusted_dispatch(os.environ)
-        release = verify_release(
-            os.environ.get("RELEASE_RUN_ID", ""), os.environ.get("RELEASE_SHA", "")
-        )
+        release = discover_release(os.environ.get("GITHUB_SHA", ""))
         message = json.dumps(release.to_dict(), separators=(",", ":")) + "\n"
         require(len(message.encode()) <= MAX_MANIFEST, "request too large")
         sys.stdout.write(message)
