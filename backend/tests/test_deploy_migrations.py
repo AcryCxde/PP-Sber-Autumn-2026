@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from backend.config import Settings
 from backend.db import Database, upgrade_database
 from backend.main import create_app
-from backend.migrate import inspect_database, migration_config
+from backend.migrate import inspect_database, migration_config, record_release
 
 
 def test_deployment_startup_verifies_without_migrating(tmp_path, monkeypatch):
@@ -36,3 +36,10 @@ def test_deployment_refuses_old_schema_before_web_writes(tmp_path):
     with pytest.raises(RuntimeError, match="revision differs"):
         asyncio.run(inspect_database(url, require_head=True))
     assert asyncio.run(inspect_database(url))["current"] == "20261111_0005"
+
+
+def test_optional_release_audit_hook_before_history_model_exists(monkeypatch):
+    from backend import models
+
+    monkeypatch.delattr(models, "DeploymentAudit", raising=False)
+    assert asyncio.run(record_release("sqlite+aiosqlite://")) is False

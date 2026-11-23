@@ -186,3 +186,61 @@ def test_late_release_cannot_downgrade_completed_descendant(system):
     factory().deploy(Release.parse(json.dumps(stale)), API())
     assert record["events"] == []
     assert factory().state["current"] == release.to_dict()
+
+
+def test_submission_waits_for_activating_service_before_replacing_pending_request(
+    tmp_path, monkeypatch
+):
+    import io
+    from types import SimpleNamespace
+    from tools.cicd.cold_backup import atomic_json
+
+    release = Release.parse(json.dumps(manifest()))
+    token = tmp_path / "token"
+    token.write_text("test-only")
+    state = tmp_path / "state"
+    state.mkdir()
+    atomic_json(state / "state.json", {"phase": "succeeded"})
+    monkeypatch.setattr(module, "STATE", state)
+    monkeypatch.setattr(module, "GitHubAPI", lambda token: object())
+    monkeypatch.setattr(module, "verify_release", lambda *args, **kw: release)
+    monkeypatch.setattr(
+        module.sys,
+        "stdin",
+        SimpleNamespace(
+            buffer=io.BytesIO(
+                json.dumps({"schema": 2, "release": release.to_dict()}).encode()
+            )
+        ),
+    )
+    calls = []
+
+    def command(args):
+        calls.append(args[1])
+        if args[1] == "show":
+            assert not (state / "request.json").exists()
+            return b"activating\n" if calls.count("show") == 1 else b"inactive\n"
+        return b""
+
+    monkeypatch.setattr(module, "run", command)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+
+    class Waiter:
+        returncode = 0
+
+        def __init__(self, args, **kwargs):
+            assert calls == ["show", "show", "reset-failed"]
+            assert json.loads((state / "request.json").read_text()) == release.to_dict()
+            assert args == ["systemctl", "start", "coreteams-deploy.service"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(module.subprocess, "Popen", Waiter)
+    module.submit({"github_token": str(token)})

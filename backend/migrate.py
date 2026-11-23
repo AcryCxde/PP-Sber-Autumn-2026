@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import json
+import os
 from pathlib import Path
 
 from alembic import command
@@ -63,9 +64,52 @@ async def inspect_database(
         await engine.dispose()
 
 
+async def record_release(url: str) -> bool:
+    """Optional application audit hook; the controller knows no table or revision names."""
+    from backend import models
+
+    audit = getattr(models, "DeploymentAudit", None)
+    if audit is None:
+        return False
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    release = json.loads(os.environ["RELEASE_MANIFEST"])
+    values = {
+        "release_sha": release["sha"],
+        "workflow_run_id": release["workflow_run_id"],
+        "run_attempt": release["run_attempt"],
+        "migration_head": migration_head(),
+        "kind": "deployed",
+    }
+    engine = create_async_engine(url)
+    try:
+        async with async_sessionmaker(engine)() as session:
+            exists = select(audit.id).where(
+                audit.release_sha == values["release_sha"],
+                audit.workflow_run_id == values["workflow_run_id"],
+                audit.run_attempt == values["run_attempt"],
+            )
+            if await session.scalar(exists) is not None:
+                return False
+            session.add(audit(**values))
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                if await session.scalar(exists) is None:
+                    raise
+            return True
+    finally:
+        await engine.dispose()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=["plan", "upgrade", "verify", "check-models"])
+    parser.add_argument(
+        "mode", choices=["plan", "upgrade", "verify", "check-models", "record"]
+    )
     args = parser.parse_args()
     url = Settings().database_url
     if args.mode == "upgrade":
@@ -76,6 +120,8 @@ def main() -> None:
             url, require_head=args.mode != "plan", drift=args.mode == "check-models"
         )
     )
+    if args.mode == "record":
+        result["recorded"] = asyncio.run(record_release(url))
     print(json.dumps(result, sort_keys=True))
 
 

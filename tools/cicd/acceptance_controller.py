@@ -269,6 +269,8 @@ class TestAPI:
 
 def candidate(config, name, parent, operation="ok"):
     path = ROOT / "sources" / name
+    if path.exists():
+        shutil.rmtree(path)
     shutil.copytree(SOURCE, path)
     versions = path / "migrations" / "versions"
     # Build on the previous successful dynamic graph, not a server-side revision list.
@@ -316,19 +318,37 @@ def candidate(config, name, parent, operation="ok"):
         for file in files:
             os.chmod(Path(folder) / file, 0o644)
     config["candidate_source"] = str(path)
+    atomic_json(ROOT / "config.json", config)
     return path
 
 
 def check():
-    config = bootstrap()
+    config = (
+        json.loads((ROOT / "config.json").read_text())
+        if (ROOT / "config.json").exists()
+        else bootstrap()
+    )
     os.chmod(ROOT, 0o755)
-    (ROOT / "sources").mkdir(mode=0o755)
+    (ROOT / "sources").mkdir(mode=0o755, exist_ok=True)
     sequence = int(config["initial_release"]["sha"], 16)
-    evidence = []
+    evidence = (
+        json.loads((ROOT / "evidence.json").read_text())["cases"]
+        if (ROOT / "evidence.json").exists()
+        else []
+    )
     controller_root = ROOT / "controller"
+    if (controller_root / "state.json").exists():
+        state = json.loads((controller_root / "state.json").read_text())
+        sequence = max(
+            sequence,
+            int(state["current"]["sha"], 16),
+            int(state.get("release", state["current"])["sha"], 16),
+        )
 
     def deploy(name, operation="ok", failure=None, crash=None):
         nonlocal sequence
+        if any(case["case"] == name for case in evidence):
+            return
         source = candidate(config, name, parent, operation)
         sequence += 1
         data = copy.deepcopy(config["initial_release"])
@@ -354,6 +374,7 @@ def check():
                 == "failed"
             )
             evidence.append({"case": name, "result": "source-restored"})
+            atomic_json(ROOT / "evidence.json", {"cases": evidence})
             return
         assert operation not in {"before", "after"} and failure is None
         (ROOT / "current-source").write_text(str(source))

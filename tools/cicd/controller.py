@@ -98,14 +98,15 @@ class Host:
                 }
             },
         )
-        if not opened:
-            # Wait for endpoints to be empty before stopping writers.
-            deadline = time.monotonic() + 45
-            while time.monotonic() < deadline:
-                if not self.get("endpoints", "frontend").get("subsets"):
-                    return
-                time.sleep(1)
-            raise RuntimeError("Traffic gate did not close")
+        # Observe the endpoint controller in both directions before proceeding.
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            subsets = self.get("endpoints", "frontend").get("subsets", [])
+            ready = any(subset.get("addresses") for subset in subsets)
+            if ready == opened:
+                return
+            time.sleep(1)
+        raise RuntimeError("Traffic gate endpoint timeout")
 
     def scale(self, name, replicas):
         self.k("scale", "deployment/" + name, "--replicas=" + str(replicas))
@@ -463,11 +464,15 @@ class Host:
             command = ["python", "-m", "backend.migrate", mode]
             env = [
                 {
+                    "name": "RELEASE_MANIFEST",
+                    "value": json.dumps(state["release"], separators=(",", ":")),
+                },
+                {
                     "name": "DATABASE_URL",
                     "valueFrom": {
                         "secretKeyRef": {"name": "postgres", "key": "DATABASE_URL"}
                     },
-                }
+                },
             ]
             if clone_ip:
                 command = [
@@ -700,6 +705,7 @@ class Controller:
             if phase == "starting":
                 host.candidate_start(release)
                 host.smoke(public=False)
+                host.job("record", s)
                 # Durable boundary: after this point user writes may have occurred.
                 self.save("opening")
                 phase = "opening"
