@@ -1315,7 +1315,12 @@ def create_app(
         confirmation_reconciler: asyncio.Task[None] | None = None
         runner_manager: ContainerManager | None = getattr(app.state, "runner_manager", None)
         try:
-            await app.state.database.migrate()
+            if app.state.settings.database_migrations == "verify":
+                from backend.migrate import inspect_database
+
+                await inspect_database(app.state.database.url, require_head=True)
+            else:
+                await app.state.database.migrate()
             storage = app.state.storage
             if storage is not None and hasattr(storage, "ensure_bucket"):
                 await storage.ensure_bucket()

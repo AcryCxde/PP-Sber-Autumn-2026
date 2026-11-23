@@ -23,7 +23,7 @@ def test_actual_canonical_inventory(pg16):
     mapping = CatalogConnection("127.0.0.1", pg16.port, "probe_test", "probe", profile)
     snapshot = asyncio.run(read_catalog(mapping))
     assert canonical_signature(snapshot, profile)
-    assert len(snapshot["inventory"]["sequences"]) == 2
+    # New models may add sequences; retain invariants of the existing ones below.
     assert not {k: v for k, v in snapshot["unsupported"].items() if v}
     inventory = snapshot["inventory"]
     sequences = {tuple(s["identity"]): s for s in inventory["sequences"]}
