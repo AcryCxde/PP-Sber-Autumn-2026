@@ -83,6 +83,8 @@ async def record_release(url: str) -> bool:
         "run_attempt": release["run_attempt"],
         "migration_head": migration_head(),
         "kind": "deployed",
+        "backend_digest": release["images"]["backend"]["digest"],
+        "frontend_digest": release["images"]["frontend"]["digest"],
     }
     engine = create_async_engine(url)
     try:

@@ -52,3 +52,6 @@ def test_new_history_model_and_data_are_migrated_and_recording_is_idempotent(
     assert records[1]["id"] == 2
     assert records[1]["release_sha"] == manifest["sha"]
     assert records[1]["workflow_run_id"] == manifest["workflow_run_id"]
+
+    assert records[1]["backend_digest"] == manifest["images"]["backend"]["digest"]
+    assert records[1]["frontend_digest"] == manifest["images"]["frontend"]["digest"]
