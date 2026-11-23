@@ -37,6 +37,7 @@ ACTIVE = {
     "starting",
     "opening",
     "restoring",
+    "reopening_source",
 }
 
 
@@ -227,8 +228,6 @@ class Host:
         self.scale("backend", 1)
         self.scale("frontend", 1)
         self.smoke(public=False)
-        self.gate(True)
-        self.smoke(public=True)
 
     def candidate_start(self, release):
         for name in ("backend", "frontend"):
@@ -693,7 +692,7 @@ class Controller:
         backup = ColdBackup(self.config)
         try:
             phase = s["phase"]
-            if phase == "restoring":
+            if phase in {"restoring", "reopening_source"}:
                 self.rollback(host, backup, directory)
                 raise RuntimeError("Interrupted release restored; retry deployment")
             if phase in {"preparing", "closing", "snapshot"}:
@@ -727,6 +726,7 @@ class Controller:
                 host.candidate_start(release)
                 host.smoke(public=False)
                 host.job("record", s)
+                host.cleanup()
                 # Durable boundary: after this point user writes may have occurred.
                 self.save("opening")
                 phase = "opening"
@@ -735,29 +735,45 @@ class Controller:
                 host.gate(True)
                 host.smoke(public=True)
                 self.save("succeeded", current=release.to_dict(), error=None)
-                host.cleanup()
-                if (directory / "readback").exists():
-                    shutil.rmtree(directory / "readback")
-                self.retention()
+                try:
+                    self.prune_readback(directory)
+                    self.retention()
+                except OSError:
+                    print(
+                        "release succeeded; backup cleanup will be retried", flush=True
+                    )
         except Exception as error:
             if s["phase"] == "opening":
                 self.save("opening", error=type(error).__name__)
                 # Never restore an old snapshot after traffic might have opened.
                 raise
-            if s["phase"] not in {"restoring", "failed"}:
+            if s["phase"] not in {
+                "restoring",
+                "reopening_source",
+                "failed",
+                "succeeded",
+            }:
                 self.save("restoring", error=type(error).__name__)
                 self.rollback(host, backup, directory)
             raise
 
     def rollback(self, host, backup, directory):
-        host.gate(False)
-        host.stop()
-        host.cleanup()
-        if self.state.get("backup_verified"):
-            backup.restore(directory)
-        host.source_start(self.state["source"])
+        if self.state["phase"] != "reopening_source":
+            host.gate(False)
+            host.stop()
+            host.cleanup()
+            if self.state.get("backup_verified"):
+                backup.restore(directory)
+            host.source_start(self.state["source"])
+            self.save("reopening_source")
+        host.gate(True)
+        host.smoke(public=True)
         self.save("failed", current=self.state["previous"])
         atomic_json(directory / "result.json", self.state)
+        self.prune_readback(directory)
+
+    @staticmethod
+    def prune_readback(directory):
         if (directory / "readback").exists():
             shutil.rmtree(directory / "readback")
 

@@ -277,3 +277,31 @@ def test_drain_waits_until_deployment_observed_zero_replicas(tmp_path, monkeypat
     monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
     host.scale("backend", 0)
     assert observations == ["deployment", "deployment"]
+
+
+def test_retry_after_source_gate_reopens_preserves_new_writes(system):
+    factory, release, record, root = system
+    factory().deploy(release, API())
+    state = factory().state
+    state["phase"] = "reopening_source"
+    (root / "state.json").write_text(json.dumps(state))
+
+    record["events"].clear()
+    old = Release.parse(json.dumps(state["previous"]))
+    factory().deploy(old, API())
+
+    assert factory().state["current"] == old.to_dict()
+    assert record["events"] == ["open", "public", "public"]
+
+
+def test_retention_failure_after_public_open_keeps_release(system, monkeypatch):
+    factory, release, record, _ = system
+
+    def fail_retention(self):
+        raise OSError("retention failure")
+
+    monkeypatch.setattr(module.Controller, "retention", fail_retention)
+    factory().deploy(release, API())
+
+    assert factory().state["current"] == release.to_dict()
+    assert "restore" not in record["events"]
