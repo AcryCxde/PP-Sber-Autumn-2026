@@ -626,6 +626,8 @@ class DeploymentAudit(Base):
     workflow_run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     run_attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)
     migration_head: Mapped[str] = mapped_column(String(64), nullable=False)
+    backend_digest: Mapped[str | None] = mapped_column(String(71), nullable=True)
+    frontend_digest: Mapped[str | None] = mapped_column(String(71), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
