@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     CheckConstraint,
     Date,
@@ -602,3 +603,32 @@ class RunnerContainer(Base):
         default=utc_now,
     )
     stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DeploymentAudit(Base):
+    """Release candidates verified privately before opening public traffic."""
+
+    __tablename__ = "deployment_audits"
+    __table_args__ = (
+        UniqueConstraint(
+            "release_sha",
+            "workflow_run_id",
+            "run_attempt",
+            name="uq_deployment_audits_release",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    kind: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="deployed"
+    )
+    release_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    workflow_run_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    run_attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    migration_head: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=text("CURRENT_TIMESTAMP"),
+    )
