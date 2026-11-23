@@ -607,3 +607,59 @@ def test_api_get_redirect_and_rate_limit_fail_closed():
         with pytest.raises(ValueError):
             api.get(PREFIX + "/actions/runs/123")
         assert len(api.opener.requests) == 1
+
+
+def test_automatic_release_pins_upstream_sha_when_master_advances(tmp_path):
+    api = FakeAPI()
+    api.master = MASTER
+    event = {
+        "action": "completed",
+        "repository": {"full_name": REPOSITORY},
+        "workflow_run": api.run,
+    }
+    path = tmp_path / "event.json"
+    path.write_text(json.dumps(event))
+    env = {
+        "CICD_DEPLOY_ENABLED": "true",
+        "GITHUB_EVENT_NAME": "workflow_run",
+        "GITHUB_REPOSITORY": REPOSITORY,
+        "GITHUB_WORKFLOW_REF": f"{REPOSITORY}/.github/workflows/deploy.yml@refs/heads/master",
+        "GITHUB_SHA": MASTER,
+        "GITHUB_EVENT_PATH": str(path),
+    }
+    release = verifier.workflow_run_release(env, api=api)
+    assert release.context.sha == SHA
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("event", "pull_request"),
+        ("conclusion", "failure"),
+        ("head_repository", {"full_name": "attacker/fork"}),
+        ("path", ".github/workflows/other.yml"),
+    ],
+)
+def test_automatic_release_refuses_untrusted_upstream(tmp_path, field, value):
+    api = FakeAPI()
+    upstream = deepcopy(api.run)
+    upstream[field] = value
+    path = tmp_path / "event.json"
+    path.write_text(
+        json.dumps(
+            {
+                "action": "completed",
+                "repository": {"full_name": REPOSITORY},
+                "workflow_run": upstream,
+            }
+        )
+    )
+    env = {
+        "CICD_DEPLOY_ENABLED": "true",
+        "GITHUB_EVENT_NAME": "workflow_run",
+        "GITHUB_REPOSITORY": REPOSITORY,
+        "GITHUB_WORKFLOW_REF": f"{REPOSITORY}/.github/workflows/deploy.yml@refs/heads/master",
+        "GITHUB_EVENT_PATH": str(path),
+    }
+    with pytest.raises(ValueError):
+        verifier.workflow_run_release(env, api=api)

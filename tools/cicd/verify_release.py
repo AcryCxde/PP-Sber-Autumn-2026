@@ -326,6 +326,7 @@ def verify_release(
     *,
     api: API | None = None,
     require_current_master: bool = False,
+    allow_master_descendant: bool = False,
 ) -> Release:
     require(
         isinstance(run_id, str)
@@ -343,6 +344,8 @@ def verify_release(
     master = master_sha(api)
     if require_current_master:
         require(master == sha, "release SHA is not current master")
+    elif allow_master_descendant:
+        verify_master_ancestry(api, sha, master)
     else:
         verify_freshness(api, sha, master)
     listing = api.get(run_path + "/artifacts?per_page=100")
@@ -386,6 +389,10 @@ def verify_release(
     )
     payload = api.download(artifact["id"])
     digest = artifact.get("digest")
+    if allow_master_descendant:
+        require(
+            isinstance(digest, str), "artifact digest required for automatic deploy"
+        )
     if digest is not None:
         require(
             digest == "sha256:" + hashlib.sha256(payload).hexdigest(),
@@ -395,7 +402,58 @@ def verify_release(
     release.bind(context)
     # Fail rather than approve a mixed view if a rerun/master race occurred.
     verify_run(api.get(run_path), context, workflow_id)
-    require(master_sha(api) == master, "master changed during verification; retry")
+    if not allow_master_descendant:
+        require(master_sha(api) == master, "master changed during verification; retry")
+    return release
+
+
+def verify_master_ancestry(api: API, sha: str, master: str) -> None:
+    """Master can advance while A deploys; non-ancestors/force-pushes remain refused."""
+    if sha == master:
+        return
+    comparison = api.get(f"{PREFIX}/compare/{commit_sha(sha)}...{commit_sha(master)}")
+    require(
+        comparison.get("status") == "ahead"
+        and obj(comparison.get("merge_base_commit")).get("sha") == sha,
+        "release is not on current master history",
+    )
+
+
+def workflow_run_release(env: Mapping[str, str], *, api: API | None = None) -> Release:
+    """Verify the upstream event, then independently retrieve its manifest via API."""
+    require(env.get("CICD_DEPLOY_ENABLED") == "true", "deployment disabled")
+    require(
+        env.get("GITHUB_EVENT_NAME") == "workflow_run"
+        and env.get("GITHUB_REPOSITORY") == REPOSITORY
+        and env.get("GITHUB_WORKFLOW_REF")
+        == f"{REPOSITORY}/.github/workflows/deploy.yml@refs/heads/master",
+        "untrusted deployment workflow",
+    )
+    with open(env["GITHUB_EVENT_PATH"], encoding="utf-8") as stream:
+        event = obj(_json(stream.read()))
+    require(
+        event.get("action") == "completed"
+        and obj(event.get("repository")).get("full_name") == REPOSITORY,
+        "foreign event",
+    )
+    upstream = obj(event.get("workflow_run"))
+    require(
+        upstream.get("event") == "push"
+        and upstream.get("head_branch") == "master"
+        and upstream.get("conclusion") == "success",
+        "not successful master push",
+    )
+    api = api if api is not None else GitHubAPI()
+    context = Context(
+        commit_sha(upstream.get("head_sha")),
+        upstream.get("id"),
+        upstream.get("run_attempt"),
+    )
+    verify_run(upstream, context, ci_workflow_id(api))
+    release = verify_release(
+        str(context.workflow_run_id), context.sha, api=api, allow_master_descendant=True
+    )
+    release.bind(context)
     return release
 
 
@@ -416,8 +474,11 @@ def trusted_dispatch(env: Mapping[str, str]) -> None:
 
 def main() -> int:
     try:
-        trusted_dispatch(os.environ)
-        release = discover_release(os.environ.get("GITHUB_SHA", ""))
+        if os.environ.get("GITHUB_EVENT_NAME") == "workflow_run":
+            release = workflow_run_release(os.environ)
+        else:
+            trusted_dispatch(os.environ)
+            release = discover_release(os.environ.get("GITHUB_SHA", ""))
         message = json.dumps(release.to_dict(), separators=(",", ":")) + "\n"
         require(len(message.encode()) <= MAX_MANIFEST, "request too large")
         sys.stdout.write(message)

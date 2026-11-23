@@ -108,6 +108,9 @@ def main() -> None:
         os.environ.get("HEAD_SHA", ""),
         triple_dot=os.environ.get("EVENT_NAME") == "pull_request",
     )
+    # Publish every master push, including documentation: manual retry always has an artifact.
+    if os.environ.get("EVENT_NAME") == "push":
+        decision = {"docs_only": False, "reason": "every master push is a release"}
     print(decision["reason"])
     # Only a fixed boolean is written to the Actions output protocol, never filenames.
     output = os.environ.get("GITHUB_OUTPUT")

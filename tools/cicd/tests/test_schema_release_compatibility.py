@@ -1,6 +1,5 @@
 """Finite release contracts, including the exact PR candidate rather than old DDL."""
 
-import os
 import shutil
 
 import pytest
@@ -9,10 +8,9 @@ from tools.cicd.schema_baseline import ROOT, _git, release_source, source_chain
 from tools.cicd.schema_probe import Baseline, ProbeError, TargetMapping
 from tools.cicd.tests.test_schema_baseline import SHA, baseline_data, mapping_data
 
-CANDIDATE_SHA = os.environ.get("SCHEMA_CANDIDATE_SHA")
-if CANDIDATE_SHA is None:
-    # Resolve once to an immutable input. CI explicitly supplies github.sha.
-    CANDIDATE_SHA = _git(ROOT, "rev-parse", "HEAD").decode().strip()
+# Historical acceptance of the retired per-release installer; future candidate
+# graphs and metadata drift are checked in test_automatic_migrations_pg.py.
+CANDIDATE_SHA = "00e9646d033bb36ca72a58b8ff5613f54886bd69"
 CURRENT_HEAD = "20261112_0001"
 LEGACY_HEAD = "20261111_0005"
 

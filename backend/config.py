@@ -14,6 +14,7 @@ DEFAULT_DATABASE_PATH = BACKEND_DIR / "data" / "history.db"
 
 class Settings(BaseSettings):
     database_url: str = f"sqlite+aiosqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
+    database_migrations: Literal["auto", "verify"] = "auto"
     claude_permission_mode: Literal[
         "acceptEdits",
         "auto",

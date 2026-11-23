@@ -39,6 +39,10 @@ def run_migrations_offline() -> None:
 def do_run_migrations(connection) -> None:
     from backend.migration_bridge import preflight_canonical
 
+    if connection.dialect.name == "postgresql":
+        # Session lock survives Alembic transaction boundaries and is released on close.
+        connection.exec_driver_sql("SET lock_timeout = '5s'")
+        connection.exec_driver_sql("SELECT pg_advisory_lock(617230112026)")
     preflight_canonical(connection)
     # Preflight SELECT starts an implicit transaction; finish it before Alembic
     # owns the migration transaction, otherwise connection close rolls DDL back.

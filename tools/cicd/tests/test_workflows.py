@@ -165,11 +165,14 @@ def test_publish_is_downstream_disabled_and_trusted_only():
             assert "secrets." not in str(job)
 
 
-def test_deploy_is_manual_disabled_trusted_and_credential_isolated():
+def test_deploy_is_automatic_and_manual_trusted_and_credential_isolated():
     text = (ROOT / ".github/workflows/deploy.yml").read_text()
     workflow = yaml.load(text, Loader=StrictLoader)
-    assert set(workflow["on"]) == {"workflow_dispatch"}
+    assert set(workflow["on"]) == {"workflow_dispatch", "workflow_run"}
     assert workflow["on"]["workflow_dispatch"] is None
+    assert workflow["on"]["workflow_run"] == {"workflows": ["CI"], "types": ["completed"], "branches": ["master"]}
+    assert "github.event.workflow_run.event == 'push'" in workflow["jobs"]["verify"]["if"]
+    assert "github.event.workflow_run.conclusion == 'success'" in workflow["jobs"]["verify"]["if"]
     assert "inputs." not in text
     verify_step = next(
         s for s in workflow["jobs"]["verify"]["steps"] if s.get("id") == "verify"
