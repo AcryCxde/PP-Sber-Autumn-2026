@@ -446,6 +446,32 @@ class Host:
         name = "coreteams-release-" + ("rehearsal-" if clone_ip else "live-") + mode
         selector = {"coreteams-release": "database"} if clone_ip else {"app": "db"}
         label = "rehearsal" if clone_ip else "live"
+        if not clone_ip:
+            # The standing DB policy permits only backend. Admit the migration
+            # Job separately, preserving that policy and the job's egress filter.
+            self.apply(
+                {
+                    "apiVersion": "networking.k8s.io/v1",
+                    "kind": "NetworkPolicy",
+                    "metadata": {"name": "coreteams-release-live-db-ingress"},
+                    "spec": {
+                        "podSelector": {"matchLabels": selector},
+                        "policyTypes": ["Ingress"],
+                        "ingress": [
+                            {
+                                "from": [
+                                    {
+                                        "podSelector": {
+                                            "matchLabels": {"coreteams-release": "live"}
+                                        }
+                                    }
+                                ],
+                                "ports": [{"protocol": "TCP", "port": 5432}],
+                            }
+                        ],
+                    },
+                }
+            )
         self.apply(
             {
                 "apiVersion": "networking.k8s.io/v1",
@@ -475,7 +501,6 @@ class Host:
             )
         else:
             release = Release.parse(json.dumps(state["release"]))
-            command = ["python", "-m", "backend.migrate", mode]
             env = [
                 {
                     "name": "RELEASE_MANIFEST",
@@ -488,32 +513,19 @@ class Host:
                     },
                 },
             ]
-            if clone_ip:
-                command = [
-                    "python",
-                    "-c",
-                    "import os,sys;from sqlalchemy.engine import make_url;"
-                    'u=make_url(os.environ["DATABASE_URL"]);'
-                    'os.environ["DATABASE_URL"]=u.set(host=sys.argv[1],port=5432).render_as_string(hide_password=False);'
-                    'sys.argv=["backend.migrate",sys.argv[2]];'
-                    "from backend.migrate import main;main()",
-                    clone_ip,
-                    mode,
-                ]
-            else:
-                # DNS is deliberately unnecessary with default-deny egress.
-                ip = self.get("service", "db")["spec"]["clusterIP"]
-                command = [
-                    "python",
-                    "-c",
-                    "import os,sys;from sqlalchemy.engine import make_url;"
-                    'u=make_url(os.environ["DATABASE_URL"]);'
-                    'os.environ["DATABASE_URL"]=u.set(host=sys.argv[1],port=5432).render_as_string(hide_password=False);'
-                    'sys.argv=["backend.migrate",sys.argv[2]];'
-                    "from backend.migrate import main;main()",
-                    ip,
-                    mode,
-                ]
+            # Use the selected pod in both modes. Job network rules require no
+            # DNS access and do not depend on Service DNAT ordering.
+            command = [
+                "python",
+                "-c",
+                "import os,sys;from sqlalchemy.engine import make_url;"
+                'u=make_url(os.environ["DATABASE_URL"]);'
+                'os.environ["DATABASE_URL"]=u.set(host=sys.argv[1],port=5432).render_as_string(hide_password=False);'
+                'sys.argv=["backend.migrate",sys.argv[2]];'
+                "from backend.migrate import main;main()",
+                clone_ip or self.pod_ip("db"),
+                mode,
+            ]
             self.apply(
                 {
                     "apiVersion": "batch/v1",
