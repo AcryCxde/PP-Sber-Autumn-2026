@@ -244,3 +244,16 @@ def test_submission_waits_for_activating_service_before_replacing_pending_reques
 
     monkeypatch.setattr(module.subprocess, "Popen", Waiter)
     module.submit({"github_token": str(token)})
+
+
+def test_interrupted_restore_finishes_and_retries_in_one_request(system):
+    factory, release, record, root = system
+    factory().deploy(release, API())
+    state = factory().state
+    state["phase"] = "restoring"
+    (root / "state.json").write_text(json.dumps(state))
+    record["events"].clear()
+    factory().deploy(release, API())
+    assert record["events"].index("restore") < record["events"].index("backup")
+    assert factory().state["phase"] == "succeeded"
+    assert factory().state["current"] == release.to_dict()

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 from alembic import command
@@ -105,6 +106,29 @@ async def record_release(url: str) -> bool:
         await engine.dispose()
 
 
+async def wait_for_database(url: str) -> None:
+    """Connection-only retry before any DDL; kube readiness and routes settle separately."""
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+
+    engine = create_async_engine(url, connect_args={"timeout": 3})
+    deadline = time.monotonic() + 30
+    try:
+        while True:
+            try:
+                async with engine.connect() as connection:
+                    await connection.execute(text("SELECT 1"))
+                return
+            except (OSError, DBAPIError) as error:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "Database TCP connection did not become ready"
+                    ) from error
+                await asyncio.sleep(1)
+    finally:
+        await engine.dispose()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -112,6 +136,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     url = Settings().database_url
+    asyncio.run(wait_for_database(url))
     if args.mode == "upgrade":
         # Same upgrade entrypoint in rehearsal and on the live DB.
         command.upgrade(migration_config(url), "head")

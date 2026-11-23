@@ -43,3 +43,37 @@ def test_optional_release_audit_hook_before_history_model_exists(monkeypatch):
 
     monkeypatch.delattr(models, "DeploymentAudit", raising=False)
     assert asyncio.run(record_release("sqlite+aiosqlite://")) is False
+
+
+def test_job_retries_connection_before_any_migration(monkeypatch):
+    from backend import migrate
+
+    attempts = []
+
+    class Connection:
+        async def __aenter__(self):
+            attempts.append("connect")
+            if len(attempts) < 3:
+                raise ConnectionRefusedError("transient pod route")
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def execute(self, statement):
+            assert str(statement) == "SELECT 1"
+
+    class Engine:
+        def connect(self):
+            return Connection()
+
+        async def dispose(self):
+            attempts.append("disposed")
+
+    async def sleep(seconds):
+        assert seconds == 1
+
+    monkeypatch.setattr(migrate, "create_async_engine", lambda *a, **kw: Engine())
+    monkeypatch.setattr(migrate.asyncio, "sleep", sleep)
+    asyncio.run(migrate.wait_for_database("postgresql+asyncpg://unused"))
+    assert attempts == ["connect", "connect", "connect", "disposed"]

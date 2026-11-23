@@ -377,6 +377,15 @@ class Host:
             }
         ]
         template["containers"][0]["image"] = state["db_image"]
+        template["containers"][0]["readinessProbe"]["exec"]["command"] = [
+            "pg_isready",
+            "-h",
+            "127.0.0.1",
+            "-U",
+            "coreteams",
+            "-d",
+            "coreteams",
+        ]
         self.apply(
             {
                 "apiVersion": "networking.k8s.io/v1",
@@ -617,7 +626,13 @@ class Controller:
         # Finish/reconcile a pinned operation before admitting any newer target.
         if s["phase"] in ACTIVE:
             pinned = Release.parse(json.dumps(s["release"]))
-            self.execute(pinned)
+            try:
+                self.execute(pinned)
+            except Exception:
+                # A completed recovery has proven the old release healthy. Admit the
+                # requested retry directly, without requiring a second button press.
+                if self.state["phase"] != "failed":
+                    raise
             s = self.state
         current = s["current"]
         host = self.host_class(self.config, self.root)

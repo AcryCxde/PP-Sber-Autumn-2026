@@ -229,6 +229,7 @@ class AcceptanceHost(Host):
             },
         )
         if self.fail == "startup":
+            (ROOT / "startup-injection").write_text(release.context.sha)
             self.patch(
                 "deployment",
                 "backend",
@@ -256,6 +257,18 @@ class AcceptanceHost(Host):
         if mode == "upgrade" and not clone_ip and self.crash == "commit":
             self.crash = None
             raise KeyboardInterrupt("simulated lost controller after successful COMMIT")
+        if mode == "upgrade" and not clone_ip and self.fail == "after_commit":
+            raise RuntimeError("Injected live failure after successful COMMIT")
+
+
+class BackupCrashController(Controller):
+    crash_once = False
+
+    def save(self, phase, **fields):
+        super().save(phase, **fields)
+        if phase == "backup_ready" and type(self).crash_once:
+            type(self).crash_once = False
+            raise KeyboardInterrupt("simulated lost controller after verified backup")
 
 
 class TestAPI:
@@ -356,14 +369,16 @@ def check():
         # Test-only ancestry; image digests remain the currently installed tested images.
         AcceptanceHost.fail = failure
         AcceptanceHost.crash = crash
+        implementation = BackupCrashController if crash == "backup" else Controller
+        BackupCrashController.crash_once = crash == "backup"
         release = Release.parse(json.dumps(data))
         try:
-            Controller(config, controller_root, AcceptanceHost).deploy(
+            implementation(config, controller_root, AcceptanceHost).deploy(
                 release, TestAPI()
             )
         except KeyboardInterrupt:
             AcceptanceHost.crash = None
-            Controller(config, controller_root, AcceptanceHost).deploy(
+            implementation(config, controller_root, AcceptanceHost).deploy(
                 release, TestAPI()
             )
         except Exception:
@@ -373,6 +388,32 @@ def check():
                 json.loads((controller_root / "state.json").read_text())["phase"]
                 == "failed"
             )
+            failed_state = json.loads((controller_root / "state.json").read_text())
+            logs = "\n".join(
+                p.read_text() for p in Path(failed_state["directory"]).glob("*.log")
+            )
+            if operation == "before":
+                assert "Injected pre-DDL failure" in logs
+            elif operation == "after":
+                assert "Injected failure after committed DDL" in logs
+            elif failure == "startup":
+                assert (ROOT / "startup-injection").read_text() == release.context.sha
+                assert (
+                    Path(failed_state["directory"])
+                    / "coreteams-release-live-upgrade.log"
+                ).exists()
+            elif failure == "after_commit":
+                assert (
+                    Path(failed_state["directory"])
+                    / "coreteams-release-live-upgrade.log"
+                ).exists()
+                assert (
+                    name
+                    in (
+                        Path(failed_state["directory"])
+                        / "coreteams-release-live-upgrade.log"
+                    ).read_text()
+                )
             evidence.append({"case": name, "result": "source-restored"})
             atomic_json(ROOT / "evidence.json", {"cases": evidence})
             return
@@ -416,6 +457,8 @@ def check():
     deploy("20990104_0001", "after")
     # Candidate startup failure after live DDL, with the preceding successful schema as source.
     deploy("20990105_0001", "next", failure="startup")
+    deploy("20990106_0001", "next", failure="after_commit")
+    deploy("20990107_0001", "next", crash="backup")
     final = (
         run(
             [
@@ -438,7 +481,7 @@ def check():
         .decode()
         .strip()
     )
-    assert final == "120001|120001\n20990102_0001"
+    assert final == "120001|120001\n20990107_0001"
     atomic_json(
         ROOT / "evidence.json",
         {
@@ -447,6 +490,7 @@ def check():
             "same_sha_retry": "passed",
             "unknown_revisions": "passed",
             "after_commit_resume": "passed",
+            "after_backup_resume": "passed",
             "production_mutations": "none (read-only pg_dump and account smoke)",
         },
     )
