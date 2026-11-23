@@ -109,7 +109,7 @@ class Host:
 
     def scale(self, name, replicas):
         self.k("scale", "deployment/" + name, "--replicas=" + str(replicas))
-        deadline = time.monotonic() + 180
+        deadline = time.monotonic() + self.config.get("readiness_seconds", 180)
         while time.monotonic() < deadline:
             pods = self.get("pods")["items"]
             matching = [
@@ -179,6 +179,17 @@ class Host:
                     "Unexpected writer pod",
                 )
         return result
+
+    def assert_release(self, current):
+        release = Release.parse(json.dumps(current))
+        for name in ("backend", "frontend"):
+            expected = (
+                release.images[name].repository + "@" + release.images[name].digest
+            )
+            actual = self.get("deployment", name)["spec"]["template"]["spec"][
+                "containers"
+            ][0]["image"]
+            require(actual == expected, "Installed images differ from recorded release")
 
     def image(self, name):
         pods = [
@@ -606,6 +617,7 @@ class Controller:
         current = s["current"]
         host = self.host_class(self.config, self.root)
         if release.context.sha == current["sha"]:
+            host.assert_release(current)
             host.smoke(public=True)
             print("release already installed and healthy", flush=True)
             return
@@ -620,6 +632,7 @@ class Controller:
         directory = self.root / attempt
         directory.mkdir(mode=0o700)
         host = self.host_class(self.config, directory)
+        host.assert_release(current)
         source = host.source()
         ColdBackup(self.config).preflight(self.root)
         available = int(
@@ -633,9 +646,6 @@ class Controller:
         host.smoke(public=True)
         db_image = host.image("db")
         source["db"]["spec"]["template"]["spec"]["containers"][0]["image"] = db_image
-        source["s3"]["spec"]["template"]["spec"]["containers"][0]["image"] = host.image(
-            "s3"
-        )
         self.save(
             "preparing",
             release=release.to_dict(),
@@ -759,44 +769,45 @@ def submit(config):
     with (STATE / "submit.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         deadline = time.monotonic() + 3600
-        while (
-            subprocess.run(
-                ["systemctl", "is-active", "--quiet", "coreteams-deploy.service"]
-            ).returncode
-            == 0
-        ):
+        while run(
+            [
+                "systemctl",
+                "show",
+                "coreteams-deploy.service",
+                "-p",
+                "ActiveState",
+                "--value",
+            ]
+        ).decode().strip() in {"activating", "active", "reloading", "deactivating"}:
             require(time.monotonic() < deadline, "Controller busy; retry from GitHub")
             time.sleep(3)
         atomic_json(STATE / "request.json", supplied.to_dict())
         # A systemd service survives SSH disconnects. Candidate code never runs on the host.
         run(["systemctl", "reset-failed", "coreteams-deploy.service"])
-        run(["systemctl", "start", "--no-block", "coreteams-deploy.service"])
-        while True:
-            properties = run(
-                [
-                    "systemctl",
-                    "show",
-                    "coreteams-deploy.service",
-                    "-p",
-                    "ActiveState",
-                    "-p",
-                    "Result",
-                ]
-            ).decode()
-            if (
-                "ActiveState=activating" not in properties
-                and "ActiveState=active" not in properties
-            ):
-                require(
-                    "Result=success" in properties,
-                    "Server release failed; inspect controller journal",
+        with subprocess.Popen(
+            ["systemctl", "start", "coreteams-deploy.service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ) as waiter:
+            last_phase = None
+            while waiter.poll() is None:
+                if time.monotonic() >= deadline:
+                    waiter.kill()  # Only the waiter; systemd keeps the controller running.
+                    raise RuntimeError(
+                        "Controller still running; retry checks existing operation"
+                    )
+                path = STATE / "state.json"
+                phase = (
+                    json.loads(path.read_text())["phase"] if path.exists() else "queued"
                 )
-                break
+                if phase != last_phase:
+                    print("release phase: " + phase, flush=True)
+                    last_phase = phase
+                time.sleep(3)
             require(
-                time.monotonic() < deadline,
-                "Controller still running; retry checks existing operation",
+                waiter.returncode == 0,
+                "Server release failed; inspect controller journal",
             )
-            time.sleep(3)
         print("release installed or superseded successfully")
 
 

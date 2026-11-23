@@ -45,7 +45,7 @@ def main():
     }.items():
         pvc = json.loads(k("get", "pvc", claim, "-o", "json"))
         pv = json.loads(k("get", "pv", pvc["spec"]["volumeName"], "-o", "json"))
-        volumes[alias] = pv["spec"]["hostPath"]["path"]
+        volumes[alias] = (pv["spec"].get("hostPath") or pv["spec"].get("local"))["path"]
     apply(
         {
             "apiVersion": "v1",

@@ -100,3 +100,12 @@ jobs:
             -o ConnectTimeout=15 -o ConnectionAttempts=1 \
             -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
             -i "$directory/key" "$DEPLOY_USER@$DEPLOY_HOST" /usr/local/sbin/coreteams-deploy
+      - name: Verify external HTTPS after the server opens traffic
+        run: |
+          set -euo pipefail
+          origin=https://coreteams.2026.tochka-urfu.tech
+          for path in / /product/; do
+            curl --fail --silent --show-error --retry 3 --max-time 20 "$origin$path" >/dev/null
+          done
+          status=$(curl --silent --show-error --max-time 20 --output /dev/null --write-out '%{http_code}' "$origin/api/admin/v1/users")
+          [[ "$status" == 401 ]]

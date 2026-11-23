@@ -48,6 +48,9 @@ def system(tmp_path, monkeypatch):
         def __init__(self, config, directory):
             pass
 
+        def assert_release(self, current):
+            pass
+
         def event(self, name):
             record["events"].append(name)
             if record["fail"] == name:
