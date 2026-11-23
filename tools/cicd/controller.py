@@ -116,10 +116,16 @@ class Host:
             matching = [
                 p for p in pods if p["metadata"].get("labels", {}).get("app") == name
             ]
-            if replicas == 0 and not matching:
-                return
             deployment = self.get("deployment", name)
             observed = deployment.get("status", {})
+            if (
+                replicas == 0
+                and not matching
+                and observed.get("observedGeneration", 0)
+                >= deployment["metadata"]["generation"]
+                and observed.get("replicas", 0) == 0
+            ):
+                return
             ready = (
                 observed.get("observedGeneration", 0)
                 >= deployment["metadata"]["generation"]

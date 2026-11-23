@@ -257,3 +257,23 @@ def test_interrupted_restore_finishes_and_retries_in_one_request(system):
     assert record["events"].index("restore") < record["events"].index("backup")
     assert factory().state["phase"] == "succeeded"
     assert factory().state["current"] == release.to_dict()
+
+
+def test_drain_waits_until_deployment_observed_zero_replicas(tmp_path, monkeypatch):
+    host = module.Host({"kubeconfig": "unused"}, tmp_path)
+    monkeypatch.setattr(host, "k", lambda *args: b"")
+    observations = []
+
+    def get(kind, name=None):
+        if kind == "pods":
+            return {"items": []}
+        observations.append(kind)
+        return {
+            "metadata": {"generation": 2},
+            "status": {"observedGeneration": min(len(observations), 2), "replicas": 0},
+        }
+
+    monkeypatch.setattr(host, "get", get)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    host.scale("backend", 0)
+    assert observations == ["deployment", "deployment"]
