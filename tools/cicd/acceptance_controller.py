@@ -491,7 +491,7 @@ def check():
             "unknown_revisions": "passed",
             "after_commit_resume": "passed",
             "after_backup_resume": "passed",
-            "production_mutations": "none (read-only pg_dump and account smoke)",
+            "production_mutations": "No deployment/schema changes; read-only pg_dump and routine account sign-in",
         },
     )
     print("ISOLATED ACCEPTANCE PASSED")

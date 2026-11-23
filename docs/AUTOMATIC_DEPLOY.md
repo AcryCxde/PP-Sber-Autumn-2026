@@ -51,3 +51,19 @@ Retention — последние 5 законченных попыток; тек
 Официальные контракты: [workflow_run](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run),
 [Jobs](https://kubernetes.io/docs/concepts/workloads/controllers/job/),
 [Alembic data migrations](https://alembic.sqlalchemy.org/en/latest/cookbook.html#data-migrations-general-techniques).
+
+## Журнал приложения и приёмка
+
+`deployment_audits` хранит события создания схемы и проверенные кандидаты релизов:
+SHA, GitHub CI run/attempt, Alembic head и время. Candidate-owned команда
+`backend.migrate record` получает проверенный manifest и записывает строку после
+private smoke, до открытия трафика. Повтор одного run/attempt не создаёт дублей.
+Контроллер вызывает стабильный CLI; имена таблиц, ORM и новые revisions остаются
+в коде приложения. Для добавления этой модели серверные файлы не меняются.
+
+Изолированная серверная приёмка выполнена на отдельном namespace и копии данных:
+три сгенерированные revisions, 120001 строка с ненулевой sequence, сбои до DDL,
+после COMMIT и при старте backend, продолжение после backup/COMMIT, same-SHA retry.
+Результат сохранён в `/var/lib/coreteams-deploy/acceptance/evidence.json`;
+workloads и plaintext-копии после проверки удалены. Эту проверку контроллера
+дополняют реальные merge → CI → Deploy: GitHub provenance не подменяется тестовым API.

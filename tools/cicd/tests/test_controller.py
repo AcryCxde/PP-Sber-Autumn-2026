@@ -277,3 +277,72 @@ def test_drain_waits_until_deployment_observed_zero_replicas(tmp_path, monkeypat
     monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
     host.scale("backend", 0)
     assert observations == ["deployment", "deployment"]
+
+
+def test_retry_after_source_gate_reopens_preserves_new_writes(system):
+    factory, release, record, root = system
+    factory().deploy(release, API())
+    state = factory().state
+    state["phase"] = "reopening_source"
+    (root / "state.json").write_text(json.dumps(state))
+
+    record["events"].clear()
+    old = Release.parse(json.dumps(state["previous"]))
+    factory().deploy(old, API())
+
+    assert factory().state["current"] == old.to_dict()
+    assert record["events"] == ["open", "public", "public"]
+
+
+def test_retention_failure_after_public_open_keeps_release(system, monkeypatch):
+    factory, release, record, _ = system
+
+    def fail_retention(self):
+        raise OSError("retention failure")
+
+    monkeypatch.setattr(module.Controller, "retention", fail_retention)
+    factory().deploy(release, API())
+
+    assert factory().state["current"] == release.to_dict()
+    assert "restore" not in record["events"]
+
+
+def test_live_job_has_narrow_ingress_to_db_and_targets_pod_ip(tmp_path, monkeypatch):
+    host = module.Host({"kubeconfig": "unused"}, tmp_path)
+    resources = []
+    monkeypatch.setattr(host, "apply", resources.append)
+    monkeypatch.setattr(host, "pod_ip", lambda app: "10.42.1.10")
+    monkeypatch.setattr(host, "k", lambda *args: b"")
+    monkeypatch.setattr(
+        host,
+        "get",
+        lambda kind, name=None: (
+            {"items": []}
+            if name is None
+            else {"status": {"conditions": [{"type": "Complete", "status": "True"}]}}
+        ),
+    )
+    host.job(
+        "upgrade",
+        {
+            "release": manifest(),
+            "attempt": "1",
+            "source": {"backend": {"spec": {"template": {"spec": {}}}}},
+        },
+    )
+
+    ingress, egress, job = resources
+    assert ingress["spec"]["podSelector"]["matchLabels"] == {"app": "db"}
+    assert ingress["spec"]["ingress"] == [
+        {
+            "from": [{"podSelector": {"matchLabels": {"coreteams-release": "live"}}}],
+            "ports": [{"protocol": "TCP", "port": 5432}],
+        }
+    ]
+    assert egress["spec"]["egress"][0]["to"] == [
+        {"podSelector": {"matchLabels": {"app": "db"}}}
+    ]
+    assert job["spec"]["template"]["spec"]["containers"][0]["command"][-2:] == [
+        "10.42.1.10",
+        "upgrade",
+    ]
