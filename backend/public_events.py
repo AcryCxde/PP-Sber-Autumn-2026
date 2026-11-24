@@ -27,6 +27,9 @@ TERMINAL_EVENT_TYPES = {
 SAFE_FAILURE_CODES = {
     "ai_access_frozen",
     "ai_policy_unavailable",
+    "ai_launches_paused",
+    "ai_models_unavailable",
+    "ai_model_request_failed",
     "artifact_save_failed",
     "container_read",
     "database",
@@ -42,6 +45,7 @@ SAFE_FAILURE_CODES = {
     "result_error",
 }
 SAFE_UNKNOWN_CODES = {
+    "ai_model_interrupted",
     "artifact_confirmation_failed",
     "artifact_confirmation_pending",
     "backend_restarted",

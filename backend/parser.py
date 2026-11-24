@@ -28,6 +28,7 @@ class NormalizedEvent(TypedDict, total=False):
     duration_ms: int | None
     num_turns: int | None
     is_error: bool
+    api_error: str
     result_confirmed: bool
     result: Any
     permission_denials: list[Any]
@@ -105,6 +106,14 @@ def parse_event(raw: str) -> list[NormalizedEvent]:
         ]
 
     if event_type == "assistant":
+        if isinstance(event.get("error"), str):
+            message = event.get("message")
+            blocks = message.get("content") if isinstance(message, dict) else None
+            detail = None
+            if isinstance(blocks, list):
+                detail = next((item.get("text") for item in blocks
+                               if isinstance(item, dict) and item.get("type") == "text"), None)
+            return [normalized_event("api_error", api_error=event["error"], content=detail)]
         events: list[NormalizedEvent] = []
         message = event.get("message", {})
         if not isinstance(message, dict):

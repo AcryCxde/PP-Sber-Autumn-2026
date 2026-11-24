@@ -7,11 +7,12 @@ import { errorText } from './actions';
 import { ShellContext } from './context';
 import { AboutDialog, Catalog, Home, Profile } from './Pages';
 import { ProjectPage } from './ProjectPage';
-import { useRoute } from './router';
+import { useRoute, type Route } from './router';
 import { SocketContext, useGatewaySocket } from './socket';
 import { Modal } from './ui';
 import { AdminOverview } from './AdminOverview';
 import { AdminUsers } from './AdminUsers';
+import { AdminModelHistory, AdminModels } from './AdminModels';
 import { AdminAccessContext, AdminPolicyContext } from './adminHooks';
 import { createAdminPolicyStore } from './adminPolicyStore';
 import { AdminAvailability } from './AdminShared';
@@ -20,12 +21,21 @@ const ADMIN_SHELL_ENABLED = import.meta.env.VITE_ADMIN_SHELL_ENABLED === 'true';
 import './coreteams.css';
 import './coreteams-extra.css';
 
-function AdminArea({ user, section }: { user: User; section: 'overview' | 'users' }) {
+function AdminArea({ user, section }: { user: User; section: Extract<Route, { page: 'admin' }>['section'] }) {
   const [access, setAccess] = useState<'unauthorized' | 'forbidden' | null>(null);
   const policy = useContext(AdminPolicyContext);
   const revoke = useCallback((status: 'unauthorized' | 'forbidden') => { policy?.clear(); setAccess(status); }, [policy]);
   if (user.role !== 'admin' || access) return <div className="page"><h1>{access === 'unauthorized' ? 'Требуется вход' : 'Недостаточно прав'}</h1><p>Данные администрирования очищены.</p></div>;
-  return <AdminAccessContext.Provider value={revoke}><div className="page admin-root"><nav className="admin-nav" aria-label="Разделы администрирования"><a href="#admin/overview" aria-current={section === 'overview' ? 'page' : undefined}>Обзор</a><a href="#admin/users" aria-current={section === 'users' ? 'page' : undefined}>Пользователи</a></nav>{section === 'overview' ? <AdminOverview /> : <AdminUsers currentUserId={user.id} />}</div></AdminAccessContext.Provider>;
+  const models = section === 'models' || section === 'model-history';
+  return <AdminAccessContext.Provider value={revoke}><div className="page admin-root">
+    <nav className="admin-nav" aria-label="Разделы администрирования">
+      <a href="#admin/overview" aria-current={section === 'overview' ? 'page' : undefined}>Обзор</a>
+      <a href="#admin/users" aria-current={section === 'users' ? 'page' : undefined}>Пользователи</a>
+      <a href="#admin/models" aria-current={models ? 'page' : undefined}>AI-модели</a>
+    </nav>
+    {section === 'overview' ? <AdminOverview /> : section === 'users' ? <AdminUsers currentUserId={user.id} /> :
+      section === 'model-history' ? <AdminModelHistory /> : <AdminModels />}
+  </div></AdminAccessContext.Provider>;
 }
 
 function Brand() {

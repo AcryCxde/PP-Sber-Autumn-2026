@@ -5,12 +5,18 @@ export const UNAUTHORIZED_EVENT = "coreteams:unauthorized";
 export class ApiError extends Error {
   constructor(message: string, public code?: string, public status?: number) { super(message); }
 }
+const routingErrors = new Map([
+  ["ai_launches_paused", "Администратор временно приостановил новые запуски агентов."],
+  ["ai_models_unavailable", "Модели временно недоступны. Попробуйте позже."],
+]);
 // Only explicit, non-ambiguous request rejections release the persisted operation.
 // In particular 409 may describe a previously applied idempotent request; refresh
 // handling for unknown_fork stays in the caller, not in this generic recovery.
 export function recoverRejectedOperation(project: Project, operationId: string, error: unknown): Project {
   if (project.pending?.id !== operationId || !(error instanceof ApiError) ||
-    ![400, 401, 403, 404, 413, 415, 422].includes(error.status ?? 0)) return project;
+    !([400, 401, 403, 404, 413, 415, 422].includes(error.status ?? 0) ||
+      (error.status === 503 && routingErrors.has(error.code ?? "")) ||
+      (error.status === 409 && error.code === "retry_not_available"))) return project;
   return { ...project, pending: undefined };
 }
 export function assertDraftCurrent(storage: Pick<Storage, "getItem">, key: string, expected: string | null) {
@@ -94,12 +100,14 @@ export class CtfApi {
         try {
           const value = JSON.parse(text);
           const candidate = value?.code ?? value?.error?.code;
-          if (["unknown_fork", "answers_mismatch", "version_conflict", "idempotency_conflict"].includes(candidate)) code = candidate;
+          if (["unknown_fork", "answers_mismatch", "version_conflict", "idempotency_conflict", "retry_not_available"].includes(candidate) ||
+            routingErrors.has(candidate)) code = candidate;
         } catch { /* Never display arbitrary server error bodies. */ }
         throw new ApiError(
+          routingErrors.get(code ?? "") ?? (code === "retry_not_available" ? "Запуск уже изменился. Обновите статус." :
           response.status === 401 || response.status === 403
             ? "Нет доступа к проекту. Войдите снова и повторите запрос."
-            : `Сервис вернул ошибку ${response.status}. Исход запроса не подтверждён.`,
+            : `Сервис вернул ошибку ${response.status}. Исход запроса не подтверждён.`),
           code, response.status,
         );
       }

@@ -14,7 +14,7 @@ export function RunDetailContent({ data, refreshStatus }: { data: RunDetails; re
   return <>
     <header className="admin-detail-heading"><p className="admin-detail-eyebrow">ДЕТАЛИ ЗАПУСКА</p><h2>{run.task_label}</h2><span className={`admin-run-status status-${run.status}`}>{statusLabel(run.status)}</span></header>
     {run.status === 'outcome_unknown' && <p className="admin-notice">Результат неизвестен. Перед повтором проверьте сохранённые результаты.</p>}
-    <dl className="admin-detail-grid"><div><dt>Пользователь</dt><dd>{userLabel(run.user)}</dd></div><div><dt>Текущий этап</dt><dd>{stageLabel(run.stage)}</dd></div><div><dt>Начало</dt><dd>{formatTime(run.started_at)}</dd></div>{run.completed_at && <div><dt>Завершение</dt><dd>{formatTime(run.completed_at)}</dd></div>}</dl>
+    <dl className="admin-detail-grid"><div><dt>Пользователь</dt><dd>{userLabel(run.user)}</dd></div><div><dt>Текущий этап</dt><dd>{stageLabel(run.stage)}</dd></div><div><dt>Начало</dt><dd>{formatTime(run.started_at)}</dd></div>{run.completed_at && <div><dt>Завершение</dt><dd>{formatTime(run.completed_at)}</dd></div>}{data.execution_model && <div><dt>Модель запуска</dt><dd><code>{data.execution_model}</code></dd></div>}</dl>
     <div className="admin-detail-cost"><span>Оценка стоимости харнесса</span><strong>{estimateLabel(estimate)}</strong><small>{estimate.state === 'known' && estimate.value_usd !== null ? 'Оценка, не фактическое списание' : 'Недостаточно подтверждённых данных для оценки. Это не означает нулевой расход.'}</small></div>
     {refreshStatus}
     <div className="admin-detail-actions">{run.user && <a href={`#admin/users?email=${encodeURIComponent(run.user.email)}`}>AI-доступ пользователя</a>}{href && <a href={href}>Открыть проект</a>}</div>

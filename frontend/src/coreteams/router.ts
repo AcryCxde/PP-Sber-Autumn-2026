@@ -4,7 +4,7 @@ import type { SetupStep } from './api';
 export type Route =
   | { page: 'home' | 'catalog' | 'profile' | 'chat' }
   | { page: 'project'; projectId: string; step: SetupStep | 'workspace'; question: number }
-  | { page: 'admin'; section: 'overview' | 'users' };
+  | { page: 'admin'; section: 'overview' | 'users' | 'models' | 'model-history' };
 
 const STEPS = new Set(['welcome', 'context', 'question', 'team-plan', 'plan', 'workspace']);
 
@@ -14,7 +14,10 @@ export function parseRoute(hash: string): Route {
   if (parts[0] === 'catalog' || parts[0] === 'profile' || parts[0] === 'chat') {
     return { page: parts[0] };
   }
-  if (parts[0] === 'admin') return { page: 'admin', section: parts[1] === 'users' ? 'users' : 'overview' };
+  if (parts[0] === 'admin') {
+    const section = parts[1] === 'users' ? 'users' : parts[1] === 'models' ? (parts[2] === 'history' ? 'model-history' : 'models') : 'overview';
+    return { page: 'admin', section };
+  }
   if (parts[0] === 'project' && parts[1]) {
     const step = STEPS.has(parts[2]) ? (parts[2] as SetupStep | 'workspace') : 'workspace';
     const question = Math.min(2, Math.max(0, Number(parts[3]) || 0));
@@ -24,7 +27,7 @@ export function parseRoute(hash: string): Route {
 }
 
 export function routeHash(route: Route): string {
-  if (route.page === 'admin') return `#admin/${route.section}`;
+  if (route.page === 'admin') return `#admin/${route.section === 'model-history' ? 'models/history' : route.section}`;
   if (route.page !== 'project') {
     return `#${route.page}`;
   }

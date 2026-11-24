@@ -18,10 +18,11 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
-from pydantic import ConfigDict, StrictBool, StrictInt, ValidationError
+from pydantic import ConfigDict, Field, StrictBool, StrictInt, ValidationError
 
 from backend.ai_access import AiAccessError, change_ai_access, policy_transaction
 from backend import admin_queries
+from backend.model_routing import MODEL_ID, ModelRouting, ModelRoutingError
 from backend.models import AiPolicyAudit
 from pydantic import BaseModel
 from sqlalchemy import Select, case, func, literal, select
@@ -395,16 +396,18 @@ def _policy_error(error: AiAccessError) -> JSONResponse:
     return JSONResponse(body, status_code=error.status_code, headers={"Cache-Control": "no-store"})
 
 
+def _admin_write_origin(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    expected = request.app.state.settings.admin_public_origin or f"{request.url.scheme}://{request.url.netloc}"
+    return (request.headers.get("x-coreteams-admin") == "1" and (origin is None or origin == expected)
+            and request.headers.get("content-type", "").split(";", 1)[0].strip() == "application/json")
+
+
 @v1_router.patch("/users/{user_id}/ai-access")
 async def change_policy(user_id: str, request: Request, admin: AdminUser, session: SessionDependency):
     if not request.app.state.settings.admin_policy_management_enabled:
         return _policy_error(AiAccessError("policy_management_unavailable", 503, "Управление AI-доступом пока недоступно."))
-    origin = request.headers.get("origin")
-    expected_origin = (request.app.state.settings.admin_public_origin
-                       or f"{request.url.scheme}://{request.url.netloc}")
-    if (request.headers.get("x-coreteams-admin") != "1" or
-            (origin is not None and origin != expected_origin) or
-            request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json"):
+    if not _admin_write_origin(request):
         return _policy_error(AiAccessError("invalid_admin_origin", 403, "Недопустимый источник изменения."))
     try:
         raw = await request.body()
@@ -423,6 +426,89 @@ async def change_policy(user_id: str, request: Request, admin: AdminUser, sessio
         return _policy_error(AiAccessError("invalid_policy_request", 422, "Некорректный запрос."))
     except AiAccessError as error:
         return _policy_error(error)
+
+
+class RoutingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    primary_model: str = Field(pattern=f"^{MODEL_ID.pattern}$")
+    reserve_model: str = Field(pattern=f"^{MODEL_ID.pattern}$")
+    paused: StrictBool
+    expected_version: StrictInt = Field(ge=0)
+
+
+class ModelCheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model: str = Field(pattern=f"^{MODEL_ID.pattern}$")
+
+
+def _model_routing(request: Request, *, write: bool = False) -> ModelRouting:
+    if write and not _admin_write_origin(request):
+        raise ModelRoutingError("invalid_admin_origin", 403, "Недопустимый источник изменения.")
+    service = getattr(request.app.state, "model_routing", None)
+    if service is None:
+        raise ModelRoutingError("model_routing_disabled", 503, "Управление моделями пока не включено.")
+    return service
+
+
+def _routing_error(error: ModelRoutingError) -> JSONResponse:
+    return _policy_error(AiAccessError(error.code, error.status, str(error)))
+
+
+@v1_router.get("/model-routing")
+async def model_status(request: Request, admin: AdminUser, session: SessionDependency):
+    del admin
+    try:
+        payload = await _model_routing(request).status(session)
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+    except ModelRoutingError as error:
+        return _routing_error(error)
+
+
+@v1_router.patch("/model-routing")
+async def change_model_routing(request: Request, body: RoutingRequest, admin: AdminUser, session: SessionDependency):
+    try:
+        payload = await _model_routing(request, write=True).change(
+            session, actor=admin.email, version=body.expected_version, primary=body.primary_model,
+            reserve=body.reserve_model, paused=body.paused)
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+    except ModelRoutingError as error:
+        return _routing_error(error)
+
+
+@v1_router.get("/model-routing/catalog")
+async def model_catalog(request: Request, admin: AdminUser, session: SessionDependency,
+                        q: Annotated[str, Query(max_length=128)] = ""):
+    del admin
+    try:
+        payload = await _model_routing(request).search(session, q)
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+    except ModelRoutingError as error:
+        return _routing_error(error)
+
+
+@v1_router.post("/model-routing/check")
+async def check_model_routing(request: Request, admin: AdminUser, session: SessionDependency,
+                              body: ModelCheckRequest | None = None):
+    try:
+        service = _model_routing(request, write=True)
+        if body is None:
+            await service.refresh()
+        else:
+            await service.verify(body.model, admin.email)
+        return JSONResponse(await service.status(session), headers={"Cache-Control": "no-store"})
+    except ModelRoutingError as error:
+        return _routing_error(error)
+
+
+@v1_router.get("/model-routing/history")
+async def model_routing_history(request: Request, admin: AdminUser, session: SessionDependency,
+                                page: Annotated[int, Query(ge=1, le=100000)] = 1):
+    del admin
+    try:
+        payload = await _model_routing(request).history(session, page, 20)
+        return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+    except ModelRoutingError as error:
+        return _routing_error(error)
 
 
 @v1_router.get("/users")
