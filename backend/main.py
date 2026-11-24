@@ -833,6 +833,12 @@ async def execute_accepted_run(
             stderr_session_unavailable = await stderr_task
             stderr_task = None
         result_is_error = bool(result_event.get("is_error", False))
+        result_text = result_event.get("result")
+        model_failed = model_failed or provider_failure(
+            None, result_text, http_status=result_event.get("api_error_status"),
+        )
+        if routing is not None and model_failed and (exit_code != 0 or result_is_error or not has_result):
+            routing.request_check()
         if exit_code == 0 and not has_result:
             run_status = "outcome_unknown"
             error_code = "claude_session_state_uncertain"
@@ -844,15 +850,12 @@ async def execute_accepted_run(
                 isinstance(item, dict) and item.get("tool_name") == "AskUserQuestion" for item in denials
             ):
                 await publish_event(question_asked_event(questions))
-            result_text = result_event.get("result")
             if not assistant_parts and isinstance(result_text, str) and result_text.strip():
                 assistant_parts.append(result_text.strip())
                 await publish_event(message_created_event(result_text.strip()))
         else:
             run_status = "failed"
-            result_text = str(result_event.get("result") or "")
-            if routing is not None and (model_failed or provider_failure(None, result_text)):
-                routing.request_check()
+            if routing is not None and model_failed:
                 changed = tool_seen or bool(assistant_parts)
                 if not changed and workspace is not None and files_before is not None:
                     after = await asyncio.to_thread(
@@ -873,7 +876,7 @@ async def execute_accepted_run(
                         acceptance,
                         exit_code=exit_code,
                         observed_session_id=observed_session_id,
-                        result_text=result_text,
+                        result_text=str(result_text or ""),
                     )
                 ) or "claude_cli_failed"
     except WorkspaceError:

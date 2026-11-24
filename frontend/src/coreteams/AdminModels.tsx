@@ -197,6 +197,7 @@ export function AdminModels() {
           routing.active_model === routing.reserve_model ? 'Работаем на резерве' : 'Запуски агентов доступны'}</strong>
         <p>{routing.active_model ? <>Модель для новых запусков · <code>{routing.active_model}</code></> :
           routing.paused ? 'Приостановлены администратором для всех пользователей.' :
+          routing.reason === 'checking' ? 'Ожидаем первой проверки моделей.' :
           routing.reason === 'gateway_unavailable' ? 'Шлюз Brotherhood недоступен.' : 'Основная и резервная модели недоступны.'}</p>
       </div>
       <div className="admin-model-header">

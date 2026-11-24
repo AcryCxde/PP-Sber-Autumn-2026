@@ -1,14 +1,16 @@
+import asyncio
 import json
 import time
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, update
 
-from backend import main
+from backend import main, model_routing
 from backend.config import Settings
-from backend.model_routing import Check, GatewayModels, HEALTH_TTL
+from backend.model_routing import Check, GatewayModels, HEALTH_TTL, ModelRoutingError, provider_failure
 from backend.models import AiModelHealth, Run, User
 from backend.tests.auth_helpers import sign_in
 from backend.tests.test_history_api import FakeProcess, claude_lines, make_database, write_tool_events
@@ -103,9 +105,12 @@ def test_fallback_closes_new_runs_and_pause_survives_recovery(tmp_path, monkeypa
         assert final["status"] == "completed" and final["artifacts"][0]["content"] == "# Fallback document"
         assert used == [RESERVE]
 
-        gateway.results[RESERVE] = Check("unavailable", "gateway_unreachable")
+        gateway.results[PRIMARY] = Check("unavailable", "access_rejected")
+        gateway.results[RESERVE] = Check("unavailable", "access_rejected")
         stopped = check(client)
         assert stopped["active_model"] is None and stopped["reason"] == "models_unavailable"
+        gateway.results[PRIMARY] = gateway.results[RESERVE] = Check("unavailable", "gateway_unreachable")
+        assert check(client)["reason"] == "gateway_unavailable"
         second_id, second_body = project(client)
         failed = post(client, f"projects/{second_id}/runs", second_body)
         assert failed.status_code == 503 and failed.json()["code"] == "ai_models_unavailable"
@@ -154,19 +159,27 @@ def test_catalog_verification_version_and_access(tmp_path):
         assert client.get(ROUTING).json()["reserve_model"] == "glm-5.2"
 
 
-def failing_run(*, wrote=False):
+def failing_run(*, wrote=False, failure="authentication"):
     events = [json.dumps({"type": "system", "subtype": "init", "session_id": "session-1"})]
     if wrote:
         events += write_tool_events("coreteams/understand.md", "# Saved before interruption")
-    events.extend(map(json.dumps, [
-        {"type": "assistant", "error": "authentication_failed",
-         "message": {"content": [{"type": "text", "text": "Private gateway diagnostic"}]}},
-        {"type": "result", "is_error": True, "session_id": "session-1"},
-    ]))
+    result = {"type": "result", "is_error": True, "session_id": "session-1"}
+    if failure == "http-status":
+        result["api_error_status"] = 429
+    else:
+        network = failure == "connection"
+        events.append(json.dumps({
+            "type": "assistant", "error": "unknown" if network else "authentication_failed",
+            "message": {"content": [{"type": "text", "text": (
+                "API Error: Unable to connect to API (ECONNREFUSED)" if network else "Private gateway diagnostic"
+            )}]},
+        }))
+    events.append(json.dumps(result))
     return FakeProcess(events, exit_code=1)
 
 
-def test_retry_preserves_facilitator_answer_and_uses_new_route(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", ["authentication", "connection", "http-status"])
+def test_retry_preserves_facilitator_answer_and_uses_new_route(tmp_path, monkeypatch, failure):
     app, gateway = make_app(tmp_path)
     calls = []
     question = {
@@ -185,7 +198,7 @@ def test_retry_preserves_facilitator_answer_and_uses_new_route(tmp_path, monkeyp
                 "permission_denials": [{"tool_name": "AskUserQuestion"}],
             })])
         if len(calls) == 2:
-            return failing_run()
+            return failing_run(failure=failure)
         lines = claude_lines("Done")
         lines[1:1] = write_tool_events("coreteams/understand.md", "# Result on GLM")
         return FakeProcess(lines)
@@ -206,6 +219,7 @@ def test_retry_preserves_facilitator_answer_and_uses_new_route(tmp_path, monkeyp
         failed = wait_run(client, project_id, run_id)
         assert failed["errorCode"] == "ai_model_request_failed"
         assert "Private gateway diagnostic" not in json.dumps(failed)
+        assert "ECONNREFUSED" not in json.dumps(failed)
         deadline = time.monotonic() + 8
         while client.get(ROUTING).json()["active_model"] != RESERVE:
             assert time.monotonic() < deadline, "The CLI provider error did not trigger an out-of-band check"
@@ -276,3 +290,35 @@ async def test_gateway_qualification_requires_a_real_tool_call(monkeypatch):
     assert (await gateway.check("not-a-tool-model", qualify=True)).state == "incompatible"
     assert seen[0][2]["json"]["tool_choice"]["type"] == "tool"
     assert (await gateway.check(RESERVE, qualify=False)).state == "available"
+
+
+async def test_catalog_deadline_covers_pagination_and_releases_lock(tmp_path, monkeypatch):
+    app, _ = make_app(tmp_path)
+    service = app.state.model_routing
+    service.gateway = GatewayModels("https://gateway.example/anthropic", "test-token")
+    monkeypatch.setattr(model_routing, "REQUEST_TIMEOUT", 0.04)
+    requests = []
+
+    async def pages(method, path, *, params):
+        requests.append(params)
+        if "after_id" in params:
+            await asyncio.Event().wait()
+        return {"data": [{"id": PRIMARY}], "last_id": PRIMARY, "has_more": True}
+
+    monkeypatch.setattr(service.gateway, "_request", pages)
+    with pytest.raises(ModelRoutingError) as error:
+        await asyncio.wait_for(service.catalog(), timeout=0.5)
+    assert error.value.code == "model_catalog_unavailable"
+    assert requests == [{}, {"after_id": PRIMARY}]
+
+    async def healthy(method, path, **kwargs):
+        return {"data": [{"id": RESERVE}], "has_more": False}
+
+    monkeypatch.setattr(service.gateway, "_request", healthy)
+    assert await service.catalog() == [RESERVE]
+    await app.state.database.dispose()
+
+
+def test_request_validation_errors_do_not_mark_provider_unavailable():
+    assert not provider_failure("unknown", "API Error: 400 invalid request", http_status=400)
+    assert not provider_failure("unknown", "Unexpected application error")

@@ -35,6 +35,9 @@ MODEL_FAILURES = frozenset({
     "authentication_failed", "billing_error", "rate_limit", "server_error", "model_not_found",
     "overloaded", "connection_error",
 })
+MODEL_FAILURE_HTTP_STATUSES = frozenset({401, 402, 403, 404, 408, 429})
+CLI_HTTP_ERROR = re.compile(r"\s*API Error:\s*(\d{3})\b")
+CLI_CONNECTION_ERROR = re.compile(r"\s*API Error:\s*Unable to connect to API\b")
 
 
 class ModelRoutingError(Exception):
@@ -53,11 +56,16 @@ def valid_model(value: object) -> bool:
     return isinstance(value, str) and MODEL_ID.fullmatch(value) is not None
 
 
-def provider_failure(value: object, detail: object = None) -> bool:
+def provider_failure(value: object, detail: object = None, *, http_status: int | None = None) -> bool:
     if isinstance(value, str) and value in MODEL_FAILURES:
         return True
-    return bool(isinstance(detail, str) and
-                re.match(r"\s*API Error:\s*(?:401|402|403|404|429|5\d{2})\b", detail))
+    if isinstance(detail, str):
+        # The installed CLI reports connection refusals as category "unknown".
+        if CLI_CONNECTION_ERROR.match(detail):
+            return True
+        if http_status is None and (match := CLI_HTTP_ERROR.match(detail)):
+            http_status = int(match[1])
+    return http_status is not None and (http_status in MODEL_FAILURE_HTTP_STATUSES or 500 <= http_status < 600)
 
 
 def _utc(value: datetime) -> datetime:
@@ -87,9 +95,7 @@ class GatewayModels:
                     async with client.stream(method, self.base_url + path, **kwargs) as response:
                         if not response.is_success:
                             code = response.status_code
-                            reason = ("access_rejected" if code in {401, 403}
-                                      else "gateway_unreachable" if code in {502, 503, 504}
-                                      else "model_unavailable")
+                            reason = "access_rejected" if code in {401, 403} else "model_unavailable"
                             raise GatewayError(reason, code)
                         body = bytearray()
                         async for chunk in response.aiter_bytes():
@@ -184,7 +190,9 @@ def _evaluate(policy: AiModelRouting, health: dict[str, AiModelHealth], now: dat
     for model in (policy.primary_model, policy.reserve_model):
         if model and _ready(health.get(model), now):
             return model, None
-    if len(health) == 2 and all(item.reason in {"gateway_unreachable", "access_rejected"} for item in health.values()):
+    if not health:
+        return None, "checking"
+    if len(health) == 2 and all(item.reason == "gateway_unreachable" for item in health.values()):
         return None, "gateway_unavailable"
     return None, "models_unavailable"
 
@@ -233,14 +241,15 @@ class ModelRouting:
         }
 
     async def catalog(self) -> list[str]:
-        async with self._catalog_lock:
-            now = datetime.now(UTC)
-            if self._catalog is None or now - self._catalog[0] > timedelta(seconds=CHECK_INTERVAL):
-                try:
+        try:
+            # Bound the whole lookup, including lock contention and pagination.
+            async with asyncio.timeout(REQUEST_TIMEOUT), self._catalog_lock:
+                now = datetime.now(UTC)
+                if self._catalog is None or now - self._catalog[0] > timedelta(seconds=CHECK_INTERVAL):
                     self._catalog = (now, await self.gateway.catalog())
-                except GatewayError as error:
-                    raise ModelRoutingError("model_catalog_unavailable", 503, "Каталог Brotherhood недоступен.") from error
-            return self._catalog[1]
+                return self._catalog[1]
+        except (GatewayError, TimeoutError) as error:
+            raise ModelRoutingError("model_catalog_unavailable", 503, "Каталог Brotherhood недоступен.") from error
 
     async def search(self, session: AsyncSession, query: str) -> dict[str, Any]:
         query = query.strip().casefold()
