@@ -15,7 +15,7 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, TimeoutError as PoolTimeoutError
 
 from backend import models  # noqa: F401
@@ -614,6 +614,7 @@ async def execute_accepted_run(
     error_code: str | None = None
     tool_calls: dict[str, NormalizedEvent] = {}
     model_failed = False
+    failed_model: str | None = None
     tool_seen = False
     questions: list[dict[str, Any]] = []
     resume_session_id = (
@@ -701,6 +702,8 @@ async def execute_accepted_run(
     async def finalize_and_store_terminal() -> Event:
         assistant_content = "\n\n".join(assistant_parts).strip()
         async with app_state.database.session() as session:
+            if failed_model is not None and session.get_bind().dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
             finalization = await finalize_run(
                 session,
                 acceptance.run_id,
@@ -712,7 +715,13 @@ async def execute_accepted_run(
                 cost_usd=result_event.get("cost_usd") if has_result else None,
                 turns=result_event.get("num_turns") if has_result else None,
                 error_code=error_code,
+                commit=failed_model is None,
             )
+            if routing is not None and failed_model is not None:
+                # Publish the terminal status and remove the failed route from admission atomically.
+                await routing.record_provider_failure(session, failed_model)
+                await session.commit()
+                routing.request_check()
         return finalization.terminal_event
 
     try:
@@ -838,7 +847,7 @@ async def execute_accepted_run(
             None, result_text, http_status=result_event.get("api_error_status"),
         )
         if routing is not None and model_failed and (exit_code != 0 or result_is_error or not has_result):
-            routing.request_check()
+            failed_model = admission.execution_model
         if exit_code == 0 and not has_result:
             run_status = "outcome_unknown"
             error_code = "claude_session_state_uncertain"

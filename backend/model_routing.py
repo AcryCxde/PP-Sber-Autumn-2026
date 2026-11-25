@@ -36,6 +36,7 @@ MODEL_FAILURES = frozenset({
     "overloaded", "connection_error",
 })
 MODEL_FAILURE_HTTP_STATUSES = frozenset({401, 402, 403, 404, 408, 429})
+PROVIDER_FAILURE_REASON = "provider_request_failed"
 CLI_HTTP_ERROR = re.compile(r"\s*API Error:\s*(\d{3})\b")
 CLI_CONNECTION_ERROR = re.compile(r"\s*API Error:\s*Unable to connect to API\b")
 
@@ -131,27 +132,26 @@ class GatewayModels:
             seen_cursors.add(after)
         raise GatewayError("invalid_gateway_response")
 
-    async def check(self, model: str, *, qualify: bool) -> Check:
+    async def check(self, model: str) -> Check:
         marker = "coreteams_probe"
         body: dict[str, Any] = {
             "model": model,
-            "max_tokens": 256 if qualify else 1,
-            "messages": [{"role": "user", "content": f"Use the {marker} tool." if qualify else "Reply OK."}],
+            "max_tokens": 256,
+            "messages": [{"role": "user", "content": f"Use the {marker} tool."}],
+            "tools": [{"name": marker, "description": "Synthetic health check", "input_schema": {"type": "object"}}],
+            "tool_choice": {"type": "tool", "name": marker},
         }
-        if qualify:
-            body["tools"] = [{"name": marker, "description": "Synthetic health check", "input_schema": {"type": "object"}}]
-            body["tool_choice"] = {"type": "tool", "name": marker}
         try:
             data = await self._request("POST", "/v1/messages", json=body)
         except GatewayError as error:
-            if qualify and error.status in {400, 422}:
+            if error.status in {400, 422}:
                 return Check("incompatible", "tools_unsupported")
             return Check("unavailable", error.reason)
         blocks = data.get("content")
         if data.get("type") != "message" or not isinstance(blocks, list):
             return Check("unavailable", "invalid_gateway_response")
-        if qualify and not any(isinstance(block, dict) and block.get("type") == "tool_use"
-                               and block.get("name") == marker for block in blocks):
+        if not any(isinstance(block, dict) and block.get("type") == "tool_use"
+                   and block.get("name") == marker for block in blocks):
             return Check("incompatible", "tools_unsupported")
         reported = data.get("model")
         return Check("available", reported_model=reported if valid_model(reported) else None)
@@ -201,6 +201,13 @@ async def select_execution_model(session: AsyncSession, *, lock: bool = True) ->
     policy = await _policy(session, lock=lock)
     model, reason = _evaluate(policy, await _health(session, policy), datetime.now(UTC))
     return model, ("ai_launches_paused" if reason == "paused" else "ai_models_unavailable") if reason else None
+
+
+async def _update_active_model(session: AsyncSession, policy: AiModelRouting, now: datetime) -> None:
+    before = _summary(policy)
+    policy.active_model, policy.reason = _evaluate(policy, await _health(session, policy), now)
+    if before["active_model"] != policy.active_model:
+        session.add(AiModelRoutingAudit(action="automatic", before=before, after=_summary(policy)))
 
 
 class ModelRouting:
@@ -260,13 +267,19 @@ class ModelRouting:
         matches.sort(key=lambda id: (id.casefold() != query, not id.casefold().startswith(query), id))
         return {"items": matches[:8], "total": len(matches)}
 
-    async def _save_checks(self, checks: dict[str, Check], *, scheduled: bool, actor: str | None = None) -> None:
+    async def _save_checks(
+        self, checks: dict[str, Check], *, started_at: datetime, scheduled: bool, actor: str | None = None,
+    ) -> None:
         async with self.database.session() as session:
             policy = await _policy(session, lock=True)
-            before = _summary(policy)
             now = datetime.now(UTC)
+            skipped = False
             for model, result in checks.items():
                 row = await session.get(AiModelHealth, model)
+                # A probe started before a failed run was recorded cannot restore its route.
+                if row is not None and row.reason == PROVIDER_FAILURE_REASON and _utc(row.checked_at) >= started_at:
+                    skipped = True
+                    continue
                 if row is None:
                     row = AiModelHealth(model=model, compatible=False)
                     session.add(row)
@@ -279,31 +292,39 @@ class ModelRouting:
                     row.reported_model = result.reported_model or row.reported_model
                 elif result.state == "incompatible":
                     row.compatible = False
-            if scheduled and set(checks) == {policy.primary_model, policy.reserve_model}:
+            if scheduled and not skipped and set(checks) == {policy.primary_model, policy.reserve_model}:
                 policy.last_checked_at = now
             await session.flush()
-            policy.active_model, policy.reason = _evaluate(policy, await _health(session, policy), now)
-            if before["active_model"] != policy.active_model:
-                session.add(AiModelRoutingAudit(action="automatic", before=before, after=_summary(policy)))
+            await _update_active_model(session, policy, now)
             await session.commit()
+
+    async def record_provider_failure(self, session: AsyncSession, model: str) -> None:
+        policy = await _policy(session, lock=True)
+        now = datetime.now(UTC)
+        row = await session.get(AiModelHealth, model)
+        if row is None:
+            row = AiModelHealth(model=model, compatible=False)
+            session.add(row)
+        row.checked_at, row.state, row.reason = now, "unavailable", PROVIDER_FAILURE_REASON
+        await session.flush()
+        await _update_active_model(session, policy, now)
 
     async def refresh(self) -> None:
         async with self._check_lock:
             async with self.database.session() as session:
                 policy = await _policy(session)
                 models = [model for model in (policy.primary_model, policy.reserve_model) if model]
-                health = await _health(session, policy)
-            checks = await asyncio.gather(*(self.gateway.check(model, qualify=not (
-                model in health and health[model].compatible
-            )) for model in models))
-            await self._save_checks(dict(zip(models, checks)), scheduled=True)
+            started_at = datetime.now(UTC)
+            checks = await asyncio.gather(*(self.gateway.check(model) for model in models))
+            await self._save_checks(dict(zip(models, checks)), started_at=started_at, scheduled=True)
 
     async def verify(self, model: str, actor: str) -> None:
         if model not in await self.catalog():
             raise ModelRoutingError("model_not_in_catalog", 422, "Модель отсутствует в каталоге Brotherhood.")
         async with self._check_lock:
-            result = await self.gateway.check(model, qualify=True)
-            await self._save_checks({model: result}, scheduled=False, actor=actor)
+            started_at = datetime.now(UTC)
+            result = await self.gateway.check(model)
+            await self._save_checks({model: result}, started_at=started_at, scheduled=False, actor=actor)
 
     def request_check(self) -> None:
         self._wake.set()

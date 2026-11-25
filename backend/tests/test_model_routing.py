@@ -26,13 +26,11 @@ class FakeGateway:
     def __init__(self):
         self.results = {PRIMARY: Check("available", reported_model=PRIMARY),
                         RESERVE: Check("available", reported_model=RESERVE)}
-        self.calls: list[tuple[str, bool]] = []
 
     async def catalog(self):
         return [PRIMARY, RESERVE, "glm-5.2", "claude-glm-5-3", "cogvideo"]
 
-    async def check(self, model, *, qualify):
-        self.calls.append((model, qualify))
+    async def check(self, model):
         return self.results.get(model, Check("incompatible", "tools_unsupported"))
 
 
@@ -131,6 +129,42 @@ def test_fallback_closes_new_runs_and_pause_survives_recovery(tmp_path, monkeypa
                    for entry in audit["items"])
 
 
+def test_refresh_evicts_routes_that_lose_tool_support(tmp_path, monkeypatch):
+    app, _ = make_app(tmp_path)
+    gateway = GatewayModels("https://gateway.example/anthropic", "test-token")
+    app.state.model_routing.gateway = gateway
+    tool_support = {PRIMARY, RESERVE}
+
+    async def respond(method, path, *, json):
+        model = json["model"]
+        content = [{"type": "text", "text": "OK"}]
+        if model in tool_support and "tool_choice" in json:
+            content = [{"type": "tool_use", "name": json["tool_choice"]["name"]}]
+        return {"type": "message", "model": model, "content": content}
+
+    monkeypatch.setattr(gateway, "_request", respond)
+    with TestClient(app) as client:
+        login_admin(client, app)
+        assert check(client)["active_model"] == PRIMARY
+
+        tool_support.remove(PRIMARY)
+        fallback = check(client)
+        assert fallback["active_model"] == RESERVE
+        assert {model["id"]: model["state"] for model in fallback["models"]} == {
+            PRIMARY: "incompatible", RESERVE: "available",
+        }
+
+        tool_support.remove(RESERVE)
+        assert check(client)["active_model"] is None
+        project_id, body = project(client)
+        response = post(client, f"projects/{project_id}/runs", body)
+        assert response.status_code == 503
+        assert response.json()["code"] == "ai_models_unavailable"
+
+        tool_support.add(PRIMARY)
+        assert check(client)["active_model"] == PRIMARY
+
+
 def test_catalog_verification_version_and_access(tmp_path):
     app, gateway = make_app(tmp_path)
     gateway.results["glm-5.2"] = Check("available", reported_model="glm-5.2")
@@ -206,7 +240,7 @@ def test_retry_preserves_facilitator_answer_and_uses_new_route(tmp_path, monkeyp
     monkeypatch.setattr(main, "start_claude", start)
     with TestClient(app) as client:
         login_admin(client, app)
-        check(client)
+        initial_check = check(client)["last_checked_at"]
         project_id, body = project(client)
         created = post(client, f"projects/{project_id}/runs", body)
         run_id = created.json()["id"]
@@ -221,9 +255,10 @@ def test_retry_preserves_facilitator_answer_and_uses_new_route(tmp_path, monkeyp
         assert "Private gateway diagnostic" not in json.dumps(failed)
         assert "ECONNREFUSED" not in json.dumps(failed)
         deadline = time.monotonic() + 8
-        while client.get(ROUTING).json()["active_model"] != RESERVE:
+        while client.get(ROUTING).json()["last_checked_at"] == initial_check:
             assert time.monotonic() < deadline, "The CLI provider error did not trigger an out-of-band check"
             time.sleep(0.04)
+        assert client.get(ROUTING).json()["active_model"] == RESERVE
         key = str(uuid4())
         retry_body = {"attemptId": failed["retryAttemptId"]}
         retry = post(client, prefix + "/retry", retry_body, key)
@@ -240,6 +275,59 @@ def test_retry_preserves_facilitator_answer_and_uses_new_route(tmp_path, monkeyp
                 return list(await session.scalars(select(Run.execution_model).order_by(Run.started_at)))
 
         assert client.portal.call(execution_models) == [PRIMARY, PRIMARY, RESERVE]
+
+
+def test_provider_failure_blocks_retry_on_primary_and_invalidates_inflight_probe(tmp_path, monkeypatch):
+    app, gateway = make_app(tmp_path)
+    routing = app.state.model_routing
+    used_models = []
+    queued_checks = []
+    probe_started, probe_release = asyncio.Event(), asyncio.Event()
+    original_check = gateway.check
+
+    async def stale_probe(model):
+        result = await original_check(model)
+        if model == PRIMARY:
+            probe_started.set()
+            await asyncio.wait_for(probe_release.wait(), 10)
+        return result
+
+    async def start(*args, execution_model, **kwargs):
+        used_models.append(execution_model)
+        if execution_model == PRIMARY:
+            return failing_run(failure="http-status")
+        return FakeProcess(claude_lines("Done"))
+
+    monkeypatch.setattr(main, "start_claude", start)
+    monkeypatch.setattr(routing, "request_check", lambda: queued_checks.append(True))
+    with TestClient(app) as client:
+        login_admin(client, app)
+        assert check(client)["active_model"] == PRIMARY
+        monkeypatch.setattr(gateway, "check", stale_probe)
+        in_flight = client.portal.start_task_soon(routing.refresh)
+        client.portal.call(asyncio.wait_for, probe_started.wait(), 10)
+
+        project_id, body = project(client)
+        prefix = f"projects/{project_id}/runs"
+        created = post(client, prefix, body)
+        assert created.status_code == 201, created.text
+        run_id = created.json()["id"]
+        failed = wait_run(client, project_id, run_id)
+        assert failed["errorCode"] == "ai_model_request_failed"
+        assert client.get(ROUTING).json()["active_model"] == RESERVE
+
+        retry = post(client, f"{prefix}/{run_id}/retry", {"attemptId": failed["retryAttemptId"]})
+        assert retry.status_code == 200, retry.text
+        assert wait_run(client, project_id, run_id)["status"] == "completed"
+        assert used_models == [PRIMARY, RESERVE]
+        assert queued_checks == [True]
+
+        client.portal.call(probe_release.set)
+        in_flight.result(timeout=10)
+        assert client.get(ROUTING).json()["active_model"] == RESERVE
+
+        monkeypatch.setattr(gateway, "check", original_check)
+        assert check(client)["active_model"] == PRIMARY
 
 
 def test_interruption_after_tool_has_no_retry(tmp_path, monkeypatch):
@@ -284,12 +372,16 @@ async def test_gateway_qualification_requires_a_real_tool_call(monkeypatch):
 
     async def respond(method, path, **kwargs):
         seen.append((method, path, kwargs))
-        return {"type": "message", "model": RESERVE, "content": [{"type": "text", "text": "OK"}]}
+        model = kwargs["json"]["model"]
+        content = [{"type": "text", "text": "OK"}]
+        if model == RESERVE:
+            content = [{"type": "tool_use", "name": kwargs["json"]["tool_choice"]["name"]}]
+        return {"type": "message", "model": model, "content": content}
 
     monkeypatch.setattr(gateway, "_request", respond)
-    assert (await gateway.check("not-a-tool-model", qualify=True)).state == "incompatible"
+    assert (await gateway.check("not-a-tool-model")).state == "incompatible"
     assert seen[0][2]["json"]["tool_choice"]["type"] == "tool"
-    assert (await gateway.check(RESERVE, qualify=False)).state == "available"
+    assert (await gateway.check(RESERVE)).state == "available"
 
 
 async def test_catalog_deadline_covers_pagination_and_releases_lock(tmp_path, monkeypatch):
