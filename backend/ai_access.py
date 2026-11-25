@@ -20,6 +20,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.model_routing import select_execution_model
 from backend.models import AiPolicyAudit, Conversation, Event, Run, User
 from backend.repository import (
     TERMINAL_RUN_STATUSES, ExecutionPhase, RunFinalization,
@@ -58,6 +59,7 @@ class AdmissionResult:
     event: Event | None = None
     run_id: str | None = None
     context_events: tuple[Event, ...] = ()
+    execution_model: str | None = None
 
 
 def normalize_policy_request(*, frozen: bool, reason: str | None,
@@ -134,7 +136,7 @@ async def change_ai_access(session: AsyncSession, *, actor_id: str, target_id: s
 
 
 async def admit_run(
-    session: AsyncSession, run_id: str, *, attempt_id: str | None = None,
+    session: AsyncSession, run_id: str, *, attempt_id: str | None = None, model_routing: bool = False,
 ) -> AdmissionResult:
     context = (await session.execute(select(Run.conversation_id, Conversation.owner_id)
         .join(Conversation, Run.conversation_id == Conversation.id).where(Run.id == run_id))).one_or_none()
@@ -165,17 +167,25 @@ async def admit_run(
         result = await finalize_run(session, run.id, assistant_content=None, status="failed",
                                     exit_code=None, error_code="ai_access_frozen", commit=False)
         return AdmissionResult(AdmissionState.DENIED, result.terminal_event)
+    model = None
+    if model_routing:
+        model, error_code = await select_execution_model(session)
+        if error_code:
+            result = await finalize_run(session, run.id, assistant_content=None, status="failed",
+                                        exit_code=None, error_code=error_code, commit=False)
+            return AdmissionResult(AdmissionState.DENIED, result.terminal_event)
     reset_event = await apply_run_context_reset(session, run, conversation)
     now = datetime.now(UTC)
     run.admitted_at = now
     run.admission_policy_version = user.ai_policy_version
     run.admission_attempt_id = attempt_id
+    run.execution_model = model
     run.status = "running"
     run.started_at = now
     event = await _append_event_in_transaction(session, run.id, run_started_event())
     await session.flush()
     return AdmissionResult(AdmissionState.ADMITTED, event, run.id,
-                           (reset_event,) if reset_event is not None else ())
+                           (reset_event,) if reset_event is not None else (), model)
 
 
 async def fail_admission_handoff(

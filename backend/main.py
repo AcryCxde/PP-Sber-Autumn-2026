@@ -2,6 +2,7 @@ import asyncio
 import errno
 import json
 import logging
+import os
 import socket
 import sqlite3
 import subprocess
@@ -14,7 +15,7 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, TimeoutError as PoolTimeoutError
 
 from backend import models  # noqa: F401
@@ -36,6 +37,7 @@ from backend.containers import ContainerError, ContainerManager
 from backend.db import Database
 from backend.artifact_files import save_agent_file
 from backend.materials import MATERIALS_DIR, conversation_materials, materials_note, write_workspace_materials
+from backend.model_routing import ModelRouting, provider_failure
 from backend.models import Event, Message, Run, User
 from backend.parser import (
     NormalizedEvent,
@@ -43,7 +45,7 @@ from backend.parser import (
     parse_event,
 )
 from backend.projects import ProjectRunError, link_run, owned_project, prepare_run
-from backend.public_events import TERMINAL_EVENT_TYPES, message_created_event, project_public_event_data
+from backend.public_events import TERMINAL_EVENT_TYPES, message_created_event, project_public_event_data, question_asked_event
 from backend.repository import (
     TERMINAL_RUN_STATUSES,
     RunAcceptance,
@@ -63,6 +65,7 @@ from backend.runner_transport import RunnerTransport
 from backend.storage import create_storage
 from backend.workspace import (
     WorkspaceError,
+    WorkspaceFiles,
     acquire_gateway_lease,
     conversation_workspace,
     normalize_artifact_path,
@@ -108,6 +111,8 @@ async def start_claude(
     resume_session_id: str | None = None,
     *,
     permission_mode: str | None = None,
+    execution_model: str | None = None,
+    gateway_env: dict[str, str] | None = None,
 ) -> subprocess.Popen[str]:
     arguments = [
         "claude",
@@ -120,11 +125,21 @@ async def start_claude(
     ]
     if resume_session_id:
         arguments.extend(["--resume", resume_session_id])
+    env = None
+    if execution_model:
+        arguments.extend(["--model", execution_model])
+        env = {
+            **os.environ, **(gateway_env or {}), "ANTHROPIC_MODEL": execution_model,
+            "CLAUDE_CODE_SUBAGENT_MODEL": execution_model,
+        }
+        for role in ("OPUS", "SONNET", "HAIKU", "FABLE"):
+            env[f"ANTHROPIC_DEFAULT_{role}_MODEL"] = execution_model
 
     process = await asyncio.to_thread(
         subprocess.Popen,
         arguments,
         cwd=workspace,
+        env=env,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -171,6 +186,19 @@ async def drain_stderr(
 
 async def wait_process(process: subprocess.Popen[str]) -> int:
     return await asyncio.to_thread(process.wait)
+
+
+def cli_questions(value: Any) -> list[dict[str, Any]]:
+    items = value.get("questions") if isinstance(value, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [{
+        "text": item["question"],
+        "header": item.get("header"),
+        "options": item["options"] if isinstance(item.get("options"), list) else [],
+        "multi_select": item.get("multiSelect") is True,
+    } for item in items[:4] if isinstance(item, dict) and isinstance(item.get("question"), str)
+        and item["question"].strip()]
 
 
 async def stop_process(process: subprocess.Popen[str] | None) -> None:
@@ -406,6 +434,9 @@ async def execute_accepted_run(
     committed_admission: AdmissionResult | None = None
     admission_attempt_id = str(uuid4())
     recovery_stopping = asyncio.Event()
+    routing: ModelRouting | None = getattr(app_state, "model_routing", None)
+    # Keep the ordinary admission call for deployments without routing.
+    routing_options = {"model_routing": True} if routing is not None else {}
 
     async def owned_admission() -> AdmissionResult:
         nonlocal committed_admission
@@ -414,7 +445,7 @@ async def execute_accepted_run(
         async with asyncio.timeout(30):
             async with app_state.database.session() as session:
                 committed_admission = await policy_transaction(session, lambda: admit_run(
-                    session, acceptance.run_id, attempt_id=admission_attempt_id))
+                    session, acceptance.run_id, attempt_id=admission_attempt_id, **routing_options))
                 return committed_admission
 
     OwnedResult = TypeVar("OwnedResult")
@@ -582,6 +613,10 @@ async def execute_accepted_run(
     run_status = "failed"
     error_code: str | None = None
     tool_calls: dict[str, NormalizedEvent] = {}
+    model_failed = False
+    failed_model: str | None = None
+    tool_seen = False
+    questions: list[dict[str, Any]] = []
     resume_session_id = (
         acceptance.resume_session_id
         if acceptance.context_mode == "resume"
@@ -590,7 +625,7 @@ async def execute_accepted_run(
     terminal_error: BaseException | None = None
     terminal_event: Event | None = None
     workspace: Path | None = None
-    files_before: dict[str, tuple[int, int]] | None = None
+    files_before: WorkspaceFiles | None = None
     written_bytes: dict[str, bytes] = {}
 
     async def publish_event(event_data: dict[str, Any]) -> Event:
@@ -667,6 +702,8 @@ async def execute_accepted_run(
     async def finalize_and_store_terminal() -> Event:
         assistant_content = "\n\n".join(assistant_parts).strip()
         async with app_state.database.session() as session:
+            if failed_model is not None and session.get_bind().dialect.name == "sqlite":
+                await session.execute(text("BEGIN IMMEDIATE"))
             finalization = await finalize_run(
                 session,
                 acceptance.run_id,
@@ -678,7 +715,13 @@ async def execute_accepted_run(
                 cost_usd=result_event.get("cost_usd") if has_result else None,
                 turns=result_event.get("num_turns") if has_result else None,
                 error_code=error_code,
+                commit=failed_model is None,
             )
+            if routing is not None and failed_model is not None:
+                # Publish the terminal status and remove the failed route from admission atomically.
+                await routing.record_provider_failure(session, failed_model)
+                await session.commit()
+                routing.request_check()
         return finalization.terminal_event
 
     try:
@@ -706,11 +749,18 @@ async def execute_accepted_run(
                 "run_id": acceptance.run_id, "entries_scanned": files_before.entries_scanned,
             })
 
+        assignment = {}
+        if routing is not None and admission.execution_model is not None:
+            assignment = {"execution_model": admission.execution_model, "gateway_env": {
+                "ANTHROPIC_BASE_URL": app_state.settings.anthropic_base_url,
+                "ANTHROPIC_AUTH_TOKEN": app_state.settings.anthropic_auth_token,
+            }}
         process = await start_claude(
             content + materials_note(materials),
             str(workspace),
             resume_session_id,
             permission_mode=app_state.settings.claude_permission_mode,
+            **assignment,
         )
         stderr_task = asyncio.create_task(
             drain_stderr(process, run_id=acceptance.run_id)
@@ -719,6 +769,9 @@ async def execute_accepted_run(
         async for line in process_output(process):
             for event_data in parse_event(line):
                 event_type = event_data["type"]
+                if event_type == "api_error":
+                    model_failed = model_failed or provider_failure(event_data.get("api_error"), event_data.get("content"))
+                    continue
                 if event_type == "session":
                     session_id = event_data.get("session_id")
                     if session_id:
@@ -729,11 +782,16 @@ async def execute_accepted_run(
                         observed_session_id = session_id
                     continue
 
-                if event_type == "tool" and event_data.get("tool_id"):
-                    tool_calls[str(event_data["tool_id"])] = event_data
+                if event_type == "tool":
+                    tool_seen = True
+                    if routing is not None and event_data.get("name") == "AskUserQuestion":
+                        questions = cli_questions(event_data.get("input")) or questions
+                    if event_data.get("tool_id"):
+                        tool_calls[str(event_data["tool_id"])] = event_data
                     continue
 
                 if event_type == "tool_result":
+                    tool_seen = True
                     tool_id = event_data.get("tool_id")
                     tool_call = tool_calls.pop(str(tool_id), None) if tool_id else None
                     if (
@@ -784,30 +842,52 @@ async def execute_accepted_run(
             stderr_session_unavailable = await stderr_task
             stderr_task = None
         result_is_error = bool(result_event.get("is_error", False))
+        result_text = result_event.get("result")
+        model_failed = model_failed or provider_failure(
+            None, result_text, http_status=result_event.get("api_error_status"),
+        )
+        if routing is not None and model_failed and (exit_code != 0 or result_is_error or not has_result):
+            failed_model = admission.execution_model
         if exit_code == 0 and not has_result:
             run_status = "outcome_unknown"
             error_code = "claude_session_state_uncertain"
         elif exit_code == 0 and not result_is_error:
             run_status = "completed"
             await persist_changed_files()
-            result_text = result_event.get("result")
+            denials = result_event.get("permission_denials")
+            if questions and isinstance(denials, list) and any(
+                isinstance(item, dict) and item.get("tool_name") == "AskUserQuestion" for item in denials
+            ):
+                await publish_event(question_asked_event(questions))
             if not assistant_parts and isinstance(result_text, str) and result_text.strip():
                 assistant_parts.append(result_text.strip())
                 await publish_event(message_created_event(result_text.strip()))
         else:
             run_status = "failed"
-            result_text = str(result_event.get("result") or "")
-            error_code = (
-                "claude_session_unavailable"
-                if acceptance.context_mode == "resume"
-                and stderr_session_unavailable
-                else classify_session_unavailable(
-                    acceptance,
-                    exit_code=exit_code,
-                    observed_session_id=observed_session_id,
-                    result_text=result_text,
-                )
-            ) or "claude_cli_failed"
+            if routing is not None and model_failed:
+                changed = tool_seen or bool(assistant_parts)
+                if not changed and workspace is not None and files_before is not None:
+                    after = await asyncio.to_thread(
+                        workspace_files, workspace, skip_dirs={MATERIALS_DIR},
+                        max_entries=app_state.settings.artifact_scan_max_entries,
+                    )
+                    changed = files_before.truncated or after.truncated or after != files_before
+                if changed:
+                    run_status, error_code = "outcome_unknown", "ai_model_interrupted"
+                else:
+                    error_code = "ai_model_request_failed"
+            else:
+                error_code = (
+                    "claude_session_unavailable"
+                    if acceptance.context_mode == "resume"
+                    and stderr_session_unavailable
+                    else classify_session_unavailable(
+                        acceptance,
+                        exit_code=exit_code,
+                        observed_session_id=observed_session_id,
+                        result_text=str(result_text or ""),
+                    )
+                ) or "claude_cli_failed"
     except WorkspaceError:
         run_status = "failed"
         error_code = (
@@ -1298,6 +1378,7 @@ def create_app(
 ) -> FastAPI:
     selected_settings = settings or APP_SETTINGS
     selected_database = database or Database(selected_settings.database_url)
+    routing = ModelRouting(selected_database, selected_settings) if selected_settings.ai_model_routing_enabled else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -1313,6 +1394,7 @@ def create_app(
         database_ready = False
         supervisor: asyncio.Task[None] | None = None
         confirmation_reconciler: asyncio.Task[None] | None = None
+        routing_monitor: asyncio.Task[None] | None = None
         runner_manager: ContainerManager | None = getattr(app.state, "runner_manager", None)
         try:
             if app.state.settings.database_migrations == "verify":
@@ -1334,6 +1416,9 @@ def create_app(
                 )
             async with app.state.database.session() as session:
                 await reconcile_orphaned_runs(session)
+            if routing is not None:
+                await routing.initialize()
+                routing_monitor = asyncio.create_task(routing.watch())
             if runner_manager is not None:
                 await runner_manager.bridge.start()
                 supervisor = asyncio.create_task(runner_manager.supervise())
@@ -1342,6 +1427,9 @@ def create_app(
                 )
             yield
         finally:
+            if routing_monitor is not None:
+                routing_monitor.cancel()
+                await asyncio.gather(routing_monitor, return_exceptions=True)
             if confirmation_reconciler is not None:
                 confirmation_reconciler.cancel()
                 await asyncio.gather(confirmation_reconciler, return_exceptions=True)
@@ -1366,6 +1454,7 @@ def create_app(
     application = FastAPI(lifespan=lifespan)
     application.state.database = selected_database
     application.state.settings = selected_settings
+    application.state.model_routing = routing
     # Тесты подменяют его на MemoryStorage; None — файлы только в базе.
     application.state.storage = create_storage(selected_settings)
     application.state.run_tasks = set()

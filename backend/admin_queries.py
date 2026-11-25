@@ -133,11 +133,13 @@ async def runs(session: AsyncSession, period: Period, *, status: str, page: int,
 
 async def run_detail(session: AsyncSession, run_id: str):
     selected = select(Run.id.label("run_id")).where(Run.id == run_id).cte("selected")
-    statement = _details(select(selected.c.run_id).select_from(selected)).add_columns(Run.harness_estimate)
+    statement = _details(select(selected.c.run_id).select_from(selected)).add_columns(Run.harness_estimate, Run.execution_model)
     row = (await session.execute(statement)).one_or_none()
     if row is None:
         return None
-    return {"as_of": datetime.now(UTC).isoformat(), "run": _row(row), "harness_estimate": safe_estimate(row.harness_estimate) or unknown_estimate()}
+    return {"as_of": datetime.now(UTC).isoformat(), "run": _row(row),
+            "harness_estimate": safe_estimate(row.harness_estimate) or unknown_estimate(),
+            **({"execution_model": row.execution_model} if row.execution_model else {})}
 
 
 def unknown_estimate():

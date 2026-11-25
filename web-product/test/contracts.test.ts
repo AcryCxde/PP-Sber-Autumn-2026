@@ -132,6 +132,19 @@ test("17: no events, usage updates or reopening after terminal", () => {
     { messages: [{ id: "m1", role: "system", text: "Late event", at: "2026-10-15T00:00:00Z" }] }])
     assert.throws(() => mergeRun(p, parseRun({ ...p.run, ...change })));
 });
+test("A confirmed model failure can advance to a new attempt without rewriting old artifacts", () => {
+  const failed = parseRun({ ...base(), status: "failed", errorCode: "ai_model_request_failed",
+    retryAttemptId: "attempt-1", artifacts: [artifact()] });
+  const project = { ...newProject(), run: failed };
+  const retried = parseRun({ ...base(), revision: 2, status: "queued", retryCount: 1 });
+  const next = mergeRun(project, retried);
+  assert.equal(next.run!.status, "queued");
+  assert.deepEqual(next.run!.artifacts, failed.artifacts);
+  assert.throws(() => mergeRun(project, parseRun({ ...retried, retryCount: undefined })));
+  assert.throws(() => mergeRun(project, parseRun({ ...retried, artifacts: [{ ...artifact(), content: "Changed" }] })));
+  const unknown = parseRun({ ...base(), status: "outcome_unknown", errorCode: "ai_model_interrupted" });
+  assert.throws(() => mergeRun({ ...project, run: unknown }, retried));
+});
 test("20: rework is a linked NEW run in SAME project; old documents/versions survive", () => {
   const p = { ...newProject(), run: parseRun({ ...base(), status: "completed", artifacts: [artifact()] }) };
   const next = mergeRework(p, parseRun({ ...base(), id: "run-2", parentRunId: "run-1", sourceArtifactId: "a1" }), "run-1", "a1");

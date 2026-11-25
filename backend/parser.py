@@ -28,6 +28,8 @@ class NormalizedEvent(TypedDict, total=False):
     duration_ms: int | None
     num_turns: int | None
     is_error: bool
+    api_error: str
+    api_error_status: int
     result_confirmed: bool
     result: Any
     permission_denials: list[Any]
@@ -105,6 +107,14 @@ def parse_event(raw: str) -> list[NormalizedEvent]:
         ]
 
     if event_type == "assistant":
+        if isinstance(event.get("error"), str):
+            message = event.get("message")
+            blocks = message.get("content") if isinstance(message, dict) else None
+            detail = None
+            if isinstance(blocks, list):
+                detail = next((item.get("text") for item in blocks
+                               if isinstance(item, dict) and item.get("type") == "text"), None)
+            return [normalized_event("api_error", api_error=event["error"], content=detail)]
         events: list[NormalizedEvent] = []
         message = event.get("message", {})
         if not isinstance(message, dict):
@@ -241,19 +251,21 @@ def parse_event(raw: str) -> list[NormalizedEvent]:
         return events
 
     if event_type == "result":
-        return [
-            normalized_event(
-                "result",
-                session_id=event.get("session_id"),
-                cost_usd=event.get("total_cost_usd"),
-                duration_ms=event.get("duration_ms"),
-                num_turns=event.get("num_turns"),
-                is_error=event.get("is_error", False),
-                result=event.get("result"),
-                permission_denials=event.get("permission_denials", []),
-                subagent_stats=event.get("subagent_stats", {}),
-            )
-        ]
+        result = normalized_event(
+            "result",
+            session_id=event.get("session_id"),
+            cost_usd=event.get("total_cost_usd"),
+            duration_ms=event.get("duration_ms"),
+            num_turns=event.get("num_turns"),
+            is_error=event.get("is_error", False),
+            result=event.get("result"),
+            permission_denials=event.get("permission_denials", []),
+            subagent_stats=event.get("subagent_stats", {}),
+        )
+        http_status = event.get("api_error_status")
+        if isinstance(http_status, int) and 400 <= http_status < 600:
+            result["api_error_status"] = http_status
+        return [result]
 
     return [
         normalized_event(

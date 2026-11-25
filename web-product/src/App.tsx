@@ -551,7 +551,7 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
           throw new Error("Нет подтверждённого запуска");
         if (next.run.id !== pending.runId) throw new Error("Запрос относится к другому запуску");
         const prefix = `projects/${encodeURIComponent(next.serverId)}/runs/${encodeURIComponent(next.run.id)}`;
-        result = await api.run(`${prefix}/answers`, pending.body, pending.id);
+        result = await api.run(`${prefix}/${pending.action === "retry" ? "retry" : "answers"}`, pending.body, pending.id);
         if (result.id !== next.run.id)
           throw new Error("Ответ относится к другому запуску");
       }
@@ -614,7 +614,9 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
         status: rejected ? "rejected" : "unconfirmed",
       });
       if (rejected) {
-        setError(`Сервис отклонил запрос (${(e as ApiError).status}). Исправьте вводные или ответ и отправьте заново. Данные сохранены. ID запроса: ${pending.id}`);
+        const failure = e as ApiError;
+        setError(failure.status === 503 || failure.code === "retry_not_available" ? failure.message :
+          `Сервис отклонил запрос (${failure.status}). Исправьте вводные или ответ и отправьте заново. Данные сохранены. ID запроса: ${pending.id}`);
         return;
       }
       setError(
@@ -1732,10 +1734,14 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
                   </p> : null}
                   {run?.status === "outcome_unknown" ? <p className="error-note" role="status">Сервер сообщил неизвестный исход. Успех и сохранение не подтверждены этим статусом. Проверьте версии и состояние с командой; автоматического повтора или нового запуска нет.</p> : null}
                   {run?.status === "failed" ? (
-                    <p className="error-note">
-                      Запуск завершился ошибкой. ID: {run.id}. Новый запуск не
-                      создаётся автоматически.
-                    </p>
+                    <div className="error-note">
+                      <p>Запуск завершился ошибкой. ID: {run.id}.</p>
+                      {run.retryAttemptId && <button type="button" className="btn"
+                        disabled={block || sample || Boolean(p.pending)}
+                        onClick={() => void perform("retry", { attemptId: run.retryAttemptId })}>
+                        Повторить на доступной модели
+                      </button>}
+                    </div>
                   ) : null}
                 </div>
                 <form

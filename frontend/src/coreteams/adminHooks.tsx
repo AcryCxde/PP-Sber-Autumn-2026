@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createAdminPolicyStore, type AdminPolicyStore } from './adminPolicyStore';
 import type { PolicyDraft } from './adminUsersState';
 import { AdminApiError, isRejectedAdminOperation } from './adminApi';
@@ -32,9 +32,9 @@ export function useAdminPolling<T extends { as_of: string }>(load: AdminLoader<T
 }
 export function useAdminFailure() {
   const revoke = useContext(AdminAccessContext);
-  return (error: unknown): boolean => {
+  return useCallback((error: unknown): boolean => {
     if (error instanceof UnauthorizedError) { revoke('unauthorized'); return true; }
     if (error instanceof AdminApiError && error.status === 403 && !isRejectedAdminOperation(error)) { revoke('forbidden'); return true; }
     return false;
-  };
+  }, [revoke]);
 }

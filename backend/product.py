@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.model_routing import MODEL_ERROR_MESSAGES, RETRYABLE_MODEL_ERRORS
 from backend.models import Artifact, ArtifactApproval, Event, ProductRun, Project, ProjectRun, Run
 from backend.public_events import project_public_event_data
 from backend.repository import ACTIVE_RUN_STATUSES, TERMINAL_RUN_STATUSES
@@ -311,7 +312,7 @@ class Chain:
                 text = (
                     "Исход запуска неизвестен: проверьте сохранённые документы."
                     if run.status == "outcome_unknown"
-                    else f"Запуск завершился ошибкой ({run.error_code or 'без кода'})."
+                    else MODEL_ERROR_MESSAGES.get(run.error_code or "", f"Запуск завершился ошибкой ({run.error_code or 'без кода'}).")
                 )
                 messages.append({
                     "id": f"{run.id}:end",
@@ -331,6 +332,11 @@ class Chain:
         }
         if self.last is not None and self.last.error_code:
             snapshot["errorCode"] = self.last.error_code
+            if self.last.status == "failed" and self.last.error_code in RETRYABLE_MODEL_ERRORS:
+                snapshot["retryAttemptId"] = self.last.id
+        retries = sum(link.kind == "retry" for link, _ in self.links)
+        if retries:
+            snapshot["retryCount"] = retries
         question = self.question()
         if snapshot["status"] == "waiting_for_input" and question is not None:
             snapshot["question"] = question

@@ -1135,6 +1135,8 @@ async def test_websocket_replay_reads_all_pages(tmp_path) -> None:
             await session.commit()
 
         websocket = RecordingWebSocket(database, tmp_path / "workspaces")
+        # This test exercises pagination. The short-window behavior has its own tests.
+        websocket.app.state.settings.subscription_window_seconds = 15.0
         await main_module.handle_subscription(
             websocket, created.run_id, after_seq=0, owner_id=owner_id
         )
@@ -1143,6 +1145,7 @@ async def test_websocket_replay_reads_all_pages(tmp_path) -> None:
         assert websocket.messages[0]["type"] == "run.accepted"
         assert websocket.messages[-2]["seq"] == 502
         assert websocket.messages[-1]["type"] == "replay.complete"
+        assert websocket.messages[-1]["terminal"] is True
     finally:
         await database.dispose()
 

@@ -15,17 +15,19 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import APIRouter, File, Form, Header, Request, Response, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.history import SessionDependency
 from backend.auth import CurrentUser
 from backend.materials import MAX_FILE_BYTES, MaterialError, check_upload
+from backend.model_routing import MODEL_ERROR_MESSAGES, RETRYABLE_MODEL_ERRORS, select_execution_model
 from backend.models import (
     Artifact,
     ArtifactApproval,
     Conversation,
+    Message,
     ProductRun,
     Project,
     ProjectFile,
@@ -104,6 +106,10 @@ class AnswerBody(BaseModel):
     answers: dict[str, Annotated[str, Field(max_length=3000)]]
 
 
+class RetryBody(BaseModel):
+    attemptId: str = Field(min_length=1, max_length=36)
+
+
 class ApproveBody(BaseModel):
     artifactId: str = Field(min_length=1, max_length=64)
     version: int = Field(ge=1)
@@ -177,6 +183,10 @@ async def start(
     from backend import main
 
     state = request.app.state
+    if getattr(state, "model_routing", None) is not None:
+        _, error_code = await select_execution_model(session, lock=False)
+        if error_code:
+            raise ProductError(503, error_code, MODEL_ERROR_MESSAGES[error_code])
     # Reserve through the same limiter as websocket runs before any acceptance I/O.
     # A gated worker cannot execute until acceptance and the product link commit together.
     ready = asyncio.get_running_loop().create_future()
@@ -592,6 +602,42 @@ async def answer(
         kind="answer",
         owner_id=user.id,
         request_digest=request_hash(body),
+    )
+    _, chain = await require_chain(session, project, run_id)
+    return chain.snapshot()
+
+
+@router.post("/projects/{project_id}/runs/{run_id}/retry")
+async def retry_run(
+    project_id: str, run_id: str, body: dict[str, Any], request: Request,
+    session: SessionDependency, user: CurrentUser, idempotency_key: IdempotencyKey = None,
+) -> dict[str, Any]:
+    key = require_key(idempotency_key)
+    data = parse(RetryBody, body)
+    project = await require_project(session, project_id, user)
+    # Serialize same-stage retries even on SQLite, where SELECT FOR UPDATE is omitted.
+    await session.execute(update(Project).where(Project.id == project.id).values(updated_at=Project.updated_at))
+    workspace, chain = await require_chain(session, project, run_id)
+    digest = request_hash(body)
+    client_request_id = str(uuid5(NAMESPACE_URL, f"coreteams:retry:{project.id}:{key}"))
+    replay = await session.scalar(select(Run).where(Run.client_request_id == client_request_id))
+    if replay is not None:
+        if not any(run.id == replay.id and link.kind == "retry" and link.request_hash == digest
+                   for link, run in chain.links):
+            raise ProductError(409, "idempotency_conflict", "Idempotency-Key уже использован.")
+        return chain.snapshot()
+    last = chain.last
+    if (workspace.chains[-1] is not chain or last is None or last.id != data.attemptId
+            or last.status != "failed" or last.error_code not in RETRYABLE_MODEL_ERRORS):
+        raise ProductError(409, "retry_not_available", "Этот запуск нельзя безопасно повторить.")
+    content = await session.scalar(select(Message.content).where(
+        Message.run_id == last.id, Message.role == "user", Message.kind == "text"))
+    if not content:
+        raise ProductError(409, "retry_not_available", "Не удалось восстановить задание предыдущего запуска.")
+    await start(
+        request, session, project, chain.product, client_request_id=client_request_id,
+        content=content, display_text="Повтор на доступной модели", kind="retry",
+        owner_id=user.id, request_digest=digest,
     )
     _, chain = await require_chain(session, project, run_id)
     return chain.snapshot()

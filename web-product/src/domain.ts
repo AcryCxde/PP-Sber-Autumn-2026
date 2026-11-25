@@ -79,6 +79,8 @@ export type Run = {
   id: string;
   revision: number;
   errorCode?: string;
+  retryAttemptId?: string;
+  retryCount?: number;
   status: "queued" | "running" | "clarification" | "waiting_for_input" | "review" | "completed" | "failed" | "outcome_unknown";
   stageId: string;
   question?: QuestionGroup;
@@ -99,7 +101,7 @@ export type QuestionGroup = { id: string; questions: {
 export type AnswerValue = { selected: string[]; custom: string };
 export type Approval = { receiptId: string; artifactId: string; version: number; approved: true; approvedAt: string };
 export type Pending = {
-  action: "start" | "answer" | "message" | "rework" | "approve";
+  action: "start" | "answer" | "message" | "rework" | "approve" | "retry";
   id: string;
   body: Record<string, unknown>;
   targetId?: string;
@@ -328,10 +330,16 @@ export function parseRun(v: unknown): Run {
       throw new Error("Затраты без валюты");
   }
   if (v.errorCode !== undefined && !nonempty(v.errorCode)) throw new Error("Некорректный код ошибки запуска");
+  if (v.retryAttemptId !== undefined && (v.status !== "failed" || !nonempty(v.retryAttemptId)))
+    throw new Error("Некорректная попытка повтора");
+  if (v.retryCount !== undefined && (!Number.isSafeInteger(v.retryCount) || Number(v.retryCount) < 1))
+    throw new Error("Некорректное число повторов");
   return {
     id: v.id,
     revision: v.revision as number,
     ...(v.errorCode ? { errorCode: v.errorCode as string } : {}),
+    ...(v.retryAttemptId ? { retryAttemptId: v.retryAttemptId as string } : {}),
+    ...(v.retryCount ? { retryCount: v.retryCount as number } : {}),
     status: v.status as Run["status"],
     stageId: v.stageId,
     ...(question ? { question } : {}),
@@ -370,10 +378,13 @@ export function mergeRun(p: Project, run: Run): Project {
       (run.status === "waiting_for_input" && Boolean(run.question)) ||
       confirmationPending(run) ||
       (run.status === "outcome_unknown" && run.errorCode === "artifact_confirmation_failed"));
-  if (isTerminal(p.run) && !confirmationCorrection && (run.status !== p.run!.status || run.revision !== p.run!.revision))
+  const retryTransition = p.run?.status === "failed" && Boolean(p.run.retryAttemptId) &&
+    run.revision > p.run.revision && (run.retryCount ?? 0) > (p.run.retryCount ?? 0);
+  const terminalChange = confirmationCorrection || retryTransition;
+  if (isTerminal(p.run) && !terminalChange && (run.status !== p.run!.status || run.revision !== p.run!.revision))
     throw new Error("Завершённый Run нельзя переоткрыть или дополнять событиями");
-  if (confirmationCorrection && (run.stageId !== p.run!.stageId || run.parentRunId !== p.run!.parentRunId || run.sourceArtifactId !== p.run!.sourceArtifactId))
-    throw new Error("Подтверждение артефактов изменило принадлежность запуска");
+  if (terminalChange && (run.stageId !== p.run!.stageId || run.parentRunId !== p.run!.parentRunId || run.sourceArtifactId !== p.run!.sourceArtifactId))
+    throw new Error("Изменилась принадлежность запуска");
   const artifacts = new Map(p.run?.artifacts.map((a) => [a.id, a]) || []);
   for (const a of run.artifacts) {
     const old = artifacts.get(a.id);
@@ -401,7 +412,8 @@ export function mergeRun(p: Project, run: Run): Project {
       throw new Error("Сервис изменил сообщение в истории");
     messages.set(m.id, m);
   }
-  if (isTerminal(p.run) && !confirmationCorrection && (run.errorCode !== p.run!.errorCode || JSON.stringify([...artifacts.values()]) !== JSON.stringify(p.run!.artifacts) ||
+  if (isTerminal(p.run) && !terminalChange && (run.errorCode !== p.run!.errorCode || run.retryAttemptId !== p.run!.retryAttemptId ||
+      run.retryCount !== p.run!.retryCount || JSON.stringify([...artifacts.values()]) !== JSON.stringify(p.run!.artifacts) ||
       JSON.stringify([...messages.values()]) !== JSON.stringify(p.run!.messages) ||
       run.stageId !== p.run!.stageId || JSON.stringify(run.usage) !== JSON.stringify(p.run!.usage) ||
       JSON.stringify(run.progress) !== JSON.stringify(p.run!.progress) ||
@@ -491,7 +503,7 @@ export function readProjects(value: string | null): Project[] {
       v.pending !== undefined &&
       (!obj(v.pending) ||
         !nonempty(v.pending.id) ||
-        !["start", "answer", "message", "rework", "approve"].includes(
+        !["start", "answer", "message", "rework", "approve", "retry"].includes(
           String(v.pending.action),
         ) ||
         !obj(v.pending.body) ||

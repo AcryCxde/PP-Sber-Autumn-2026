@@ -107,6 +107,43 @@ class AiPolicyAudit(Base):
     response: Mapped[dict[str, Any]] = mapped_column(JSON)
 
 
+class AiModelRouting(Base):
+    __tablename__ = "ai_model_routing"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_ai_model_routing_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    primary_model: Mapped[str | None] = mapped_column(String(128))
+    reserve_model: Mapped[str | None] = mapped_column(String(128))
+    paused: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    active_model: Mapped[str | None] = mapped_column(String(128))
+    reason: Mapped[str | None] = mapped_column(String(32))
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AiModelHealth(Base):
+    __tablename__ = "ai_model_health"
+
+    model: Mapped[str] = mapped_column(String(128), primary_key=True)
+    state: Mapped[str] = mapped_column(String(20))
+    reason: Mapped[str | None] = mapped_column(String(32))
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    compatible: Mapped[bool] = mapped_column(Boolean)
+    reported_model: Mapped[str | None] = mapped_column(String(128))
+
+
+class AiModelRoutingAudit(Base):
+    __tablename__ = "ai_model_routing_audits"
+    __table_args__ = (Index("ix_ai_model_routing_audits_created_id", "created_at", "id"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    actor: Mapped[str | None] = mapped_column(String(254))
+    action: Mapped[str] = mapped_column(String(32))
+    before: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    after: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
 class UserActivityDay(Base):
     """День (UTC), в который пользователь обращался к API: основа DAU/WAU/MAU и удержания."""
 
@@ -208,6 +245,7 @@ class Run(Base):
     admitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     admission_policy_version: Mapped[int | None] = mapped_column(Integer)
     admission_attempt_id: Mapped[str | None] = mapped_column(String(36))
+    execution_model: Mapped[str | None] = mapped_column(String(128))
     harness_estimate: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))

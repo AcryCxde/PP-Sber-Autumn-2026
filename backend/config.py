@@ -94,7 +94,11 @@ class Settings(BaseSettings):
 
     # "cli" — claude подпроцессом в контейнере backend; "runner" — контейнер ctrunner на сессию.
     executor: Literal["cli", "runner"] = "cli"
+    anthropic_base_url: str | None = None
     anthropic_auth_token: str | None = Field(default=None, repr=False)
+    ai_model_routing_enabled: bool = False
+    ai_model_primary: str | None = None
+    ai_model_reserve: str = "glm-5.3"
     runner_image: str = "coreteams-runner:dev"
     runner_network: str | None = None
     runner_gateway_url: str = "ws://backend:8000/v1/runner"

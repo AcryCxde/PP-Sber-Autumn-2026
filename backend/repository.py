@@ -12,6 +12,7 @@ from sqlalchemy import case, exists, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.model_routing import MODEL_ERROR_MESSAGES
 from backend.models import Artifact, ArtifactConfirmation, Conversation, Event, Message, Project, Run, User
 from backend.storage import StoredFile
 from backend.public_events import (
@@ -560,7 +561,7 @@ def _terminal_event_data(
         "schema_version": 1,
         "status": run.status,
         "error_code": code,
-        "message": "Запрос Claude завершился с ошибкой.",
+        "message": MODEL_ERROR_MESSAGES.get(code, "Запрос Claude завершился с ошибкой."),
         "session_state": conversation.context_state,
         "retryable": code in {"claude_cli_failed", "result_error"},
         "can_reset_context": conversation.context_state == "unavailable",

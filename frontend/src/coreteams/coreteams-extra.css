@@ -77,6 +77,37 @@
 .ct .admin-policy-dialog p, .ct .admin-audit li { overflow-wrap: anywhere; }
 .ct .admin-audit { padding-left: 20px; }
 .ct .admin-audit li { padding-block: 12px; border-bottom: 1px solid var(--line); }
+.ct .admin-models { display: grid; gap: 14px; }
+.ct .admin-models h1, .ct .admin-models h2 { margin: 0; }
+.ct .admin-models code { overflow-wrap: anywhere; }
+.ct .admin-model-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.ct .admin-model-header .admin-actions { margin: 0; }
+.ct .admin-model-status { padding: 12px 14px; border: 1px solid var(--line); border-inline-start: 3px solid var(--green); border-radius: 8px; background: var(--green-bg); }
+.ct .admin-model-status[data-state="reserve"] { border-inline-start-color: var(--ink); background: var(--tint); }
+.ct .admin-model-status[data-state="unavailable"] { border-inline-start-color: var(--danger); background: var(--paper); }
+.ct .admin-model-status p { margin: 4px 0 0; }
+.ct .admin-model-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ct .admin-model-picker > span { display: block; font-weight: 600; margin-bottom: 4px; }
+.ct .admin-model-picker summary { padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; min-height: 44px; box-sizing: border-box; }
+.ct .admin-model-options { display: grid; gap: 6px; margin-top: 4px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.ct .admin-model-options ul, .ct .admin-model-list { list-style: none; padding: 0; margin: 0; }
+.ct .admin-model-options button { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 8px; width: 100%; min-height: 44px; padding: 7px; text-align: start; color: var(--ink); background: var(--paper); border: 1px solid transparent; border-radius: 6px; }
+.ct .admin-model-options button:hover:not(:disabled) { background: var(--tint); }
+.ct .admin-model-options button:disabled small { color: var(--muted); }
+.ct .admin-model-options small { color: var(--muted); }
+.ct .admin-model-checked { display: grid; gap: 8px; }
+.ct .admin-model-checked h2 { font-size: 18px; }
+.ct .admin-model-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding-block: 8px; border-top: 1px solid var(--line); }
+.ct .admin-model-health { color: var(--muted); font-size: 13px; }
+.ct .admin-model-health[data-state="available"] { color: var(--green); }
+.ct .admin-model-health[data-state="unavailable"] { color: var(--danger); }
+.ct .admin-model-catalog summary { cursor: pointer; width: fit-content; }
+.ct .admin-model-catalog input { margin-block: 8px; width: min(100%, 320px); }
+.ct .admin-model-dialog { width: min(490px, calc(100vw - 32px)); }
+.ct .admin-model-history th:nth-child(3) { width: 48%; }
+@media (max-width: 450px) {
+  .ct .admin-model-fields { grid-template-columns: minmax(0, 1fr); }
+}
 @media (max-width: 720px) {
   .ct .admin-root { padding: 16px 16px 32px; }
   .ct .admin-nav { gap: 8px; padding-bottom: 8px; margin-bottom: 12px; }

@@ -23,10 +23,23 @@ export type Estimate = {
   observed_at: string | null; unavailable_reason: string | null;
   source: { kind: string; field: string; event_id: string | null; journal_seq: number | null; runner_version: string | null };
 };
-export type RunDetails = { as_of: string; run: AdminRun; harness_estimate: Estimate };
+export type RunDetails = { as_of: string; run: AdminRun; harness_estimate: Estimate; execution_model?: string };
 export type Mutation = { frozen: boolean; reason: string | null; expected_version: number };
 export type MutationResult = { user: AdminUser; audit_id: string; changed_at: string };
 export type CurrentPolicy = { frozen: boolean; version: number };
+export type ModelHealth = { id: string; state: 'available' | 'unavailable' | 'incompatible' | 'stale'; checked_at: string; reported_model: string | null };
+export type RoutingSettings = { primary_model: string; reserve_model: string; paused: boolean };
+export type ModelRouting = RoutingSettings & {
+  as_of: string; version: number; active_model: string | null; reason: string | null;
+  last_checked_at: string | null; check_interval_seconds: number; models: ModelHealth[];
+};
+type RoutingAuditState = {
+  primary_model: string | null; reserve_model: string | null; paused: boolean; active_model: string | null; reason: string | null;
+};
+export type RoutingAudit = {
+  id: string; created_at: string; actor: string | null; action: 'settings' | 'automatic' | 'model_checked';
+  before: RoutingAuditState | null; after: RoutingAuditState | null; model?: string;
+};
 
 export class AdminApiError extends Error {
   status: number;
@@ -89,7 +102,38 @@ function details(value: unknown): RunDetails {
   if (!['unknown', 'session_total', 'run_delta'].includes(text(e.scope))) throw new Error('Неизвестная область оценки.');
   const amount = nullableText(e.value_usd);
   if (e.state === 'known' && (amount === null || !/^\d+(\.\d+)?([eE][+-]?\d+)?$/.test(amount) || e.scope === 'unknown')) throw new Error('Недостоверная оценка.');
-  return { as_of: stamp(v.as_of), run: run(v.run), harness_estimate: { state: e.state, value_usd: amount, scope: e.scope as Estimate['scope'], observed_at: nullableStamp(e.observed_at), unavailable_reason: nullableText(e.unavailable_reason), source: { kind: text(source.kind), field: text(source.field), event_id: nullableText(source.event_id), journal_seq: source.journal_seq === null ? null : count(source.journal_seq), runner_version: nullableText(source.runner_version) } } };
+  return { as_of: stamp(v.as_of), run: run(v.run), ...(v.execution_model === undefined ? {} : { execution_model: text(v.execution_model) }),
+    harness_estimate: { state: e.state, value_usd: amount, scope: e.scope as Estimate['scope'], observed_at: nullableStamp(e.observed_at), unavailable_reason: nullableText(e.unavailable_reason), source: { kind: text(source.kind), field: text(source.field), event_id: nullableText(source.event_id), journal_seq: source.journal_seq === null ? null : count(source.journal_seq), runner_version: nullableText(source.runner_version) } } };
+}
+
+function parseModelRouting(value: unknown): ModelRouting {
+  const v = object(value);
+  if (!Array.isArray(v.models)) throw new Error('Некорректный список проверенных моделей.');
+  return { as_of: stamp(v.as_of), primary_model: text(v.primary_model), reserve_model: text(v.reserve_model),
+    paused: boolean(v.paused), version: count(v.version), active_model: nullableText(v.active_model), reason: nullableText(v.reason),
+    last_checked_at: nullableStamp(v.last_checked_at), check_interval_seconds: count(v.check_interval_seconds),
+    models: v.models.map((value): ModelHealth => {
+      const model = object(value);
+      const state = text(model.state);
+      if (!['available', 'unavailable', 'incompatible', 'stale'].includes(state)) throw new Error('Неизвестное состояние модели.');
+      return { id: text(model.id), state: state as ModelHealth['state'], checked_at: stamp(model.checked_at), reported_model: nullableText(model.reported_model) };
+    }),
+  };
+}
+
+function parseRoutingAudit(value: unknown): RoutingAudit {
+  const v = object(value);
+  const action = v.action;
+  if (action !== 'settings' && action !== 'automatic' && action !== 'model_checked') throw new Error('Неизвестное действие.');
+  const parse = (value: unknown): RoutingAuditState | null => {
+    if (value === null) return null;
+    const item = object(value);
+    return { primary_model: nullableText(item.primary_model), reserve_model: nullableText(item.reserve_model),
+      paused: boolean(item.paused), active_model: nullableText(item.active_model), reason: nullableText(item.reason) };
+  };
+  return { id: text(v.id), created_at: stamp(v.created_at), actor: nullableText(v.actor), action,
+    before: parse(v.before), after: action === 'model_checked' ? null : parse(v.after),
+    ...(action === 'model_checked' ? { model: text(object(v.after).model) } : {}) };
 }
 async function request<T>(path: string, parse: (v: unknown) => T, signal?: AbortSignal, init?: RequestInit): Promise<T> {
   const response = await apiFetch(`/api/admin/v1${path}`, { ...init, signal, cache: 'no-store' });
@@ -123,6 +167,9 @@ async function policyRequest<T>(load: (signal: AbortSignal) => Promise<T>, signa
   }
 }
 function query(values: object): string { const params = new URLSearchParams(); for (const [key, value] of Object.entries(values)) if (value !== undefined) params.set(key, String(value)); return `?${params}`; }
+const modelWrite = (method: 'POST' | 'PATCH', body: object | null): RequestInit => ({
+  method, headers: { 'Content-Type': 'application/json', 'X-CoreTeams-Admin': '1' }, body: JSON.stringify(body),
+});
 export const adminApi = {
   overview: (values: Period & { attention_start: string; attention_end: string; active_page: number; attention_page: number; attention_no_start: boolean }, signal?: AbortSignal) => request(`/overview${query(values)}`, parseOverview, signal),
   runs: (values: Period & { status: string; page: number }, signal?: AbortSignal) => request(`/runs${query(values)}`, (value): RunsPage => { const v = object(value); if (v.completeness !== 'complete') throw new Error('Неполная выборка.'); return { ...page(v, run), as_of: stamp(v.as_of), period: period(v.period), completeness: 'complete' }; }, signal),
@@ -130,4 +177,16 @@ export const adminApi = {
   users: (values: { q?: string; page: number }, signal?: AbortSignal) => request(`/users${query(values)}`, (v): Page<AdminUser> => ({ ...page(v, user), as_of: stamp(object(v).as_of) }), signal),
   audit: (id: string, pageNumber: number, signal?: AbortSignal) => request(`/users/${encodeURIComponent(id)}/audit${query({ page: pageNumber })}`, (value): Page<Audit> => ({ ...page(value, (entry) => { const v = object(entry); if (v.action !== 'freeze' && v.action !== 'unfreeze') throw new Error('Неизвестное действие.'); return { id: text(v.id), actor_id: text(v.actor_id), target_id: text(v.target_id), created_at: stamp(v.created_at), action: v.action, reason: nullableText(v.reason), before_version: count(v.before_version), after_version: count(v.after_version) }; }), as_of: stamp(object(value).as_of) }), signal),
   changeAiAccess: (id: string, mutation: Mutation, key: string, signal?: AbortSignal) => policyRequest((attemptSignal) => request(`/users/${encodeURIComponent(id)}/ai-access`, (value): MutationResult => { const v = object(value); return { user: user(v.user), audit_id: text(v.audit_id), changed_at: stamp(v.changed_at) }; }, attemptSignal, { method: 'PATCH', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key, 'X-CoreTeams-Admin': '1' }, body: JSON.stringify(mutation) }), signal),
+  modelRouting: (signal?: AbortSignal) => request('/model-routing', parseModelRouting, signal),
+  changeModelRouting: (value: RoutingSettings & { expected_version: number }, signal?: AbortSignal) =>
+    policyRequest((signal) => request('/model-routing', parseModelRouting, signal, modelWrite('PATCH', value)), signal),
+  checkModels: (model?: string, signal?: AbortSignal) =>
+    policyRequest((signal) => request('/model-routing/check', parseModelRouting, signal, modelWrite('POST', model ? { model } : null)), signal),
+  modelCatalog: (q: string, signal?: AbortSignal) => request(`/model-routing/catalog${query({ q })}`, (value) => {
+    const v = object(value);
+    if (!Array.isArray(v.items)) throw new Error('Некорректный каталог моделей.');
+    return { items: v.items.map(text), total: count(v.total) };
+  }, signal),
+  modelHistory: (pageNumber: number, signal?: AbortSignal) => request(`/model-routing/history${query({ page: pageNumber })}`, (value): Page<RoutingAudit> =>
+    ({ ...page(value, parseRoutingAudit), as_of: stamp(object(value).as_of) }), signal),
 };
