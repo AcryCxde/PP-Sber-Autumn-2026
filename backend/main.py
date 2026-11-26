@@ -60,6 +60,7 @@ from backend.repository import (
 )
 from backend.runner_app import RunnerBridge, create_runner_router
 from backend.product import ProductError
+from backend.product_exports import ensure_requested_export
 from backend.runner_executor import run_via_runner
 from backend.runner_transport import RunnerTransport
 from backend.storage import create_storage
@@ -862,6 +863,11 @@ async def execute_accepted_run(
             if not assistant_parts and isinstance(result_text, str) and result_text.strip():
                 assistant_parts.append(result_text.strip())
                 await publish_event(message_created_event(result_text.strip()))
+            if not questions:
+                export = await ensure_requested_export(app_state, acceptance.run_id)
+                if export.required and not export.ready:
+                    run_status = "failed"
+                    error_code = export.error_code or "artifact_export_failed"
         else:
             run_status = "failed"
             if routing is not None and model_failed:

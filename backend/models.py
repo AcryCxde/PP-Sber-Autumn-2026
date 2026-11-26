@@ -268,6 +268,10 @@ class Run(Base):
         back_populates="run",
         cascade="all, delete-orphan",
     )
+    artifact_exports: Mapped[list[ArtifactExport]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
 
 
 class Message(Base):
@@ -355,6 +359,10 @@ class Artifact(Base):
     )
 
     run: Mapped[Run] = relationship(back_populates="artifacts")
+    exports: Mapped[list[ArtifactExport]] = relationship(
+        back_populates="source_artifact",
+        cascade="all, delete-orphan",
+    )
 
 
 class ArtifactConfirmation(Base):
@@ -408,6 +416,58 @@ class ArtifactConfirmation(Base):
     )
 
     run: Mapped[Run] = relationship(back_populates="artifact_confirmations")
+
+
+class ArtifactExport(Base):
+    """Проверенный бинарный экспорт канонической Markdown-версии артефакта."""
+
+    __tablename__ = "artifact_exports"
+    __table_args__ = (
+        CheckConstraint(
+            "requested_format IN ('docx', 'pdf', 'xlsx', 'pptx')",
+            name="ck_artifact_exports_requested_format",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'ready', 'failed')",
+            name="ck_artifact_exports_status",
+        ),
+        UniqueConstraint(
+            "source_artifact_id",
+            "requested_format",
+            name="uq_artifact_exports_source_format",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    source_artifact_id: Mapped[int] = mapped_column(
+        ForeignKey("artifacts.id", ondelete="CASCADE"),
+        index=True,
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        index=True,
+    )
+    requested_format: Mapped[str] = mapped_column(String(10))
+    detected_format: Mapped[str | None] = mapped_column(String(10))
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    filename: Mapped[str | None] = mapped_column(String(255))
+    content_type: Mapped[str | None] = mapped_column(String(255))
+    storage_key: Mapped[str | None] = mapped_column(Text)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+    source_artifact: Mapped[Artifact] = relationship(back_populates="exports")
+    run: Mapped[Run] = relationship(back_populates="artifact_exports")
 
 
 def empty_answers() -> list[list[str]]:
@@ -532,6 +592,7 @@ class ProductRun(Base):
     request_hash: Mapped[str] = mapped_column(String(64))
     # Server ProjectFile IDs selected for this chain; null preserves legacy all-files behavior.
     file_ids: Mapped[list[str] | None] = mapped_column(JSON)
+    output_format: Mapped[str] = mapped_column(String(10), default="md")
     stage_id: Mapped[str] = mapped_column(String(64))
     parent_run_id: Mapped[str | None] = mapped_column(String(36))
     source_artifact_id: Mapped[str | None] = mapped_column(String(64))
@@ -554,6 +615,11 @@ class ArtifactApproval(Base):
     product_run_id: Mapped[str] = mapped_column(ForeignKey("product_runs.id", ondelete="CASCADE"))
     artifact_id: Mapped[str] = mapped_column(String(64))
     version: Mapped[int] = mapped_column(Integer)
+    export_id: Mapped[str | None] = mapped_column(
+        ForeignKey("artifact_exports.id", ondelete="SET NULL"),
+    )
+    output_format: Mapped[str | None] = mapped_column(String(10))
+    export_sha256: Mapped[str | None] = mapped_column(String(64))
     client_request_id: Mapped[str] = mapped_column(String(64), unique=True)
     approved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

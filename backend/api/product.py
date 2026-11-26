@@ -10,7 +10,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import PurePath
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import APIRouter, File, Form, Header, Request, Response, UploadFile, status
@@ -26,6 +26,7 @@ from backend.model_routing import MODEL_ERROR_MESSAGES, RETRYABLE_MODEL_ERRORS, 
 from backend.models import (
     Artifact,
     ArtifactApproval,
+    ArtifactExport,
     Conversation,
     Message,
     ProductRun,
@@ -57,6 +58,7 @@ router = APIRouter(prefix="/api/v2", tags=["product"])
 
 IdempotencyKey = Annotated[str | None, Header(alias="Idempotency-Key", max_length=64)]
 STAGE_ID = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+OutputFormat = Literal["md", "docx", "pdf", "xlsx", "pptx"]
 
 
 class StageBody(BaseModel):
@@ -78,6 +80,7 @@ class PlanBody(BaseModel):
     answers: list[Annotated[str, Field(max_length=2000)]] = Field(min_length=3, max_length=3)
     team: list[str] = Field(min_length=1, max_length=len(ROLES))
     teamNote: str = Field(max_length=3000)
+    outputFormat: OutputFormat = "md"
     stages: list[StageBody] = Field(min_length=1, max_length=12)
 
     @field_validator("stages")
@@ -113,9 +116,14 @@ class RetryBody(BaseModel):
 class ApproveBody(BaseModel):
     artifactId: str = Field(min_length=1, max_length=64)
     version: int = Field(ge=1)
+    exportId: str | None = Field(default=None, min_length=1, max_length=36)
+    outputFormat: OutputFormat | None = None
+    sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 def parse(model: type[BaseModel], body: dict[str, Any]) -> Any:
+    if issubclass(model, PlanBody) and body.get("outputFormat", "md") not in {"md", "docx", "pdf", "xlsx", "pptx"}:
+        raise ProductError(422, "invalid_output_format", "Неподдерживаемый формат результата")
     try:
         return model.model_validate(body)
     except ValidationError as error:
@@ -408,6 +416,7 @@ async def create_run(
         client_request_id=key,
         request_hash=digest,
         file_ids=sorted(file_ids),
+        output_format=(project.product or {}).get("outputFormat", "md") if run.parentRunId else run.outputFormat,
         stage_id=run.stageId,
         parent_run_id=run.parentRunId,
         source_artifact_id=run.sourceArtifactId,
@@ -659,7 +668,11 @@ async def approve(
     data = parse(ApproveBody, body)
     previous = await session.scalar(select(ArtifactApproval).where(ArtifactApproval.client_request_id == key))
     if previous is not None:
-        if data.artifactId != artifact_id or (previous.project_id, previous.artifact_id, previous.version) != (project.id, artifact_id, data.version):
+        expected_export = (data.exportId, data.outputFormat, data.sha256)
+        saved_export = (previous.export_id, previous.output_format, previous.export_sha256)
+        if (data.artifactId != artifact_id or
+                (previous.project_id, previous.artifact_id, previous.version) != (project.id, artifact_id, data.version) or
+                expected_export != saved_export):
             raise ProductError(409, "idempotency_conflict", "Idempotency-Key уже использован для другого запроса")
         return receipt(previous)
     _, chain = await require_chain(session, project, run_id)
@@ -668,6 +681,18 @@ async def approve(
         raise ProductError(404, "artifact_not_found", "Версия документа не найдена в этом запуске")
     if document.version != data.version:
         raise ProductError(409, "version_conflict", "Одобряемая версия не совпадает с сохранённой")
+    export = None
+    if chain.product.output_format != "md":
+        if not data.exportId or data.outputFormat != chain.product.output_format or not data.sha256:
+            raise ProductError(422, "invalid_request", "Нужны точные реквизиты экспортированного файла")
+        export = await session.scalar(select(ArtifactExport).where(
+            ArtifactExport.id == data.exportId,
+            ArtifactExport.source_artifact_id == int(artifact_id.removeprefix("a")),
+            ArtifactExport.requested_format == data.outputFormat,
+            ArtifactExport.status == "ready",
+        ))
+        if export is None or export.sha256 != data.sha256 or export.detected_format != data.outputFormat:
+            raise ProductError(409, "version_conflict", "Экспорт не совпадает с сохранённой версией")
     existing = await session.scalar(
         select(ArtifactApproval).where(
             ArtifactApproval.project_id == project.id, ArtifactApproval.artifact_id == artifact_id
@@ -681,6 +706,9 @@ async def approve(
         product_run_id=chain.product.id,
         artifact_id=artifact_id,
         version=document.version,
+        export_id=export.id if export else None,
+        output_format=export.requested_format if export else None,
+        export_sha256=export.sha256 if export else None,
         client_request_id=key,
         approved_at=now(),
     )
@@ -694,12 +722,52 @@ async def approve(
         previous = await session.scalar(select(ArtifactApproval).where(ArtifactApproval.client_request_id == key))
         if previous is None:
             raise
-        if data.artifactId != artifact_id or (previous.project_id, previous.artifact_id, previous.version) != (
-            project_id, artifact_id, data.version
-        ):
+        if (data.artifactId != artifact_id or
+                (previous.project_id, previous.artifact_id, previous.version) != (project_id, artifact_id, data.version) or
+                (data.exportId, data.outputFormat, data.sha256) !=
+                (previous.export_id, previous.output_format, previous.export_sha256)):
             raise ProductError(409, "idempotency_conflict", "Idempotency-Key уже использован для другого запроса") from None
         return receipt(previous)
     return receipt(approval)
+
+
+@router.get("/projects/{project_id}/runs/{run_id}/artifacts/{artifact_id}/exports/{export_id}/file")
+async def download_export(
+    project_id: str,
+    run_id: str,
+    artifact_id: str,
+    export_id: str,
+    request: Request,
+    session: SessionDependency,
+    user: CurrentUser,
+) -> Response:
+    project = await require_project(session, project_id, user)
+    _, chain = await require_chain(session, project, run_id)
+    document = next((item for item in chain.documents if item.id == artifact_id), None)
+    if document is None:
+        raise ProductError(404, "artifact_not_found", "Версия документа не найдена")
+    exported = await session.scalar(select(ArtifactExport).where(
+        ArtifactExport.id == export_id,
+        ArtifactExport.source_artifact_id == int(artifact_id.removeprefix("a")),
+        ArtifactExport.status == "ready",
+    ))
+    if exported is None or exported.requested_format != exported.detected_format:
+        raise ProductError(404, "artifact_not_found", "Экспорт не найден")
+    storage = getattr(request.app.state, "storage", None)
+    if storage is None or not exported.storage_key or exported.size_bytes is None or not exported.sha256:
+        raise ProductError(503, "storage_unavailable", "Хранилище файлов недоступно")
+    try:
+        data = await storage.get_bounded(exported.storage_key, request.app.state.settings.product_export_max_output_bytes)
+    except StorageError:
+        raise ProductError(503, "storage_unavailable", "Хранилище файлов недоступно") from None
+    if len(data) != exported.size_bytes or hashlib.sha256(data).hexdigest() != exported.sha256:
+        raise ProductError(503, "storage_unavailable", "Сохранённый экспорт не прошёл проверку")
+    filename = re.sub(r"[^A-Za-z0-9_.-]", "", exported.filename or "result.docx") or "result.docx"
+    return Response(
+        data,
+        media_type=exported.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/projects/{project_id}/runs/{run_id}/artifacts/{artifact_id}/zip")

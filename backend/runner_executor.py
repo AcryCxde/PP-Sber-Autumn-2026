@@ -27,6 +27,7 @@ from backend.containers import ContainerError, ContainerManager
 from backend.models import Event
 from backend.materials import conversation_materials, materials_note
 from backend.public_events import message_created_event, question_asked_event
+from backend.product_exports import ensure_requested_export
 from backend.repository import (
     RunAcceptance,
     stage_runner_artifact,
@@ -228,6 +229,11 @@ async def run_via_runner(
                     break
             if not done:
                 await asyncio.sleep(POLL_SECONDS)
+        if run_status == "completed" and not keep_transport_run:
+            export = await ensure_requested_export(app_state, run_id)
+            if export.required and not export.ready:
+                run_status = "failed"
+                error_code = export.error_code or "artifact_export_failed"
     except (RunnerRunError, ContainerError) as error:
         run_status, error_code = "failed", str(error)
     except TransportError as error:

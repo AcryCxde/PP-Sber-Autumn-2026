@@ -79,8 +79,8 @@ def wait_run(client: TestClient, project_id: str, run_id: str, statuses=("comple
     raise AssertionError(f"Run {run_id} did not finish: {run}")
 
 
-def started_project(client: TestClient, claude: FakeClaude) -> tuple[str, dict, dict]:
-    body = plan()
+def started_project(client: TestClient, claude: FakeClaude, **changes) -> tuple[str, dict, dict]:
+    body = plan(**changes)
     project_id = post(client, "projects", body).json()["id"]
     claude.writes.append([
         ("coreteams/understand.md", "# Разбор задачи\nФакты"),
@@ -255,6 +255,64 @@ def test_answers_continue_the_same_run(tmp_path, claude) -> None:
     assert claude.prompts[1] == "До 1 млн"
     assert repeat.status_code == 200 and repeat.json()["id"] == run_id
     assert len(claude.prompts) == 2
+
+
+def test_docx_output_is_verified_downloadable_and_bound_to_approval(tmp_path, claude) -> None:
+    from backend.storage import MemoryStorage
+
+    app = make_app(tmp_path)
+    app.state.storage = MemoryStorage()
+    with TestClient(app) as client:
+        sign_in(client)
+        project_id, _, run = started_project(client, claude, outputFormat="docx")
+        assert run["status"] == "completed" and run["outputFormat"] == "docx"
+        document = next(item for item in run["artifacts"] if item["documentId"] == "options")
+        exported = document["exports"][0]
+        assert exported["requestedFormat"] == exported["detectedFormat"] == "docx"
+        assert exported["formatVerified"] is True and exported["status"] == "ready"
+        downloaded = client.get(exported["file"]["downloadUrl"])
+        assert downloaded.status_code == 200
+        assert downloaded.content.startswith(b"PK")
+        assert hashlib.sha256(downloaded.content).hexdigest() == exported["file"]["sha256"]
+        route = f"projects/{project_id}/runs/{run['id']}/artifacts/{document['id']}"
+        missing_export = post(client, f"{route}/approve", {
+            "artifactId": document["id"], "version": document["version"],
+        })
+        approved = post(client, f"{route}/approve", {
+            "artifactId": document["id"], "version": document["version"],
+            "exportId": exported["id"], "outputFormat": "docx", "sha256": exported["file"]["sha256"],
+        })
+    assert missing_export.status_code == 422
+    assert approved.status_code == 200
+    assert approved.json()["exportId"] == exported["id"]
+    assert approved.json()["sha256"] == exported["file"]["sha256"]
+
+
+@pytest.mark.parametrize("output_format", ["docx", "pdf", "xlsx", "pptx"])
+def test_binary_outputs_are_verified_and_downloadable(tmp_path, claude, output_format) -> None:
+    from backend.storage import MemoryStorage
+
+    app = make_app(tmp_path)
+    app.state.storage = MemoryStorage()
+    with TestClient(app) as client:
+        sign_in(client)
+        project_id, _, run = started_project(client, claude, outputFormat=output_format)
+        assert run["status"] == "completed" and run["outputFormat"] == output_format
+        document = next(item for item in run["artifacts"] if item["documentId"] == "options")
+        exported = document["exports"][0]
+        assert exported["requestedFormat"] == exported["detectedFormat"] == output_format
+        downloaded = client.get(exported["file"]["downloadUrl"])
+    assert downloaded.status_code == 200
+    assert downloaded.content
+    assert hashlib.sha256(downloaded.content).hexdigest() == exported["file"]["sha256"]
+
+
+def test_invalid_output_format_is_rejected(tmp_path) -> None:
+    with TestClient(make_app(tmp_path)) as client:
+        sign_in(client)
+        response = post(client, "projects", plan(outputFormat="exe"))
+    assert response.status_code == 422
+    assert response.json()["code"] == "invalid_output_format"
 
 
 def test_approval_receipt_and_zip_for_exact_version(tmp_path, claude) -> None:

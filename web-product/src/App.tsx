@@ -1708,6 +1708,27 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
                           сервиса). Фактическое потребление покажем из CTF, когда
                           появятся подтверждённые данные.
                         </p>
+                        <div className="section-block">
+                          <p className="section-kicker">03 / ФОРМАТ ИТОГОВОГО РЕЗУЛЬТАТА</p>
+                          <h2 className="section-title">Что подготовить для скачивания</h2>
+                          <div className="actions" role="group" aria-label="Формат итогового результата">
+                            {(["md", "docx", "pdf", "xlsx", "pptx"] as const).map((format) => (
+                              <button
+                                key={format}
+                                type="button"
+                                className={p.outputFormat === format ? "primary" : "secondary"}
+                                aria-pressed={p.outputFormat === format}
+                                disabled={block}
+                                onClick={() => patch({ outputFormat: format })}
+                              >
+                                {format === "md" ? "Markdown" : format.toUpperCase()}
+                              </button>
+                            ))}
+                          </div>
+                          <p className="helper">
+                            Этапы сохраняются в Markdown. Backend сформирует и проверит отдельный неизменяемый файл выбранного формата для итогового этапа.
+                          </p>
+                        </div>
                       </div>
                       <div className="confirm-bar">
                         <button
@@ -1931,8 +1952,10 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
                         ) : null}
                         {run?.status === "failed" ? (
                           <div className="error-note">
-                            <p>Запуск завершился ошибкой. ID: {run.id}.</p>
-                            {run.retryAttemptId ? (
+                            <p>{run.errorCode?.startsWith("artifact_export_") || run.errorCode === "artifact_format_mismatch"
+                              ? "Markdown сохранён, но итоговый файл сформировать не удалось."
+                              : `Запуск завершился ошибкой. ID: ${run.id}.`}</p>
+                            {run.retryAttemptId && !run.errorCode?.startsWith("artifact_export_") && run.errorCode !== "artifact_format_mismatch" ? (
                               <button
                                 type="button"
                                 className="secondary small"
@@ -2076,8 +2099,16 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
                             <p className="section-kicker">РЕЗУЛЬТАТ ЭТАПА</p>
                             <h2 className="section-title">{selectedStage?.title}</h2>
                             <p className="muted">{selectedStage?.goal}</p>
-                            {a ? (
-                              <>
+                            {a ? (() => {
+                              const exported = p.outputFormat === "md" ? undefined : a.exports?.find(e => e.requestedFormat === p.outputFormat && e.status === "ready" && e.formatVerified);
+                              const approvalBody = exported ? {
+                                artifactId: a.id,
+                                version: a.version,
+                                exportId: exported.id,
+                                outputFormat: exported.requestedFormat,
+                                sha256: exported.file!.sha256,
+                              } : { artifactId: a.id, version: a.version };
+                              return <>
                                 <div className="artifact-selects">
                                   <label className="field">
                                     <span className="field-label">Артефакт этапа</span>
@@ -2157,14 +2188,22 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
                                         Boolean(p.pending) ||
                                         approved(p, a) ||
                                         a.id !== versions[0]?.id ||
-                                        !a.saved
+                                        !a.saved ||
+                                        (p.outputFormat !== "md" && !exported)
                                       }
-                                      onClick={() =>
-                                        perform("approve", { artifactId: a.id, version: a.version }, a.id)
-                                      }
+                                      onClick={() => perform("approve", approvalBody, a.id)}
                                     >
                                       {approved(p, a) ? "Версия согласована" : "Согласовать результат"}
                                     </button>
+                                  ) : null}
+                                  {exported?.file && !sample ? (
+                                    <a
+                                      className="primary"
+                                      href={exported.file.downloadUrl}
+                                      download={exported.file.name}
+                                    >
+                                      Скачать {exported.requestedFormat.toUpperCase()} · {bytes(exported.file.sizeBytes ?? 0)}
+                                    </a>
                                   ) : null}
                                   {a.file && !sample ? (
                                     <a
@@ -2212,8 +2251,8 @@ export function App({ user, onLogout }: { user: User; onLogout: () => void }) {
                                     останется доступна.
                                   </p>
                                 ) : null}
-                              </>
-                            ) : (
+                              </>;
+                            })() : (
                               <div className="artifact-empty">
                                 <span aria-hidden>▤</span>
                                 <h3>Здесь появится артефакт этапа</h3>

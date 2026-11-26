@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.model_routing import MODEL_ERROR_MESSAGES, RETRYABLE_MODEL_ERRORS
-from backend.models import Artifact, ArtifactApproval, Event, ProductRun, Project, ProjectRun, Run
+from backend.models import Artifact, ArtifactApproval, ArtifactExport, Event, ProductRun, Project, ProjectRun, Run
 from backend.public_events import project_public_event_data
 from backend.repository import ACTIVE_RUN_STATUSES, TERMINAL_RUN_STATUSES
 
@@ -222,6 +222,7 @@ class DocumentVersion:
     product_run_id: str
     # Файл версии для скачивания; None — целиком его скачать нельзя.
     file: dict[str, Any] | None = None
+    exports: list[dict[str, Any]] = field(default_factory=list)
 
     def public(self) -> dict[str, Any]:
         public = {
@@ -236,6 +237,8 @@ class DocumentVersion:
         }
         if self.file is not None:
             public["file"] = self.file
+        if self.exports:
+            public["exports"] = self.exports
         return public
 
 
@@ -327,6 +330,7 @@ class Chain:
             "revision": sum(run.next_event_seq for _, run in self.links) + len(self.links),
             "status": self.status(),
             "stageId": self.product.stage_id,
+            "outputFormat": self.product.output_format or "md",
             "messages": messages,
             "artifacts": [item.public() for item in self.documents],
         }
@@ -416,6 +420,32 @@ async def load_workspace(session: AsyncSession, project: Project) -> Workspace:
     artifacts = list(await session.scalars(
         select(Artifact).where(Artifact.run_id.in_(list(owner))).order_by(Artifact.id)
     )) if owner else []
+    artifact_exports = list(await session.scalars(
+        select(ArtifactExport).where(ArtifactExport.source_artifact_id.in_([item.id for item in artifacts]))
+    )) if artifacts else []
+    exports_by_artifact: dict[int, list[dict[str, Any]]] = {}
+    for item in artifact_exports:
+        public: dict[str, Any] = {
+            "id": item.id,
+            "requestedFormat": item.requested_format,
+            "detectedFormat": item.detected_format,
+            "formatVerified": item.status == "ready" and item.detected_format == item.requested_format,
+            "status": item.status,
+        }
+        if item.error_code:
+            public["errorCode"] = item.error_code
+        if item.status == "ready":
+            public["file"] = {
+                "name": item.filename,
+                "sizeBytes": item.size_bytes,
+                "contentType": item.content_type,
+                "sha256": item.sha256,
+                "downloadUrl": (
+                    f"/api/v2/projects/{project.id}/runs/EXPORT_RUN/artifacts/"
+                    f"a{item.source_artifact_id}/exports/{item.id}/file"
+                ),
+            }
+        exports_by_artifact.setdefault(item.source_artifact_id, []).append(public)
     # Запуски рабочего пространства идут строго по очереди, поэтому порядок цепочек и
     # порядок артефактов внутри цепочки задают историю версий каждого документа.
     for chain in chains.values():
@@ -440,6 +470,16 @@ async def load_workspace(session: AsyncSession, project: Project) -> Workspace:
                     "contentType": artifact.content_type or "application/octet-stream",
                     "downloadUrl": f"/api/runs/{artifact.run_id}/events/{artifact.event_seq}/file",
                 },
+                exports=[
+                    {
+                        **item,
+                        **({"file": {
+                            **item["file"],
+                            "downloadUrl": item["file"]["downloadUrl"].replace("EXPORT_RUN", chain.product.id),
+                        }} if "file" in item else {}),
+                    }
+                    for item in exports_by_artifact.get(artifact.id, [])
+                ],
             ))
     return Workspace(project, list(chains.values()))
 
@@ -451,6 +491,11 @@ def receipt(approval: ArtifactApproval) -> dict[str, Any]:
         "version": approval.version,
         "approved": True,
         "approvedAt": iso(approval.approved_at),
+        **({
+            "exportId": approval.export_id,
+            "outputFormat": approval.output_format,
+            "sha256": approval.export_sha256,
+        } if approval.export_id else {}),
     }
 
 

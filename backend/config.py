@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     # Файл больше этого не сохраняется в хранилище (в базе остаётся только запись о нём).
     artifact_max_storage_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
+    product_export_enabled: bool = True
+    product_export_max_source_bytes: int = Field(default=2 * 1024 * 1024, gt=0)
+    product_export_max_output_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
+    product_export_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     # Сколько файлов, изменённых агентом не через Write, подбирать после запуска в режиме cli.
     artifact_scan_max_files: int = Field(default=50, ge=0)
     artifact_scan_max_entries: int = Field(default=10000, ge=1)

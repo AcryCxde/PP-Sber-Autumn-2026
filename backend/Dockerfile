@@ -17,7 +17,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     CLAUDE_PERMISSION_MODE=acceptEdits
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends python3 python3-venv git ca-certificates \
+    && apt-get install --yes --no-install-recommends python3 python3-venv git ca-certificates fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/venv \
     && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \

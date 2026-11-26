@@ -38,6 +38,7 @@ export const QUESTIONS = [
   "Для кого нужен результат и что уже известно?",
   "Какие ограничения и критерии успеха важны?",
 ];
+export type OutputFormat = "md" | "docx" | "pdf" | "xlsx" | "pptx";
 export type Stage = { id: string; title: string; goal: string };
 export type InputFile = {
   id: string;
@@ -53,6 +54,15 @@ export type Message = {
   text: string;
   at: string;
 };
+export type ArtifactExport = {
+  id: string;
+  requestedFormat: OutputFormat;
+  detectedFormat?: OutputFormat;
+  formatVerified: boolean;
+  status: "pending" | "ready" | "failed";
+  errorCode?: string;
+  file?: ArtifactFile & { sha256: string };
+};
 export type Artifact = {
   id: string;
   documentId: string;
@@ -65,6 +75,7 @@ export type Artifact = {
   approved?: boolean;
   /** Original file kept by the server (object storage); absent when it can't be downloaded whole. */
   file?: ArtifactFile;
+  exports?: ArtifactExport[];
 };
 export type ArtifactFile = { name: string; sizeBytes: number | null; contentType: string; downloadUrl: string };
 export type Usage = {
@@ -83,6 +94,7 @@ export type Run = {
   retryCount?: number;
   status: "queued" | "running" | "clarification" | "waiting_for_input" | "review" | "completed" | "failed" | "outcome_unknown";
   stageId: string;
+  outputFormat: OutputFormat;
   question?: QuestionGroup;
   progress?: { stage: "interrupted" | "recovering" | "working"; attempt?: number; context_restored?: boolean };
   parentRunId?: string;
@@ -99,7 +111,7 @@ export type QuestionGroup = { id: string; questions: {
   multi_select: boolean; allow_custom: boolean;
 }[] };
 export type AnswerValue = { selected: string[]; custom: string };
-export type Approval = { receiptId: string; artifactId: string; version: number; approved: true; approvedAt: string };
+export type Approval = { receiptId: string; artifactId: string; version: number; approved: true; approvedAt: string; exportId?: string; outputFormat?: OutputFormat; sha256?: string };
 export type Pending = {
   action: "start" | "answer" | "message" | "rework" | "approve" | "retry";
   id: string;
@@ -118,6 +130,7 @@ export type Project = {
   answers: string[];
   team: string[];
   teamNote: string;
+  outputFormat: OutputFormat;
   stages: Stage[];
   files: InputFile[];
   createdAt: string;
@@ -142,6 +155,7 @@ export function newProject(): Project {
     answers: ["", "", ""],
     team: ["researcher", "analyst", "editor"],
     teamNote: "",
+    outputFormat: "md",
     stages: [
       {
         id: "understand",
@@ -170,6 +184,7 @@ const obj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): v is string => typeof v === "string";
 const nonempty = (v: unknown): v is string => str(v) && v.trim().length > 0;
+const outputFormat = (v: unknown): v is OutputFormat => ["md", "docx", "pdf", "xlsx", "pptx"].includes(String(v));
 const count = (v: unknown) =>
   typeof v === "number" && Number.isFinite(v) && v >= 0;
 // Only a same-origin backend download path may become a link.
@@ -177,6 +192,10 @@ const validFile = (f: unknown) =>
   obj(f) && nonempty(f.name) && str(f.contentType) &&
   (f.sizeBytes === null || count(f.sizeBytes)) &&
   str(f.downloadUrl) && /^\/api\/runs\/[\w-]+\/events\/\d+\/file$/.test(f.downloadUrl);
+const validExportFile = (f: unknown) =>
+  obj(f) && nonempty(f.name) && str(f.contentType) && count(f.sizeBytes) &&
+  /^[0-9a-f]{64}$/.test(String(f.sha256)) && str(f.downloadUrl) &&
+  /^\/api\/v2\/projects\/[\w-]+\/runs\/[\w-]+\/artifacts\/a\d+\/exports\/[\w-]+\/file$/.test(f.downloadUrl);
 export const isWaiting = (run?: Run) => run?.status === "clarification" || run?.status === "waiting_for_input";
 export const confirmationPending = (run?: Run) => run?.status === "outcome_unknown" && run.errorCode === "artifact_confirmation_pending";
 export const shouldPollRun = (run?: Run) => Boolean(run && (confirmationPending(run) || (!isTerminal(run) && run.status !== "review")));
@@ -212,8 +231,11 @@ export function buildAnswers(group: QuestionGroup, draft: Record<string, AnswerV
   }));
 }
 export function parseApproval(v: unknown, artifact: Artifact): Approval {
-  if (!obj(v) || !artifact.saved || !nonempty(v.receiptId) || v.artifactId !== artifact.id ||
-      v.version !== artifact.version || v.approved !== true || !str(v.approvedAt) || !Number.isFinite(Date.parse(v.approvedAt)))
+  if (!obj(v)) throw new Error("Сервис не подтвердил одобрение выбранной сохранённой версии");
+  const exported = artifact.exports?.find(e => e.id === v.exportId);
+  if ( !artifact.saved || !nonempty(v.receiptId) || v.artifactId !== artifact.id ||
+      v.version !== artifact.version || v.approved !== true || !str(v.approvedAt) || !Number.isFinite(Date.parse(v.approvedAt)) ||
+      (v.exportId !== undefined && (!exported || v.outputFormat !== exported.requestedFormat || v.sha256 !== exported.file?.sha256)))
     throw new Error("Сервис не подтвердил одобрение выбранной сохранённой версии");
   return v as Approval;
 }
@@ -231,7 +253,10 @@ export function artifactRunId(p: Project, artifactId: string): string | undefine
 }
 export function approved(p: Project, a: Artifact): boolean {
   const receipt = p.approvals?.[a.id];
-  return Boolean(a.saved && receipt && receipt.artifactId === a.id && receipt.version === a.version);
+  if (!a.saved || !receipt || receipt.artifactId !== a.id || receipt.version !== a.version) return false;
+  if (p.outputFormat === "md") return true;
+  const exported = a.exports?.find(e => e.id === receipt.exportId);
+  return Boolean(exported?.status === "ready" && exported.formatVerified && receipt.outputFormat === exported.requestedFormat && receipt.sha256 === exported.file?.sha256);
 }
 export function parseRun(v: unknown): Run {
   if (
@@ -243,6 +268,7 @@ export function parseRun(v: unknown): Run {
       String(v.status),
     ) ||
     !nonempty(v.stageId) ||
+    (v.outputFormat !== undefined && !outputFormat(v.outputFormat)) ||
     !Array.isArray(v.messages) ||
     !Array.isArray(v.artifacts)
   )
@@ -289,6 +315,18 @@ export function parseRun(v: unknown): Run {
       (a.file !== undefined && !validFile(a.file))
     )
       throw new Error("Некорректная версия артефакта");
+    if (a.exports !== undefined) {
+      if (!Array.isArray(a.exports) || a.exports.some((e: unknown) =>
+        !obj(e) || !nonempty(e.id) || !outputFormat(e.requestedFormat) ||
+        (e.detectedFormat !== undefined && !outputFormat(e.detectedFormat)) ||
+        typeof e.formatVerified !== "boolean" || !["pending", "ready", "failed"].includes(String(e.status)) ||
+        (e.errorCode !== undefined && !nonempty(e.errorCode)) ||
+        (e.file !== undefined && !validExportFile(e.file)) ||
+        (e.status === "ready" && (!e.formatVerified || e.detectedFormat !== e.requestedFormat || !e.file))
+      )) throw new Error("Некорректный экспорт артефакта");
+      if (new Set(a.exports.map((e: unknown) => obj(e) ? e.id : undefined)).size !== a.exports.length)
+        throw new Error("Дубли экспортов");
+    }
     return a as Artifact;
   });
   if (
@@ -342,6 +380,7 @@ export function parseRun(v: unknown): Run {
     ...(v.retryCount ? { retryCount: v.retryCount as number } : {}),
     status: v.status as Run["status"],
     stageId: v.stageId,
+    outputFormat: (v.outputFormat as OutputFormat | undefined) ?? "md",
     ...(question ? { question } : {}),
     ...(v.progress ? { progress: v.progress as Run["progress"] } : {}),
     ...(v.parentRunId ? { parentRunId: v.parentRunId as string } : {}),
@@ -357,7 +396,14 @@ export function mergeRun(p: Project, run: Run): Project {
   for (const a of run.artifacts) {
     const existing = historical.find(old => old.id === a.id);
     if (existing) {
-      if (JSON.stringify(a) !== JSON.stringify(existing)) throw new Error("Изменилась историческая версия документа");
+      const withoutExports = (value: Artifact) => ({ ...value, exports: undefined });
+      if (JSON.stringify(withoutExports(a)) !== JSON.stringify(withoutExports(existing)))
+        throw new Error("Изменилась историческая версия документа");
+      const priorExports = new Map(existing.exports?.map(item => [item.id, item]) || []);
+      for (const item of a.exports || []) {
+        const old = priorExports.get(item.id);
+        if (old && JSON.stringify(old) !== JSON.stringify(item)) throw new Error("Изменился исторический экспорт");
+      }
     } else if (historical.some(old => a.documentId === old.documentId && a.stageId === old.stageId && a.version <= old.version))
       throw new Error("Версия не продолжает историю документа");
   }
@@ -372,6 +418,8 @@ export function mergeRun(p: Project, run: Run): Project {
     throw new Error("Сервис вернул неизвестный этап");
   if (p.run && p.run.id !== run.id)
     throw new Error("Ответ относится к другому запуску");
+  if (run.outputFormat !== p.outputFormat)
+    throw new Error("Сервис изменил формат результата");
   if (p.run && run.revision < p.run.revision) return p;
   const confirmationCorrection = confirmationPending(p.run) && run.revision > p.run!.revision &&
     (run.status === "completed" ||
@@ -397,7 +445,14 @@ export function mergeRun(p: Project, run: Run): Project {
         old.title !== a.title)
     )
       throw new Error("Сервис попытался изменить уже существующую версию");
-    artifacts.set(a.id, { ...old, ...a });
+    const exports = new Map(old?.exports?.map(e => [e.id, e]) || []);
+    for (const item of a.exports || []) {
+      const previous = exports.get(item.id);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(item))
+        throw new Error("Сервис изменил уже существующий экспорт");
+      exports.set(item.id, item);
+    }
+    artifacts.set(a.id, { ...old, ...a, ...(exports.size ? { exports: [...exports.values()] } : {}) });
   }
   const messages = new Map(p.run?.messages.map((m) => [m.id, m]) || []);
   const roleEvents = new Map(p.run?.roleEvents?.map(e => [e.id, e]) || []);
@@ -465,6 +520,7 @@ export function readProjects(value: string | null): Project[] {
       !Array.isArray(v.team) ||
       !v.team.every(str) ||
       !str(v.teamNote) ||
+      (v.outputFormat !== undefined && !outputFormat(v.outputFormat)) ||
       !Array.isArray(v.stages) ||
       v.stages.length === 0 ||
       !Array.isArray(v.files) ||
@@ -523,6 +579,7 @@ export function readProjects(value: string | null): Project[] {
     )
       throw new Error("Некорректный черновик ответа");
     const p = v as Project;
+    p.outputFormat = outputFormat(v.outputFormat) ? v.outputFormat : "md";
     const migrateRun = (r: unknown): Run => {
       if (!obj(r)) return parseRun(r);
       const q = r.question;
@@ -564,6 +621,7 @@ export function projectPayload(p: Project) {
     answers: p.answers,
     team: p.team,
     teamNote: p.teamNote,
+    outputFormat: p.outputFormat,
     stages: p.stages,
   };
 }
@@ -585,6 +643,7 @@ export function exampleProject(): Project {
     revision: 2,
     status: "review",
     stageId: "options",
+    outputFormat: "md",
     usage: undefined,
     messages: [
       {
@@ -646,7 +705,7 @@ export function exampleProject(): Project {
       },
     ],
   };
-  p.run.artifacts.push({
+  p.run!.artifacts.push({
     id: "e-a4",
     documentId: "interview",
     stageId: "options",

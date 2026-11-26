@@ -1,6 +1,6 @@
 # CoreTeams product workspace
 
-**Статус:** React B v9.2 подключён к backend через контракт V2, как описано ниже. Оформление и раскладка взяты из [макета 2026-11-11](prototypes/2026-11-11/README.md): боковая навигация по шагам, верхняя панель, колонка «Сейчас», вопросы фасилитатора в виде диалога, рабочее пространство «диалог + артефакты». Сценарий макета (выбор роли на проект, скилл, локальный экспорт PDF/DOCX/PPTX/XLSX, корзина) в приложение не перенесён — для него нет поддержки в контракте V2. Сам макет остаётся в папке как отдельный прототип.
+**Статус:** React B v9.2 подключён к backend через контракт V2, как описано ниже. Оформление и раскладка взяты из [макета 2026-11-11](prototypes/2026-11-11/README.md): боковая навигация по шагам, верхняя панель, колонка «Сейчас», вопросы фасилитатора в виде диалога, рабочее пространство «диалог + артефакты». Рабочий V2-интерфейс позволяет выбрать MD, DOCX, PDF, XLSX или PPTX: runner сохраняет канонический Markdown, а backend формирует, проверяет и сохраняет бинарный экспорт. Выбор роли на проект, скилл и корзина из локального макета не перенесены.
 
 CoreTeams — Рабочее пространство с AI-командой для сложных задач вне одной экспертизы.
 
@@ -18,7 +18,7 @@ React/Vite/TypeScript workspace based on the owner-provided v9.2 behaviour, wire
 - The initial run covers the whole plan; the agent saves each stage document with Write to `coreteams/<stageId>.md`. Every save is a new immutable version of that document; other written files go to the run's stage.
 - Questions come from the runner (`question.asked`); answers are sent as one text to every question of the fork. `unknown_fork`/`answers_mismatch`/`version_conflict`/`idempotency_conflict` are returned as top-level `code`.
 - Usage reports requests, compute seconds and cost in USD from finished runs; tokens are not measured yet. Role events are not emitted (no execution evidence per role).
-- Approval receipts are stored per version (`artifact_approvals`); ZIP contains the version and a manifest.
+- Approval receipts are stored per version (`artifact_approvals`). For binary output they bind the exact export ID, format and SHA-256. ZIP contains the canonical version and a manifest.
 - Projects from the previous v9 interface stay in the database unchanged and are listed read-only on the home page (view, download Markdown).
 - Drafts are stored in browser storage per account; the server keeps them, but there is no project list/restore across devices yet.
 
@@ -27,7 +27,7 @@ React/Vite/TypeScript workspace based on the owner-provided v9.2 behaviour, wire
 1. Explain capability and show a five-step, explicitly labelled static example before a first own project. The example workspace supports stage/document/version exploration; sample sending is disabled.
 2. Create goal/context and add real input file bytes, persisted in IndexedDB across reload. Metadata/answers/team/plan are versioned browser drafts. Text preview is bounded; PDF/Office extraction needs backend processing. No arbitrary file-count or credit quota introduced; browser storage/technical limits remain.
 3. Answer preparation questions; choose AI-roles and request another expertise in a note. These are proposed roles, not proof of CTF availability or real human participation.
-4. Edit/approve the local plan, including adding/removing stages. This does not execute a run.
+4. Edit/approve the local plan, including adding/removing stages, and choose MD/DOCX/PDF/XLSX/PPTX for the final stage. This does not execute a run.
 5. Simplified three-zone workspace: stage/material navigation, facilitator conversation, per-stage documents and immutable versions. Freeform comments and facilitator answer drafts are retained. Real questions, new versions, approvals and usage are returned by the backend only.
 6. Export displayed text; server ZIP only for saved artifacts. Unknown outcomes retain the original request/body; uploaded file checksum is acknowledged; server IDs persist. Runtime has no simulated completion/timer/credit values.
 

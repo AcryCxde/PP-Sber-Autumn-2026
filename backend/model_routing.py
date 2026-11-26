@@ -30,6 +30,10 @@ MODEL_ERROR_MESSAGES = {
     "ai_launches_paused": "Администратор временно приостановил новые запуски агентов.",
     "ai_models_unavailable": "Модели временно недоступны. Повторите попытку позже.",
     "ai_model_request_failed": "Модель перестала отвечать. Этап можно повторить на доступной модели.",
+    "artifact_export_failed": "Не удалось сформировать итоговый файл. Markdown-версия сохранена.",
+    "artifact_format_mismatch": "Сформированный файл не прошёл проверку формата.",
+    "artifact_export_too_large": "Итоговый файл превышает допустимый размер.",
+    "artifact_export_storage_failed": "Не удалось сохранить итоговый файл.",
 }
 MODEL_FAILURES = frozenset({
     "authentication_failed", "billing_error", "rate_limit", "server_error", "model_not_found",

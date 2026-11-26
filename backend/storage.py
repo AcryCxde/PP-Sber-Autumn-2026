@@ -24,6 +24,8 @@ class StorageError(RuntimeError):
 class ObjectStorage(Protocol):
     async def put(self, key: str, data: bytes, content_type: str) -> None: ...
 
+    async def delete(self, key: str) -> None: ...
+
     async def get(self, key: str, *, max_bytes: int | None = None) -> bytes: ...
 
     async def get_bounded(self, key: str, max_bytes: int) -> bytes: ...
@@ -105,6 +107,12 @@ class S3Storage:
         except Exception as error:
             raise StorageError(f"Could not store {key}") from error
 
+    async def delete(self, key: str) -> None:
+        try:
+            await asyncio.to_thread(self.client.delete_object, Bucket=self.bucket, Key=key)
+        except Exception as error:
+            raise StorageError(f"Could not delete {key}") from error
+
     async def get_bounded(self, key: str, max_bytes: int) -> bytes:
         if max_bytes < 0:
             raise ValueError("Read limit must be nonnegative")
@@ -135,6 +143,9 @@ class MemoryStorage:
 
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         self.objects[key] = (data, content_type)
+
+    async def delete(self, key: str) -> None:
+        self.objects.pop(key, None)
 
     async def get_bounded(self, key: str, max_bytes: int) -> bytes:
         if max_bytes < 0:

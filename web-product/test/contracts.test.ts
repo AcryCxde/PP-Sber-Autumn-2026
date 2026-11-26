@@ -228,6 +228,25 @@ test("definite request rejection unlocks editing while ambiguous outcomes retain
   }
   assert.equal(recoverRejectedOperation(project, "other-operation", new ApiError("bad", undefined, 422)), project);
 });
+test("output format survives payload, migration and verified export parsing", () => {
+  const project = newProject();
+  for (const format of ["docx", "pdf", "xlsx", "pptx"] as const) {
+    project.outputFormat = format;
+    assert.equal(projectPayload(project).outputFormat, format);
+  }
+  project.outputFormat = "docx";
+  const legacy = { ...newProject() } as Record<string, unknown>;
+  delete legacy.outputFormat;
+  assert.equal(readProjects(JSON.stringify({ version: 3, projects: [legacy] }))[0].outputFormat, "md");
+  const file = { name: "result.docx", sizeBytes: 10, contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    sha256: "a".repeat(64), downloadUrl: "/api/v2/projects/p/runs/r/artifacts/a1/exports/e1/file" };
+  const run = parseRun({ ...base(), outputFormat: "docx", artifacts: [{ ...artifact(), exports: [{ id: "e1", requestedFormat: "docx",
+    detectedFormat: "docx", formatVerified: true, status: "ready", file }] }] });
+  assert.equal(run.artifacts[0].exports?.[0].file?.sha256, "a".repeat(64));
+  assert.throws(() => parseRun({ ...base(), outputFormat: "docx", artifacts: [{ ...artifact(), exports: [{ id: "e1", requestedFormat: "docx",
+    detectedFormat: "md", formatVerified: true, status: "ready", file }] }] }));
+});
+
 test("plan payload accepts 12 stages but rejects 13 without truncating the draft", () => {
   const project = newProject();
   project.stages = Array.from({ length: MAX_PLAN_STAGES }, (_, i) => ({ id: `s${i}`, title: "Stage", goal: "Result" }));
