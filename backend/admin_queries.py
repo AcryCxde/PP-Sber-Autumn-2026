@@ -1,6 +1,8 @@
 """Bounded, single-statement operational snapshots; never expose user content."""
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import String, and_, case, func, literal, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -133,13 +135,43 @@ async def runs(session: AsyncSession, period: Period, *, status: str, page: int,
 
 async def run_detail(session: AsyncSession, run_id: str):
     selected = select(Run.id.label("run_id")).where(Run.id == run_id).cte("selected")
-    statement = _details(select(selected.c.run_id).select_from(selected)).add_columns(Run.harness_estimate, Run.execution_model)
+    statement = _details(select(selected.c.run_id).select_from(selected)).add_columns(
+        Run.harness_estimate, Run.execution_model, Run.cost_usd, Run.claude_session_id,
+    )
     row = (await session.execute(statement)).one_or_none()
     if row is None:
         return None
+    estimate = safe_estimate(row.harness_estimate) or _cli_session_estimate(
+        row.cost_usd, row.claude_session_id, row.completed_at,
+    )
     return {"as_of": datetime.now(UTC).isoformat(), "run": _row(row),
-            "harness_estimate": safe_estimate(row.harness_estimate) or unknown_estimate(),
+            "harness_estimate": estimate or unknown_estimate(),
             **({"execution_model": row.execution_model} if row.execution_model else {})}
+
+
+def _cli_session_estimate(
+    cost_usd: Decimal | None, session_id: str | None, completed_at: datetime | None,
+) -> dict | None:
+    if cost_usd is None or not cost_usd.is_finite() or cost_usd <= 0 or not session_id or completed_at is None:
+        return None
+    try:
+        UUID(session_id)
+    except ValueError:
+        # Runner records use a runner-prefixed marker or no session ID.
+        return None
+
+    # CLI finalization saves a cumulative result at completed_at. Keep the raw
+    # session ID private and leave the result event ID and journal sequence unset.
+    estimate = unknown_estimate()
+    return {
+        **estimate,
+        "state": "known",
+        "value_usd": format(cost_usd, "f"),
+        "scope": "session_total",
+        "observed_at": _stamp(completed_at),
+        "source": {**estimate["source"], "kind": "claude_cli_result"},
+        "unavailable_reason": None,
+    }
 
 
 def unknown_estimate():

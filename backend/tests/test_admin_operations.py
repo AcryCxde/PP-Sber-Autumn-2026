@@ -1,8 +1,10 @@
 """Operational admin reads use run cohorts, never event counts or raw content."""
 import asyncio
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -81,7 +83,47 @@ def test_operational_access_and_invalid_period(tmp_path):
         assert client.get("/api/admin/v1/runs/missing").status_code == 404
 
 
-def test_detail_uses_only_scoped_snapshot_not_scalar_or_sum(tmp_path):
+@pytest.mark.parametrize(("cost", "session_id", "expected"), [
+    ("0.836065", "b144c6b0-235a-43ab-8c95-7376338737f7", "0.836065"),
+    ("0.836065", None, None),
+    ("0.836065", "runner-b144c6b0-235a-43ab-8c95-7376338737f7", None),
+    (None, "b144c6b0-235a-43ab-8c95-7376338737f7", None),
+    ("0", "b144c6b0-235a-43ab-8c95-7376338737f7", None),
+    ("-1", "b144c6b0-235a-43ab-8c95-7376338737f7", None),
+])
+def test_detail_uses_stored_cli_session_estimate(tmp_path, cost, session_id, expected):
+    app = make_app(tmp_path)
+    with TestClient(app) as client:
+        sign_in(client)
+        run_id = seed(app, client)[4]
+
+        async def save():
+            async with app.state.database.session() as session:
+                run = await session.get(Run, run_id)
+                run.cost_usd = Decimal(cost) if cost is not None else None
+                run.claude_session_id = session_id
+                await session.commit()
+
+        client.portal.call(save)
+        response = client.get(f"/api/admin/v1/runs/{run_id}")
+        assert response.status_code == 200
+        body = response.json()
+        estimate = body["harness_estimate"]
+        assert estimate["value_usd"] == expected
+        if session_id is not None:
+            assert session_id not in response.text
+        if expected is None:
+            assert estimate["state"] == "unknown"
+        else:
+            assert estimate["state"] == "known"
+            assert estimate["scope"] == "session_total"
+            assert estimate["observed_at"] == body["run"]["completed_at"]
+            assert estimate["baseline"] is None
+            assert estimate["source"]["kind"] == "claude_cli_result"
+            assert estimate["source"]["field"] == "total_cost_usd"
+
+
+def test_detail_prefers_scoped_runner_snapshot_over_cli_estimate(tmp_path):
     from backend.harness_estimate import project_snapshot
     app = make_app(tmp_path)
     with TestClient(app) as client:
@@ -91,6 +133,7 @@ def test_detail_uses_only_scoped_snapshot_not_scalar_or_sum(tmp_path):
             async with app.state.database.session() as session:
                 run = await session.get(Run, ids[0])
                 run.cost_usd = 999
+                run.claude_session_id = str(uuid4())
                 base = {"session_ref": str(uuid4()), "journal_seq": 2,
                         "observed_at": "2026-11-12T00:00:00Z", "value_usd": "0.015435"}
                 first = project_snapshot(base, event_id=str(uuid4()), previous=None)
